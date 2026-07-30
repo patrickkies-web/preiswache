@@ -1,0 +1,697 @@
+import React, { useState, useEffect, useMemo, useCallback } from "react";
+import {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  ResponsiveContainer, Legend, Cell,
+} from "recharts";
+import {
+  Gauge, Plus, Trash2, Check, X, TrendingDown, TrendingUp, Minus, Car,
+  AlertTriangle, Upload, Star, MapPin, Store, User, Wrench, Search, Filter, ShieldCheck,
+} from "lucide-react";
+
+/* ------------------------------------------------------------------ *
+ *  PREISWACHE — Fahrzeug-Tracker mit Analyse & Suche
+ *  - Import: JSON-Block, den Claude aus dem Inserat erstellt
+ *  - Pro Auto: "+" für Preis-Updates mit Datum -> Preisverlauf
+ *  - Analyse: Suche/Filter über alle Kategorien + Vergleich nach Begriffen
+ *  Die App analysiert NICHT selbst. Claude liefert die definierten Begriffe.
+ * ------------------------------------------------------------------ */
+
+const STORE_KEY = "garage-v3";
+
+// Alle Textfelder (mileage/repairCount/priceHistory separat)
+const TEXT_FIELDS = [
+  "title", "subtitle", "make", "model", "series", "trimline", "condition", "category",
+  "year", "displacement", "power", "drivetrain", "fuel", "gearbox", "owners", "hu",
+  "color", "location", "sellerType", "dealerName", "stars", "address",
+  "damageCurrent", "damagePrevious", "damageRepaired",
+  "accidentStatus", "currentIssueStatus", "previousDamageStatus", "repairScope",
+  "note", "url",
+];
+
+// Definierte Begriffe (kontrolliertes Vokabular)
+const ACCIDENT_OPTS = ["Unfallfrei", "Unfallwagen", "Unklar"];
+const ISSUE_OPTS = ["Keine", "Vorhanden"];
+const PREV_OPTS = ["Keine bekannt", "Bekannt"];
+const SCOPE_OPTS = ["Keine", "Gering", "Mittel", "Umfangreich"];
+
+// Kategorien, die als Filter-Dropdown auswählbar sind
+const FILTER_FIELDS = [
+  ["make", "Marke"], ["model", "Modell"], ["series", "Baureihe"], ["category", "Kategorie"],
+  ["fuel", "Kraftstoff"], ["gearbox", "Getriebe"], ["drivetrain", "Antrieb"],
+  ["condition", "Zustand"], ["color", "Farbe"], ["sellerType", "Anbieter"],
+  ["accidentStatus", "Unfallstatus"], ["currentIssueStatus", "Aktuelle Mängel"],
+  ["repairScope", "Reparatur-Umfang"], ["previousDamageStatus", "Vorschäden"],
+];
+// Dimensionen zum Gruppieren/Vergleichen
+const GROUP_FIELDS = [
+  ["repairScope", "Reparatur-Umfang"], ["currentIssueStatus", "Aktuelle Mängel"],
+  ["accidentStatus", "Unfallstatus"], ["previousDamageStatus", "Vorschäden"],
+  ["make", "Marke"], ["model", "Modell"], ["category", "Kategorie"], ["fuel", "Kraftstoff"],
+];
+
+const COLORS = [
+  "#F5B301", "#35C46B", "#4EA8F4", "#F4544E", "#C77DFF",
+  "#2DD4BF", "#FB923C", "#E879A9", "#A3E635", "#60A5FA",
+];
+
+const T = {
+  bg: "#14171C", surface: "#1C2027", surface2: "#232830", line: "#2E353F",
+  text: "#E6E9EE", muted: "#8A93A0", accent: "#F5B301", good: "#35C46B", bad: "#F4544E",
+};
+
+/* ---------------------------- Helpers ---------------------------- */
+
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const lastPrice = (v) => (v.priceHistory?.length ? v.priceHistory[v.priceHistory.length - 1].price : null);
+
+function coerceNum(v) {
+  if (v == null) return null;
+  if (typeof v === "number") return isNaN(v) ? null : v;
+  let s = String(v).replace(/[^\d.,]/g, "");
+  if (!s) return null;
+  if (s.includes(",")) s = s.replace(/\./g, "").replace(",", ".");
+  else if (/\.\d{3}(\.|$)/.test(s)) s = s.replace(/\./g, "");
+  const n = parseFloat(s);
+  return isNaN(n) ? null : n;
+}
+const fmtEUR = (n) => (n == null || isNaN(n) ? "—" : new Intl.NumberFormat("de-DE", { style: "currency", currency: "EUR", maximumFractionDigits: 0 }).format(n));
+const fmtNum = (n) => (n == null || isNaN(n) ? "—" : new Intl.NumberFormat("de-DE").format(n));
+function fmtDate(iso) { if (!iso) return ""; const [y, m, d] = iso.split("-"); return `${d}.${m}.${y.slice(2)}`; }
+function slugId(v) {
+  const basis = [v.make, v.model, v.series, v.year].filter(Boolean).join("-") || v.title || "auto";
+  return basis.toLowerCase().replace(/[^\w]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 60) || "auto";
+}
+
+// Farbe je Begriff
+function tagColor(field, value) {
+  if (!value) return T.muted;
+  if (field === "accidentStatus") return value === "Unfallfrei" ? T.good : value === "Unfallwagen" ? T.bad : T.muted;
+  if (field === "currentIssueStatus") return value === "Vorhanden" ? T.bad : T.good;
+  if (field === "previousDamageStatus") return value === "Bekannt" ? T.accent : T.good;
+  if (field === "repairScope") return value === "Umfangreich" ? T.accent : value === "Keine" ? T.muted : T.text;
+  return T.text;
+}
+
+/* -------------------- Import (nur JSON.parse) -------------------- */
+
+function normalizeHistory(h) {
+  if (!Array.isArray(h)) return [];
+  const seen = {};
+  h.forEach((p) => {
+    if (!p) return;
+    const date = p.date ? String(p.date).slice(0, 10) : null;
+    const price = coerceNum(p.price);
+    if (date && price != null) seen[date] = price;
+  });
+  return Object.entries(seen).map(([date, price]) => ({ date, price })).sort((a, b) => a.date.localeCompare(b.date));
+}
+function normalizeVehicle(v) {
+  const out = {};
+  TEXT_FIELDS.forEach((k) => { out[k] = v[k] != null ? String(v[k]).trim() : ""; });
+  out.mileage = coerceNum(v.mileage);
+  out.repairCount = coerceNum(v.repairCount);
+  out.priceHistory = normalizeHistory(v.priceHistory);
+  if (!out.priceHistory.length && v.price != null) {
+    const p = coerceNum(v.price);
+    if (p != null) out.priceHistory = [{ date: v.date ? String(v.date).slice(0, 10) : todayISO(), price: p }];
+  }
+  out.id = (v.id && String(v.id).trim()) || slugId(out);
+  return out;
+}
+function parseImport(text) {
+  const t = (text || "").trim();
+  if (!t) return { error: "Nichts eingefügt." };
+  let data;
+  try { data = JSON.parse(t); }
+  catch (e) { return { error: "Das ist kein gültiges JSON. Füge den JSON-Block ein, den Claude dir aus dem Inserat erstellt hat." }; }
+  const arr = Array.isArray(data) ? data : [data];
+  const vehicles = arr.filter((x) => x && typeof x === "object").map(normalizeVehicle);
+  if (!vehicles.length) return { error: "Im JSON wurde kein Fahrzeug gefunden." };
+  return { vehicles };
+}
+
+/* --------------------------- Storage ----------------------------- */
+
+async function loadGarage() {
+  try {
+    const r = await window.storage.get(STORE_KEY);
+    if (r && r.value) { const data = typeof r.value === "string" ? JSON.parse(r.value) : r.value; return data.vehicles || {}; }
+  } catch (_) {}
+  return {};
+}
+async function saveGarage(vehicles) {
+  try { await window.storage.set(STORE_KEY, JSON.stringify({ vehicles })); return true; }
+  catch (e) { console.error("Speichern fehlgeschlagen", e); return false; }
+}
+
+/* ----------------------------- App ------------------------------- */
+
+export default function App() {
+  const [vehicles, setVehicles] = useState({});
+  const [loaded, setLoaded] = useState(false);
+  const [raw, setRaw] = useState("");
+  const [preview, setPreview] = useState(null);
+  const [notice, setNotice] = useState(null);
+
+  const [addFor, setAddFor] = useState(null);
+  const [addDate, setAddDate] = useState(todayISO());
+  const [addPrice, setAddPrice] = useState("");
+
+  // Analyse & Suche
+  const [q, setQ] = useState("");
+  const [filters, setFilters] = useState({});
+  const [priceMax, setPriceMax] = useState("");
+  const [kmMax, setKmMax] = useState("");
+  const [moreFilters, setMoreFilters] = useState(false);
+  const [groupBy, setGroupBy] = useState("repairScope");
+
+  useEffect(() => { loadGarage().then((v) => { setVehicles(v); setLoaded(true); }); }, []);
+
+  const persist = useCallback((next) => { setVehicles(next); saveGarage(next); }, []);
+  const updateVehicle = useCallback((id, updater) => {
+    setVehicles((prev) => { const v = prev[id]; if (!v) return prev; const next = { ...prev, [id]: updater({ ...v }) }; saveGarage(next); return next; });
+  }, []);
+
+  const list = useMemo(() => Object.values(vehicles).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "")), [vehicles]);
+
+  /* ---- Import ---- */
+  function handlePreview() {
+    const res = parseImport(raw);
+    if (res.error) { setNotice({ type: "err", msg: res.error }); setPreview(null); return; }
+    setPreview(res.vehicles); setNotice(null);
+  }
+  function confirmImport() {
+    const next = { ...vehicles }; let added = 0, updated = 0;
+    preview.forEach((incoming) => {
+      const existing = next[incoming.id];
+      if (existing) {
+        const merged = { ...existing };
+        TEXT_FIELDS.forEach((k) => { if (incoming[k]) merged[k] = incoming[k]; });
+        if (incoming.mileage != null) merged.mileage = incoming.mileage;
+        if (incoming.repairCount != null) merged.repairCount = incoming.repairCount;
+        const byDate = {};
+        existing.priceHistory.forEach((p) => { byDate[p.date] = p.price; });
+        incoming.priceHistory.forEach((p) => { byDate[p.date] = p.price; });
+        merged.priceHistory = Object.entries(byDate).map(([date, price]) => ({ date, price })).sort((a, b) => a.date.localeCompare(b.date));
+        merged.updatedAt = new Date().toISOString();
+        next[incoming.id] = merged; updated++;
+      } else {
+        next[incoming.id] = { ...incoming, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; added++;
+      }
+    });
+    persist(next); setPreview(null); setRaw("");
+    setNotice({ type: "ok", msg: `${added} neu · ${updated} aktualisiert.` });
+  }
+
+  /* ---- Preis-Updates ---- */
+  function openAdd(v) { setAddFor(v.id); const last = v.priceHistory[v.priceHistory.length - 1]; setAddPrice(last ? String(last.price) : ""); setAddDate(todayISO()); }
+  function addPoint(v) {
+    const price = coerceNum(addPrice);
+    if (price == null || !addDate) { setNotice({ type: "err", msg: "Datum und Preis angeben." }); return; }
+    updateVehicle(v.id, (veh) => { const hist = veh.priceHistory.filter((p) => p.date !== addDate); hist.push({ date: addDate, price }); hist.sort((a, b) => a.date.localeCompare(b.date)); return { ...veh, priceHistory: hist, updatedAt: new Date().toISOString() }; });
+    setAddFor(null); setAddPrice("");
+  }
+  function deletePoint(v, date) { updateVehicle(v.id, (veh) => ({ ...veh, priceHistory: veh.priceHistory.filter((p) => p.date !== date), updatedAt: new Date().toISOString() })); }
+  function removeVehicle(id) { const next = { ...vehicles }; delete next[id]; persist(next); }
+
+  /* ---- Chart Preisverlauf ---- */
+  const chart = useMemo(() => {
+    const withHistory = list.filter((v) => v.priceHistory?.length);
+    const dates = [...new Set(withHistory.flatMap((v) => v.priceHistory.map((p) => p.date)))].sort();
+    const rows = dates.map((date) => { const row = { date }; withHistory.forEach((v) => { const pt = v.priceHistory.find((p) => p.date === date); row[v.id] = pt ? pt.price : null; }); return row; });
+    return { rows, series: withHistory };
+  }, [list]);
+  const totalDrop = useMemo(() => list.reduce((s, v) => { const h = v.priceHistory; if (!h || h.length < 2) return s; const d = h[0].price - h[h.length - 1].price; return s + (d > 0 ? d : 0); }, 0), [list]);
+  const colorFor = (id) => { const i = chart.series.findIndex((s) => s.id === id); return COLORS[(i < 0 ? Object.keys(vehicles).indexOf(id) : i) % COLORS.length]; };
+
+  /* ---- Analyse: Filter + Vergleich ---- */
+  const searchable = (v) => [v.title, v.subtitle, v.make, v.model, v.series, v.trimline, v.category, v.fuel, v.gearbox, v.drivetrain, v.condition, v.color, v.location, v.sellerType, v.dealerName, v.note, v.damageCurrent, v.damagePrevious, v.damageRepaired].join(" ").toLowerCase();
+
+  const filtered = useMemo(() => list.filter((v) => {
+    if (q.trim() && !searchable(v).includes(q.trim().toLowerCase())) return false;
+    for (const [f, val] of Object.entries(filters)) { if (val && (v[f] || "") !== val) return false; }
+    const pmax = coerceNum(priceMax); if (pmax != null) { const lp = lastPrice(v); if (lp == null || lp > pmax) return false; }
+    const kmax = coerceNum(kmMax); if (kmax != null) { if (v.mileage == null || v.mileage > kmax) return false; }
+    return true;
+  }), [list, q, filters, priceMax, kmMax]);
+
+  const distinct = (field) => [...new Set(list.map((v) => v[field]).filter(Boolean))].sort();
+
+  const groups = useMemo(() => {
+    const m = {};
+    filtered.forEach((v) => { const key = v[groupBy] || "—"; (m[key] = m[key] || []).push(v); });
+    return Object.entries(m).map(([group, vs]) => {
+      const prices = vs.map(lastPrice).filter((x) => x != null);
+      const kms = vs.map((v) => v.mileage).filter((x) => x != null);
+      const avg = prices.length ? Math.round(prices.reduce((a, b) => a + b, 0) / prices.length) : null;
+      const avgKm = kms.length ? Math.round(kms.reduce((a, b) => a + b, 0) / kms.length) : null;
+      return { group, count: vs.length, avg, avgKm };
+    }).sort((a, b) => (b.avg || 0) - (a.avg || 0));
+  }, [filtered, groupBy]);
+
+  const activeFilterCount = Object.values(filters).filter(Boolean).length + (priceMax ? 1 : 0) + (kmMax ? 1 : 0) + (q.trim() ? 1 : 0);
+  const resetFilters = () => { setQ(""); setFilters({}); setPriceMax(""); setKmMax(""); };
+  const setFilter = (f, val) => setFilters((prev) => ({ ...prev, [f]: val }));
+
+  const S = styles;
+
+  return (
+    <div style={S.page}>
+      <style>{globalCss}</style>
+
+      <header style={S.header} className="pw-header">
+        <div style={S.brandRow}>
+          <div style={S.logo}><Gauge size={22} color={T.bg} strokeWidth={2.5} /></div>
+          <div><div style={S.brandName}>PREISWACHE</div><div style={S.brandSub}>Tracken · Analysieren · Vergleichen</div></div>
+        </div>
+        <div style={S.stats}>
+          <Stat label="Fahrzeuge" value={fmtNum(list.length)} />
+          <Stat label="Beob. Rückgänge" value={fmtEUR(totalDrop)} accent={T.good} />
+        </div>
+      </header>
+
+      {/* Import */}
+      <section style={S.panel}>
+        <div style={S.panelTitle}><Upload size={15} /> Fahrzeug importieren</div>
+        <p style={S.hint}>
+          Schick Claude das Inserat als PDF → du bekommst einen <b style={{ color: T.text }}>JSON-Block</b> mit allen Daten
+          und den definierten Analyse-Begriffen. Hier einfügen und importieren. Gleiche <code style={S.code}>id</code> = Preis-Punkte werden ergänzt.
+        </p>
+        <textarea value={raw} onChange={(e) => setRaw(e.target.value)}
+          placeholder='JSON-Block von Claude einfügen…' style={S.textarea} spellCheck={false} />
+        <div style={S.row}>
+          <button style={S.primaryBtn} onClick={handlePreview} disabled={!raw.trim()}><Upload size={16} /> Prüfen</button>
+          {raw && <button style={S.ghostBtn} onClick={() => { setRaw(""); setPreview(null); setNotice(null); }}><X size={15} /> Leeren</button>}
+        </div>
+        {notice && (
+          <div style={{ ...S.notice, borderColor: notice.type === "err" ? T.bad : T.good }}>
+            {notice.type === "err" ? <AlertTriangle size={15} color={T.bad} /> : <Check size={15} color={T.good} />}<span>{notice.msg}</span>
+          </div>
+        )}
+        {preview && (
+          <div style={S.draft}>
+            <div style={S.draftHead}><span>Wird importiert</span><span style={S.badge}>{preview.length} {preview.length === 1 ? "Fahrzeug" : "Fahrzeuge"}</span></div>
+            {preview.map((v) => (
+              <div key={v.id} style={S.previewRow}>
+                <span style={S.previewTitle}>{v.title || "(ohne Titel)"}</span>
+                <span style={S.previewMeta}>
+                  {[v.year, v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.repairScope ? `Rep. ${v.repairScope}` : null,
+                    v.priceHistory.length ? fmtEUR(v.priceHistory[v.priceHistory.length - 1].price) : "kein Preis"].filter(Boolean).join(" · ")}
+                  {vehicles[v.id] && <span style={S.updTag}> aktualisiert</span>}
+                </span>
+              </div>
+            ))}
+            <div style={S.row}>
+              <button style={S.primaryBtn} onClick={confirmImport}><Check size={16} /> Importieren</button>
+              <button style={S.ghostBtn} onClick={() => setPreview(null)}><X size={15} /> Abbrechen</button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      {/* Preisverlauf */}
+      <section style={S.panel}>
+        <div style={S.panelTitle}><TrendingDown size={15} /> Preisverlauf aller Fahrzeuge</div>
+        {chart.rows.length === 0 ? (
+          <div style={S.empty}><Car size={30} color={T.line} /><span>Noch keine Preisdaten. Importiere ein Fahrzeug oder trage über „+ Preis-Update" einen Preis mit Datum ein.</span></div>
+        ) : (
+          <div style={{ width: "100%", height: 320 }}>
+            <ResponsiveContainer>
+              <LineChart data={chart.rows} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
+                <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
+                <XAxis dataKey="date" tickFormatter={fmtDate} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} />
+                <YAxis tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} width={44} />
+                <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }} labelFormatter={(d) => fmtDate(d)} formatter={(val, key) => [fmtEUR(val), vehicles[key]?.title?.slice(0, 28) || key]} />
+                <Legend wrapperStyle={{ fontSize: 11 }} formatter={(id) => (vehicles[id]?.title?.slice(0, 24) || id)} />
+                {chart.series.map((v) => (<Line key={v.id} type="monotone" dataKey={v.id} name={v.id} stroke={colorFor(v.id)} strokeWidth={2} connectNulls dot={{ r: 3 }} activeDot={{ r: 5 }} />))}
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        )}
+      </section>
+
+      {/* Analyse & Suche */}
+      <section style={S.panel}>
+        <div style={S.panelTitle}><Search size={15} /> Analyse &amp; Suche</div>
+
+        <div style={S.searchWrap}>
+          <Search size={15} color={T.muted} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Volltext: Marke, Modell, Notiz, Schäden …" style={S.searchInput} />
+          {activeFilterCount > 0 && <button style={S.resetBtn} onClick={resetFilters}><X size={13} /> {activeFilterCount}</button>}
+        </div>
+
+        <div style={S.filterGrid}>
+          <SelectFilter label="Reparatur-Umfang" value={filters.repairScope || ""} onChange={(v) => setFilter("repairScope", v)} options={SCOPE_OPTS} />
+          <SelectFilter label="Aktuelle Mängel" value={filters.currentIssueStatus || ""} onChange={(v) => setFilter("currentIssueStatus", v)} options={ISSUE_OPTS} />
+          <SelectFilter label="Unfallstatus" value={filters.accidentStatus || ""} onChange={(v) => setFilter("accidentStatus", v)} options={ACCIDENT_OPTS} />
+          <SelectFilter label="Marke" value={filters.make || ""} onChange={(v) => setFilter("make", v)} options={distinct("make")} />
+          <div style={S.rangeField}><span style={S.fieldLabel}>Preis max (€)</span><input inputMode="decimal" value={priceMax} onChange={(e) => setPriceMax(e.target.value)} style={S.input} placeholder="z. B. 15000" /></div>
+          <div style={S.rangeField}><span style={S.fieldLabel}>km max</span><input inputMode="decimal" value={kmMax} onChange={(e) => setKmMax(e.target.value)} style={S.input} placeholder="z. B. 150000" /></div>
+        </div>
+
+        <button style={S.moreBtn} onClick={() => setMoreFilters((m) => !m)}>
+          <Filter size={13} /> {moreFilters ? "Weniger Filter" : "Mehr Filter"}
+        </button>
+        {moreFilters && (
+          <div style={S.filterGrid}>
+            {FILTER_FIELDS.filter(([f]) => !["repairScope", "currentIssueStatus", "accidentStatus", "make"].includes(f)).map(([f, label]) => {
+              const opts = f === "previousDamageStatus" ? PREV_OPTS : distinct(f);
+              if (!opts.length) return null;
+              return <SelectFilter key={f} label={label} value={filters[f] || ""} onChange={(v) => setFilter(f, v)} options={opts} />;
+            })}
+          </div>
+        )}
+
+        {/* Vergleich */}
+        <div style={S.compareHead}>
+          <span style={S.compareTitle}>Vergleich — Ø Preis nach</span>
+          <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)} style={S.selectInline}>
+            {GROUP_FIELDS.map(([f, label]) => <option key={f} value={f}>{label}</option>)}
+          </select>
+          <span style={S.resultCount}>{filtered.length} Treffer</span>
+        </div>
+        {groups.length === 0 ? (
+          <div style={S.emptySmall}>Keine Treffer für die aktuelle Auswahl.</div>
+        ) : (
+          <>
+            <div style={{ width: "100%", height: Math.max(120, groups.length * 46 + 30) }}>
+              <ResponsiveContainer>
+                <BarChart data={groups} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 4 }}>
+                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" horizontal={false} />
+                  <XAxis type="number" tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} />
+                  <YAxis type="category" dataKey="group" width={92} stroke={T.muted} tick={{ fontSize: 11, fill: T.text }} />
+                  <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }}
+                    formatter={(val, n, p) => [`${fmtEUR(val)}  ·  ${p.payload.count} Auto(s)  ·  Ø ${fmtNum(p.payload.avgKm)} km`, "Ø Preis"]} />
+                  <Bar dataKey="avg" radius={[0, 4, 4, 0]}>
+                    {groups.map((g, i) => <Cell key={i} fill={tagColor(groupBy, g.group) === T.muted ? COLORS[i % COLORS.length] : tagColor(groupBy, g.group)} />)}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={S.groupTable}>
+              {groups.map((g) => (
+                <div key={g.group} style={S.groupRow}>
+                  <span style={{ ...S.groupTag, color: tagColor(groupBy, g.group) }}>{g.group}</span>
+                  <span style={S.groupCount}>{g.count}×</span>
+                  <span style={S.groupAvg}>Ø {fmtEUR(g.avg)}</span>
+                  <span style={S.groupKm}>Ø {fmtNum(g.avgKm)} km</span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* Trefferliste */}
+        {activeFilterCount > 0 && (
+          <div style={S.resultList}>
+            {filtered.map((v) => (
+              <div key={v.id} style={S.resultRow}>
+                <span style={S.resultTitle}>{v.title}</span>
+                <span style={S.resultTags}>
+                  {v.repairScope && <em style={{ ...S.miniTag, color: tagColor("repairScope", v.repairScope) }}>Rep. {v.repairScope}</em>}
+                  {v.currentIssueStatus && <em style={{ ...S.miniTag, color: tagColor("currentIssueStatus", v.currentIssueStatus) }}>Mängel {v.currentIssueStatus}</em>}
+                  <em style={S.resultPrice}>{fmtEUR(lastPrice(v))}</em>
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* Verzeichnis */}
+      <section style={S.panel}>
+        <div style={S.panelTitle}><Car size={15} /> Verzeichnis · {list.length}</div>
+        {!loaded ? (<div style={S.empty}><span>Lade Daten…</span></div>)
+          : list.length === 0 ? (<div style={S.empty}><span>Noch keine Fahrzeuge. Füge oben deinen ersten JSON-Block von Claude ein.</span></div>)
+            : (
+              <div style={S.cards}>
+                {list.map((v) => (
+                  <VehicleCard key={v.id} v={v} accent={colorFor(v.id)}
+                    addFor={addFor} addDate={addDate} addPrice={addPrice} setAddDate={setAddDate} setAddPrice={setAddPrice}
+                    openAdd={openAdd} cancelAdd={() => setAddFor(null)} addPoint={addPoint} deletePoint={deletePoint} removeVehicle={removeVehicle} />
+                ))}
+              </div>
+            )}
+      </section>
+
+      <footer style={S.footer}>
+        Die App speichert, zeigt und vergleicht — die Auswertung des Inserats macht Claude anhand fester Begriffe.
+        Daten bleiben lokal zwischen den Sitzungen erhalten.
+      </footer>
+    </div>
+  );
+}
+
+/* --------------------------- Karte ------------------------------- */
+
+function VehicleCard({ v, accent, addFor, addDate, addPrice, setAddDate, setAddPrice, openAdd, cancelAdd, addPoint, deletePoint, removeVehicle }) {
+  const S = styles;
+  const h = v.priceHistory || [];
+  const last = h[h.length - 1]?.price;
+  const first = h[0]?.price;
+  const diff = first != null && last != null ? last - first : 0;
+  const dir = diff < 0 ? "down" : diff > 0 ? "up" : "flat";
+  const dirColor = dir === "down" ? T.good : dir === "up" ? T.bad : T.muted;
+  const isDealer = /h(ä|ae)ndl|dealer|autohaus|gewerb/i.test(`${v.sellerType} ${v.dealerName}`);
+
+  const chips = [v.year, v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.power, v.displacement, v.fuel, v.gearbox, v.drivetrain, v.category, v.condition, v.owners ? `${v.owners} Vorbesitzer` : null, v.color].filter(Boolean);
+  const idChips = [v.model, v.series, v.trimline].filter(Boolean);
+
+  return (
+    <div style={S.card}>
+      <div style={{ ...S.cardBar, background: accent }} />
+      <div style={S.cardBody}>
+        <div style={S.cardTop}>
+          <div style={{ minWidth: 0 }}>
+            <div style={S.cardTitle} title={v.title}>{v.title}</div>
+            {v.subtitle && <div style={S.cardSub}>{v.subtitle}</div>}
+          </div>
+          <button style={S.iconBtn} title="Fahrzeug entfernen" onClick={() => removeVehicle(v.id)}><Trash2 size={14} /></button>
+        </div>
+
+        {(v.make || idChips.length) && (
+          <div style={S.idRow}>
+            {v.make && <span style={S.makeTag}>{v.make}</span>}
+            {idChips.map((c, i) => <span key={i} style={S.idChip}>{c}</span>)}
+          </div>
+        )}
+
+        {/* Analyse-Begriffe */}
+        <div style={S.tagRow}>
+          {v.accidentStatus && <StatusTag field="accidentStatus" value={v.accidentStatus} icon={<ShieldCheck size={11} />} />}
+          {v.currentIssueStatus && <StatusTag field="currentIssueStatus" value={`Mängel: ${v.currentIssueStatus}`} raw={v.currentIssueStatus} />}
+          {v.repairScope && <StatusTag field="repairScope" value={`Rep.: ${v.repairScope}${v.repairCount != null ? ` (${v.repairCount})` : ""}`} raw={v.repairScope} icon={<Wrench size={11} />} />}
+          {v.previousDamageStatus && <StatusTag field="previousDamageStatus" value={`Vorschäden: ${v.previousDamageStatus}`} raw={v.previousDamageStatus} />}
+        </div>
+
+        {chips.length > 0 && <div style={S.metaRow}>{chips.map((c, i) => <span key={i} style={S.chip}>{c}</span>)}</div>}
+
+        {(v.location || v.hu) && (
+          <div style={S.subMeta}>
+            {v.location && <span><MapPin size={11} style={{ verticalAlign: -1 }} /> {v.location}</span>}
+            {v.hu && <span>HU {v.hu}</span>}
+          </div>
+        )}
+
+        <div style={S.seller}>
+          {isDealer ? <Store size={13} color={T.muted} /> : <User size={13} color={T.muted} />}
+          <span>{isDealer ? (v.dealerName || "Händler") : (v.sellerType || "Privatanbieter")}
+            {v.stars && <span style={S.stars}> <Star size={11} fill={T.accent} color={T.accent} style={{ verticalAlign: -1 }} /> {v.stars}</span>}</span>
+          {isDealer && v.address && <span style={S.addr}>· {v.address}</span>}
+        </div>
+
+        <div style={S.damageBox}>
+          <DamageLine label="Aktuell" value={v.damageCurrent} bad />
+          <DamageLine label="Früher" value={v.damagePrevious} />
+          <DamageLine label="Repariert" value={v.damageRepaired} good icon />
+        </div>
+
+        {v.note && <div style={S.note}>{v.note}</div>}
+
+        <div style={S.priceRow}>
+          <span style={S.price}>{fmtEUR(last)}</span>
+          <span style={{ ...S.deltaPill, color: dirColor, borderColor: dirColor + "55" }}>
+            {dir === "down" ? <TrendingDown size={12} /> : dir === "up" ? <TrendingUp size={12} /> : <Minus size={12} />}
+            {diff === 0 ? "unverändert" : `${diff > 0 ? "+" : ""}${fmtEUR(diff)}`}
+          </span>
+        </div>
+
+        <div style={S.histHead}>
+          <span>Preisverlauf · {h.length}</span>
+          {addFor === v.id ? (
+            <div style={S.addRow}>
+              <input type="date" value={addDate} onChange={(e) => setAddDate(e.target.value)} style={S.dateInput} />
+              <input inputMode="decimal" placeholder="Preis €" value={addPrice} onChange={(e) => setAddPrice(e.target.value)} style={S.priceInput} />
+              <button style={S.iconBtnAccent} title="Hinzufügen" onClick={() => addPoint(v)}><Check size={15} /></button>
+              <button style={S.iconBtn} title="Abbrechen" onClick={cancelAdd}><X size={15} /></button>
+            </div>
+          ) : (<button style={S.addBtn} onClick={() => openAdd(v)}><Plus size={13} /> Preis-Update</button>)}
+        </div>
+
+        {h.length > 0 && (
+          <div style={S.histList}>
+            {h.slice().reverse().map((p) => (
+              <div key={p.date} style={S.histItem}>
+                <span style={S.histDate}>{fmtDate(p.date)}</span>
+                <span style={S.histPrice}>{fmtEUR(p.price)}</span>
+                <button style={S.histDel} title="Punkt löschen" onClick={() => deletePoint(v, p.date)}><X size={12} /></button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {v.url && <a href={v.url} target="_blank" rel="noreferrer" style={S.link}>Inserat öffnen ↗</a>}
+      </div>
+    </div>
+  );
+}
+
+function StatusTag({ field, value, raw, icon }) {
+  const col = tagColor(field, raw || value);
+  return <span style={{ ...styles.statusTag, color: col, borderColor: col + "55" }}>{icon}{value}</span>;
+}
+function DamageLine({ label, value, bad, good, icon }) {
+  const val = value && value.trim() ? value : "—";
+  const has = value && value.trim() && !/keine hinweise|keine angabe|^—$/i.test(value.trim());
+  const col = has ? (bad ? T.bad : good ? T.good : T.text) : T.muted;
+  return (
+    <div style={styles.damageLine}>
+      <span style={styles.damageLabel}>{icon && <Wrench size={10} style={{ verticalAlign: -1 }} />} {label}</span>
+      <span style={{ ...styles.damageVal, color: col }}>{val}</span>
+    </div>
+  );
+}
+function SelectFilter({ label, value, onChange, options }) {
+  return (
+    <div style={styles.rangeField}>
+      <span style={styles.fieldLabel}>{label}</span>
+      <select value={value} onChange={(e) => onChange(e.target.value)} style={styles.select}>
+        <option value="">Alle</option>
+        {options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    </div>
+  );
+}
+function Stat({ label, value, accent }) {
+  return (<div style={styles.stat}><div style={{ ...styles.statValue, color: accent || styles.statValue.color }}>{value}</div><div style={styles.statLabel}>{label}</div></div>);
+}
+
+/* ------------------------------ Stil ----------------------------- */
+
+const globalCss = `
+  * { box-sizing: border-box; }
+  ::selection { background: ${T.accent}; color: ${T.bg}; }
+  button { cursor: pointer; font-family: inherit; transition: filter .15s, background .15s, border-color .15s; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button:hover:not(:disabled) { filter: brightness(1.12); }
+  input, textarea, select { outline: none; }
+  input:focus, textarea:focus, select:focus { border-color: ${T.accent} !important; }
+  select { -webkit-appearance: none; appearance: none; }
+  a { color: ${T.accent}; }
+  @media (max-width: 620px) { .pw-header { flex-direction: column; align-items: flex-start !important; gap: 16px; } }
+`;
+
+const styles = {
+  page: { minHeight: "100vh", background: T.bg, color: T.text, fontFamily: "'Inter', system-ui, -apple-system, sans-serif", padding: "clamp(14px, 3vw, 32px)", maxWidth: 1040, margin: "0 auto" },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "6px 2px 22px", borderBottom: `1px solid ${T.line}`, marginBottom: 22 },
+  brandRow: { display: "flex", gap: 14, alignItems: "center" },
+  logo: { width: 42, height: 42, borderRadius: 11, background: T.accent, display: "grid", placeItems: "center", boxShadow: `0 0 0 4px ${T.accent}22` },
+  brandName: { fontWeight: 800, letterSpacing: "0.14em", fontSize: 18 },
+  brandSub: { color: T.muted, fontSize: 12, marginTop: 2 },
+  stats: { display: "flex", gap: 26 },
+  stat: { textAlign: "right" },
+  statValue: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 22, fontWeight: 700, color: T.text },
+  statLabel: { color: T.muted, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.08em", marginTop: 3 },
+
+  panel: { background: T.surface, border: `1px solid ${T.line}`, borderRadius: 14, padding: "18px 18px 20px", marginBottom: 18 },
+  panelTitle: { display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 14 },
+  hint: { color: T.muted, fontSize: 12.5, lineHeight: 1.7, margin: "0 0 12px" },
+  code: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 5, padding: "1px 6px", margin: "0 2px", fontSize: 11.5, fontFamily: "ui-monospace, Menlo, monospace", color: T.accent },
+  textarea: { width: "100%", minHeight: 96, resize: "vertical", background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 10, padding: 12, fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace", lineHeight: 1.5 },
+  row: { display: "flex", gap: 10, marginTop: 12, alignItems: "center", flexWrap: "wrap" },
+  primaryBtn: { display: "inline-flex", alignItems: "center", gap: 7, background: T.accent, color: T.bg, border: "none", borderRadius: 9, padding: "10px 16px", fontWeight: 700, fontSize: 13.5 },
+  ghostBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 9, padding: "9px 13px", fontWeight: 600, fontSize: 13 },
+  notice: { display: "flex", alignItems: "center", gap: 8, marginTop: 12, padding: "9px 12px", background: T.surface2, border: `1px solid ${T.line}`, borderLeftWidth: 3, borderRadius: 8, fontSize: 12.5 },
+
+  draft: { marginTop: 16, padding: 15, background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 11 },
+  draftHead: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, fontWeight: 700, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 12 },
+  badge: { background: T.accent + "22", color: T.accent, border: `1px solid ${T.accent}55`, borderRadius: 20, padding: "3px 10px", fontSize: 10.5 },
+  previewRow: { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.line}`, fontSize: 12.5, flexWrap: "wrap" },
+  previewTitle: { fontWeight: 600 },
+  previewMeta: { color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11.5 },
+  updTag: { color: T.accent },
+
+  /* Analyse */
+  searchWrap: { display: "flex", alignItems: "center", gap: 8, background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "0 10px", marginBottom: 12 },
+  searchInput: { flex: 1, background: "transparent", border: "none", color: T.text, padding: "10px 0", fontSize: 13 },
+  resetBtn: { display: "inline-flex", alignItems: "center", gap: 4, background: T.surface2, color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "3px 9px", fontSize: 11 },
+  filterGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 12 },
+  rangeField: { display: "flex", flexDirection: "column", gap: 5 },
+  fieldLabel: { fontSize: 10.5, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em" },
+  input: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 13 },
+  select: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 13, cursor: "pointer" },
+  moreBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 8, padding: "7px 12px", fontSize: 12, marginBottom: 14 },
+
+  compareHead: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderTop: `1px solid ${T.line}`, paddingTop: 14, marginBottom: 10 },
+  compareTitle: { fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: T.muted },
+  selectInline: { background: T.bg, color: T.accent, border: `1px solid ${T.line}`, borderRadius: 7, padding: "5px 9px", fontSize: 12, fontWeight: 600, cursor: "pointer" },
+  resultCount: { marginLeft: "auto", fontSize: 11.5, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
+  emptySmall: { color: T.muted, fontSize: 12, padding: "16px 4px" },
+  groupTable: { display: "flex", flexDirection: "column", gap: 2, marginTop: 6 },
+  groupRow: { display: "flex", alignItems: "center", gap: 10, fontSize: 12, padding: "5px 8px", background: T.bg, borderRadius: 6 },
+  groupTag: { fontWeight: 700, minWidth: 96, fontSize: 11.5 },
+  groupCount: { color: T.muted, width: 34, fontFamily: "ui-monospace, Menlo, monospace" },
+  groupAvg: { flex: 1, fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 600 },
+  groupKm: { color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11 },
+  resultList: { display: "flex", flexDirection: "column", gap: 3, marginTop: 14, borderTop: `1px solid ${T.line}`, paddingTop: 12 },
+  resultRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 8px", background: T.bg, borderRadius: 6, fontSize: 12.5, flexWrap: "wrap" },
+  resultTitle: { fontWeight: 600, minWidth: 0 },
+  resultTags: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
+  miniTag: { fontStyle: "normal", fontSize: 11, fontWeight: 600 },
+  resultPrice: { fontStyle: "normal", fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 700 },
+
+  empty: { display: "flex", flexDirection: "column", alignItems: "center", gap: 12, textAlign: "center", color: T.muted, fontSize: 12.5, lineHeight: 1.55, padding: "34px 20px", maxWidth: 460, margin: "0 auto" },
+
+  cards: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 13 },
+  card: { display: "flex", background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 12, overflow: "hidden" },
+  cardBar: { width: 4, flexShrink: 0 },
+  cardBody: { padding: "13px 14px", flex: 1, minWidth: 0 },
+  cardTop: { display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" },
+  cardTitle: { fontSize: 14, fontWeight: 700, lineHeight: 1.3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
+  cardSub: { fontSize: 11.5, color: T.muted, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  idRow: { display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", margin: "10px 0 8px" },
+  makeTag: { fontSize: 11, fontWeight: 700, color: T.accent, letterSpacing: "0.02em" },
+  idChip: { background: T.accent + "18", color: T.accent, border: `1px solid ${T.accent}44`, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 600 },
+
+  tagRow: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 },
+  statusTag: { display: "inline-flex", alignItems: "center", gap: 4, border: "1px solid", borderRadius: 6, padding: "2px 8px", fontSize: 10.5, fontWeight: 700 },
+
+  metaRow: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 },
+  chip: { background: T.bg, border: `1px solid ${T.line}`, color: T.muted, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontFamily: "ui-monospace, Menlo, monospace" },
+  subMeta: { display: "flex", gap: 12, flexWrap: "wrap", color: T.muted, fontSize: 11, marginBottom: 8 },
+  seller: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 12, marginBottom: 10 },
+  stars: { color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
+  addr: { color: T.muted, fontSize: 11 },
+  damageBox: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 },
+  damageLine: { display: "flex", gap: 8, fontSize: 11.5, padding: "2px 0", alignItems: "baseline" },
+  damageLabel: { color: T.muted, minWidth: 66, flexShrink: 0, textTransform: "uppercase", letterSpacing: "0.04em", fontSize: 10 },
+  damageVal: { lineHeight: 1.4 },
+  note: { color: T.muted, fontSize: 11.5, lineHeight: 1.5, marginBottom: 10, paddingLeft: 9, borderLeft: `2px solid ${T.line}` },
+  priceRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 10 },
+  price: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 22, fontWeight: 700 },
+  deltaPill: { display: "inline-flex", alignItems: "center", gap: 4, border: "1px solid", borderRadius: 20, padding: "3px 9px", fontSize: 11.5, fontWeight: 600, fontFamily: "ui-monospace, Menlo, monospace" },
+  histHead: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 11, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", borderTop: `1px solid ${T.line}`, paddingTop: 10, marginBottom: 8, flexWrap: "wrap" },
+  addBtn: { display: "inline-flex", alignItems: "center", gap: 4, background: T.accent, color: T.bg, border: "none", borderRadius: 7, padding: "5px 10px", fontSize: 11.5, fontWeight: 700 },
+  addRow: { display: "flex", gap: 6, alignItems: "center" },
+  dateInput: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 7, padding: "6px 8px", fontSize: 12, fontFamily: "ui-monospace, Menlo, monospace", colorScheme: "dark" },
+  priceInput: { width: 90, background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 7, padding: "6px 8px", fontSize: 13, fontFamily: "ui-monospace, Menlo, monospace" },
+  histList: { display: "flex", flexDirection: "column", gap: 3, marginBottom: 8 },
+  histItem: { display: "flex", alignItems: "center", gap: 10, fontSize: 12, padding: "3px 8px", background: T.bg, borderRadius: 6 },
+  histDate: { color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", width: 66 },
+  histPrice: { flex: 1, fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 600 },
+  histDel: { background: "transparent", border: "none", color: T.muted, display: "grid", placeItems: "center", padding: 2, lineHeight: 0 },
+  link: { display: "inline-block", marginTop: 4, fontSize: 11.5, textDecoration: "none" },
+  iconBtn: { background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 7, padding: 6, display: "grid", placeItems: "center", lineHeight: 0 },
+  iconBtnAccent: { background: T.accent, color: T.bg, border: "none", borderRadius: 7, padding: 6, display: "grid", placeItems: "center", lineHeight: 0 },
+  footer: { color: T.muted, fontSize: 11, textAlign: "center", lineHeight: 1.6, padding: "8px 10px 4px" },
+};
