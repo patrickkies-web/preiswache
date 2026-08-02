@@ -5,7 +5,7 @@ import {
 } from "recharts";
 import {
   Gauge, Plus, Trash2, Check, X, TrendingDown, TrendingUp, Minus, Car,
-  AlertTriangle, Upload, Star, MapPin, Store, User, Wrench, Search, Filter, ShieldCheck,
+  AlertTriangle, Upload, Star, MapPin, Store, User, Wrench, Search, Filter, ShieldCheck, Download,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -214,6 +214,26 @@ export default function App() {
   function deletePoint(v, date) { updateVehicle(v.id, (veh) => ({ ...veh, priceHistory: veh.priceHistory.filter((p) => p.date !== date), updatedAt: new Date().toISOString() })); }
   function removeVehicle(id) { const next = { ...vehicles }; delete next[id]; persist(next); }
 
+  /* ---- Export (Backup als JSON-Datei) ---- */
+  async function exportGarage() {
+    const data = JSON.stringify(Object.values(vehicles), null, 2);
+    const filename = `preiswache-export-${todayISO()}.json`;
+    try {
+      if (window.claude?.downloads?.save) {
+        await window.claude.downloads.save({ filename, data });
+      } else {
+        const url = URL.createObjectURL(new Blob([data], { type: "application/json" }));
+        const a = document.createElement("a");
+        a.href = url; a.download = filename;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }
+      setNotice({ type: "ok", msg: `Export gespeichert: ${filename}. Zum Wiederherstellen den Dateiinhalt oben ins Import-Feld einfügen.` });
+    } catch (_) {
+      setNotice({ type: "err", msg: "Export abgebrochen." });
+    }
+  }
+
   /* ---- Chart Preisverlauf ---- */
   const chart = useMemo(() => {
     const withHistory = list.filter((v) => v.priceHistory?.length);
@@ -420,7 +440,14 @@ export default function App() {
 
       {/* Verzeichnis */}
       <section style={S.panel}>
-        <div style={S.panelTitle}><Car size={15} /> Verzeichnis · {list.length}</div>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Car size={15} /> Verzeichnis · {list.length}</span>
+          {list.length > 0 && (
+            <button style={S.exportBtn} onClick={exportGarage} title="Alle Fahrzeuge als JSON-Datei sichern — wiederherstellen per Import-Feld oben">
+              <Download size={13} /> Exportieren
+            </button>
+          )}
+        </div>
         {!loaded ? (<div style={S.empty}><span>Lade Daten…</span></div>)
           : list.length === 0 ? (<div style={S.empty}><span>Noch keine Fahrzeuge. Füge oben deinen ersten JSON-Block von Claude ein.</span></div>)
             : (
@@ -436,7 +463,8 @@ export default function App() {
 
       <footer style={S.footer}>
         Die App speichert, zeigt und vergleicht — die Auswertung des Inserats macht Claude anhand fester Begriffe.
-        Daten bleiben lokal zwischen den Sitzungen erhalten.
+        Daten bleiben lokal in diesem Browser erhalten. Mit „Exportieren" sicherst du alles als JSON-Datei —
+        zum Wiederherstellen den Dateiinhalt einfach oben ins Import-Feld einfügen.
       </footer>
     </div>
   );
@@ -631,6 +659,7 @@ const styles = {
   input: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 13 },
   select: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 13, cursor: "pointer" },
   moreBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 8, padding: "7px 12px", fontSize: 12, marginBottom: 14 },
+  exportBtn: { display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", color: T.accent, border: `1px solid ${T.accent}55`, borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 700, textTransform: "none", letterSpacing: 0 },
 
   compareHead: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderTop: `1px solid ${T.line}`, paddingTop: 14, marginBottom: 10 },
   compareTitle: { fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: T.muted },
