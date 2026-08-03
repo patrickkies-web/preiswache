@@ -10,9 +10,19 @@ festen Analyse-Begriffen filtern und vergleichen.
 1. Inserat (PDF, Foto oder Text) zusammen mit dem Prompt aus [`PROMPT.md`](PROMPT.md)
    an eine KI schicken.
 2. Die Antwort komplett kopieren und in der App oben ins Import-Feld einfügen →
-   „Prüfen" → „Importieren". Codeblock-Zeichen und Text drumherum stören nicht.
-3. Späterer Preis desselben Autos: gleiche `id` verwenden, dann wächst der
+   „Prüfen". Codeblock-Zeichen und Text drumherum stören nicht.
+3. Die App stellt zwei Fragen, die keine KI beantworten kann: ob auf den Fotos
+   Beschädigungen zu erkennen sind und wie das Fahrzeug im Inserat dargestellt ist.
+   Beides sind vollwertige Analyse-Kategorien. Danach „Importieren".
+4. Späterer Preis desselben Autos: gleiche `id` verwenden, dann wächst der
    Preisverlauf statt eines zweiten Eintrags.
+5. Verschwindet ein Inserat, am Fahrzeug „Inserat abschließen" wählen und Datum
+   angeben. Daraus entstehen die Laufzeiten: wie lange stand das Auto drin, wann
+   wurde der Preis gesenkt, wann war es weg.
+
+Der Preisverlauf lässt sich auf „Tage seit Inserat" umschalten. Dann beginnen alle
+Kurven bei Tag 0 und liegen übereinander — so sind die Verläufe direkt vergleichbar,
+unabhängig davon, wann ein Auto inseriert wurde.
 
 Die Daten liegen im lokalen Speicher des Browsers — kein Server, kein Konto.
 Über „Exportieren" im Verzeichnis lässt sich alles als JSON-Datei sichern und

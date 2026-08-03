@@ -6,6 +6,7 @@ import {
 import {
   Gauge, Plus, Trash2, Check, X, TrendingDown, TrendingUp, Minus, Car,
   AlertTriangle, Upload, Star, MapPin, Store, User, Wrench, Search, Filter, ShieldCheck, Download,
+  Camera, CalendarClock, Archive, RotateCcw, Clock,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -26,6 +27,10 @@ const TEXT_FIELDS = [
   "damageCurrent", "damagePrevious", "damageRepaired",
   "accidentStatus", "currentIssueStatus", "previousDamageStatus", "repairScope",
   "note", "url",
+  // Von dir selbst beantwortet, nicht von der KI:
+  "photoDamage", "listingPrep",
+  // Lebenslauf des Inserats:
+  "listingStatus", "listedSince", "closedDate",
 ];
 
 // Definierte Begriffe (kontrolliertes Vokabular)
@@ -156,13 +161,70 @@ function normalizeMonth(value) {
 // Erstzulassung als "MM/JJJJ", sonst nur das Jahr.
 const erstzulassung = (v) => (v.month && v.year ? `${v.month}/${v.year}` : v.year || "");
 
+/* --- Deine eigene Beurteilung beim Import (keine KI-Felder) --- */
+
+const PHOTO_DAMAGE_OPTS = ["Keine", "Deutlich erkennbar", "Bei genauem Hinsehen", "Leicht zu übersehen"];
+const PHOTO_DAMAGE_FRAGE = "Sind auf den Fotos Beschädigungen zu erkennen?";
+const PHOTO_DAMAGE_HILFE = {
+  "Keine": "Nichts zu sehen",
+  "Deutlich erkennbar": "Springt sofort ins Auge",
+  "Bei genauem Hinsehen": "Fällt erst beim zweiten Blick auf",
+  "Leicht zu übersehen": "Nur zu finden, wenn man gezielt danach sucht",
+};
+
+const LISTING_PREP_OPTS = ["Aufbereitet", "Normale Gebrauchsspuren", "Nicht vorbereitet"];
+const LISTING_PREP_FRAGE = "Wie ist das Fahrzeug im Inserat dargestellt?";
+const LISTING_PREP_HILFE = {
+  "Aufbereitet": "Gereinigter Innenraum, sauberes Erscheinungsbild",
+  "Normale Gebrauchsspuren": "Ordentlich, aber sichtbar benutzt",
+  "Nicht vorbereitet": "Weder gereinigt noch für das Inserat hergerichtet",
+};
+
+/* --- Lebenslauf des Inserats --- */
+
+const STATUS_OPTS = ["Aktiv", "Verkauft", "Verschwunden"];
+
+const TAG_MS = 24 * 60 * 60 * 1000;
+const parseISO = (s) => (s ? new Date(s + "T00:00:00") : null);
+function tageZwischen(von, bis) {
+  const a = parseISO(von), b = parseISO(bis);
+  if (!a || !b) return null;
+  return Math.max(0, Math.round((b - a) / TAG_MS));
+}
+// Erster bekannter Tag des Inserats: gesetzter Wert, sonst der erste Preis-Punkt.
+const inseriertSeit = (v) => v.listedSince || v.priceHistory?.[0]?.date || "";
+// Laufzeit bis zum Abschluss, bei laufenden Inseraten bis heute.
+function laufzeitTage(v) {
+  const start = inseriertSeit(v);
+  if (!start) return null;
+  const ende = v.listingStatus && v.listingStatus !== "Aktiv" && v.closedDate ? v.closedDate : todayISO();
+  return tageZwischen(start, ende);
+}
+function laufzeitText(tage) {
+  if (tage == null) return "—";
+  if (tage < 14) return `${tage} ${tage === 1 ? "Tag" : "Tage"}`;
+  if (tage < 70) return `${Math.round(tage / 7)} Wochen`;
+  return `${Math.round((tage / 365) * 12)} Monate`;
+}
+// Preissenkungen im Verlauf: Anzahl und Gesamtbetrag.
+function senkungen(v) {
+  const h = v.priceHistory || [];
+  let anzahl = 0, summe = 0;
+  for (let i = 1; i < h.length; i++) {
+    const d = h[i - 1].price - h[i].price;
+    if (d > 0) { anzahl++; summe += d; }
+  }
+  return { anzahl, summe };
+}
+
 // Feste Auswahllisten je Feld, sofern vorhanden
 const FIXED_OPTS = {
   accidentStatus: ACCIDENT_OPTS, currentIssueStatus: ISSUE_OPTS,
   previousDamageStatus: PREV_OPTS, repairScope: SCOPE_OPTS,
   category: CATEGORY_OPTS, fuel: FUEL_OPTS, gearbox: GEARBOX_OPTS,
   drivetrain: DRIVE_OPTS, sellerType: SELLER_OPTS, condition: CONDITION_OPTS,
-  color: COLOR_OPTS,
+  color: COLOR_OPTS, photoDamage: PHOTO_DAMAGE_OPTS, listingPrep: LISTING_PREP_OPTS,
+  listingStatus: STATUS_OPTS,
 };
 
 // Kategorien, die als Filter-Dropdown auswählbar sind
@@ -172,11 +234,15 @@ const FILTER_FIELDS = [
   ["condition", "Zustand"], ["color", "Farbe"], ["sellerType", "Anbieter"],
   ["accidentStatus", "Unfallstatus"], ["currentIssueStatus", "Aktuelle Mängel"],
   ["repairScope", "Reparatur-Umfang"], ["previousDamageStatus", "Vorschäden"],
+  ["photoDamage", "Schäden auf Fotos"], ["listingPrep", "Aufbereitung"],
+  ["listingStatus", "Inserat"],
 ];
 // Dimensionen zum Gruppieren/Vergleichen
 const GROUP_FIELDS = [
   ["repairScope", "Reparatur-Umfang"], ["currentIssueStatus", "Aktuelle Mängel"],
+  ["photoDamage", "Schäden auf Fotos"], ["listingPrep", "Aufbereitung"],
   ["accidentStatus", "Unfallstatus"], ["previousDamageStatus", "Vorschäden"],
+  ["listingStatus", "Inserat"],
   ["make", "Marke"], ["model", "Modell"], ["category", "Kategorie"], ["fuel", "Kraftstoff"],
 ];
 
@@ -221,6 +287,9 @@ function tagColor(field, value) {
   if (field === "currentIssueStatus") return value === "Vorhanden" ? T.bad : T.good;
   if (field === "previousDamageStatus") return value === "Vorhanden" ? T.accent : T.good;
   if (field === "repairScope") return value === "Umfangreich" ? T.accent : value === "Keine" ? T.muted : T.text;
+  if (field === "photoDamage") return value === "Keine" ? T.good : value === "Deutlich erkennbar" || value === "Leicht zu übersehen" ? T.bad : T.accent;
+  if (field === "listingPrep") return value === "Aufbereitet" ? T.good : value === "Nicht vorbereitet" ? T.bad : T.text;
+  if (field === "listingStatus") return value === "Aktiv" ? T.good : value === "Verkauft" ? T.muted : T.accent;
   return T.text;
 }
 
@@ -260,9 +329,17 @@ function normalizeVehicle(v) {
     const p = coerceNum(v.price);
     if (p != null) out.priceHistory = [{ date: v.date ? String(v.date).slice(0, 10) : todayISO(), price: p }];
   }
+  out.photoDamage = normalizeChoice(v.photoDamage, "photoDamage", PHOTO_DAMAGE_OPTS);
+  out.listingPrep = normalizeChoice(v.listingPrep, "listingPrep", LISTING_PREP_OPTS);
+  // Bleibt leer, wenn nichts mitgeliefert wurde — daran erkennt der Import,
+  // ob ein Abschluss gemeint ist oder nur ein Preis-Update.
+  out.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS);
+  out.listedSince = nurDatum(v.listedSince) || out.priceHistory[0]?.date || "";
+  out.closedDate = nurDatum(v.closedDate);
   out.id = (v.id && String(v.id).trim()) || slugId(out);
   return out;
 }
+const nurDatum = (s) => (String(s == null ? "" : s).match(/\d{4}-\d{2}-\d{2}/) || [""])[0];
 // Schneidet den JSON-Block aus einer KI-Antwort heraus:
 // Codeblock-Zeichen, Einleitungssätze und Nachtext werden verworfen.
 function extractJson(text) {
@@ -339,6 +416,10 @@ async function loadGarage() {
         v.condition = normalizeChoice(v.condition, "condition", CONDITION_OPTS);
         v.color = normalizeChoice(v.color, "color", COLOR_OPTS);
         v.month = normalizeMonth(v.month);
+        v.photoDamage = normalizeChoice(v.photoDamage, "photoDamage", PHOTO_DAMAGE_OPTS);
+        v.listingPrep = normalizeChoice(v.listingPrep, "listingPrep", LISTING_PREP_OPTS);
+        v.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS) || "Aktiv";
+        v.listedSince = v.listedSince || v.priceHistory?.[0]?.date || "";
       });
       return vehicles;
     }
@@ -363,6 +444,15 @@ export default function App() {
   const [addDate, setAddDate] = useState(todayISO());
   const [addPrice, setAddPrice] = useState("");
 
+  // Deine Antworten zu den Fotos, je Fahrzeug aus der Vorschau
+  const [answers, setAnswers] = useState({});
+  // Inserat abschließen
+  const [closeFor, setCloseFor] = useState(null);
+  const [closeStatus, setCloseStatus] = useState("Verkauft");
+  const [closeDate, setCloseDate] = useState(todayISO());
+  // Preisverlauf nach Datum oder nach Tagen seit Inserat
+  const [chartMode, setChartMode] = useState("datum");
+
   // Analyse & Suche
   const [q, setQ] = useState("");
   const [filters, setFilters] = useState({});
@@ -384,11 +474,29 @@ export default function App() {
   function handlePreview() {
     const res = parseImport(raw);
     if (res.error) { setNotice({ type: "err", msg: res.error }); setPreview(null); return; }
+    // Bei bekannten Fahrzeugen die früheren Antworten vorbelegen.
+    const vorbelegt = {};
+    res.vehicles.forEach((v) => {
+      const alt = vehicles[v.id];
+      // Aus einer Sicherung mitgelieferte Antworten zählen zuerst,
+      // danach die des bereits erfassten Fahrzeugs.
+      vorbelegt[v.id] = {
+        photoDamage: v.photoDamage || alt?.photoDamage || "",
+        listingPrep: v.listingPrep || alt?.listingPrep || "",
+      };
+    });
+    setAnswers(vorbelegt);
     setPreview(res.vehicles); setNotice(null);
   }
+  const setAnswer = (id, feld, wert) =>
+    setAnswers((prev) => ({ ...prev, [id]: { ...prev[id], [feld]: wert } }));
+  const alleBeantwortet = !preview || preview.every((v) =>
+    answers[v.id]?.photoDamage && answers[v.id]?.listingPrep);
+
   function confirmImport() {
     const next = { ...vehicles }; let added = 0, updated = 0;
-    preview.forEach((incoming) => {
+    preview.forEach((raw_) => {
+      const incoming = { ...raw_, ...(answers[raw_.id] || {}) };
       const existing = next[incoming.id];
       if (existing) {
         const merged = { ...existing };
@@ -399,10 +507,18 @@ export default function App() {
         existing.priceHistory.forEach((p) => { byDate[p.date] = p.price; });
         incoming.priceHistory.forEach((p) => { byDate[p.date] = p.price; });
         merged.priceHistory = Object.entries(byDate).map(([date, price]) => ({ date, price })).sort((a, b) => a.date.localeCompare(b.date));
+        // Der früheste bekannte Tag bleibt der Beginn des Inserats.
+        merged.listedSince = [existing.listedSince, incoming.listedSince, merged.priceHistory[0]?.date]
+          .filter(Boolean).sort()[0] || "";
+        // Ein Preis-Update der KI enthält keinen Abschluss und lässt ihn unangetastet;
+        // eine Sicherung bringt ihn mit und stellt ihn wieder her.
+        merged.listingStatus = incoming.listingStatus || existing.listingStatus || "Aktiv";
+        merged.closedDate = incoming.closedDate || existing.closedDate || "";
         merged.updatedAt = new Date().toISOString();
         next[incoming.id] = merged; updated++;
       } else {
-        next[incoming.id] = { ...incoming, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; added++;
+        next[incoming.id] = { ...incoming, listingStatus: incoming.listingStatus || "Aktiv",
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; added++;
       }
     });
     persist(next); setPreview(null); setRaw("");
@@ -419,6 +535,21 @@ export default function App() {
   }
   function deletePoint(v, date) { updateVehicle(v.id, (veh) => ({ ...veh, priceHistory: veh.priceHistory.filter((p) => p.date !== date), updatedAt: new Date().toISOString() })); }
   function removeVehicle(id) { const next = { ...vehicles }; delete next[id]; persist(next); }
+
+  /* ---- Inserat abschließen / wieder öffnen ---- */
+  function openClose(v) {
+    setCloseFor(v.id);
+    setCloseStatus(v.listingStatus && v.listingStatus !== "Aktiv" ? v.listingStatus : "Verkauft");
+    setCloseDate(v.closedDate || todayISO());
+  }
+  function confirmClose(v) {
+    if (!closeDate) { setNotice({ type: "err", msg: "Bitte ein Datum angeben." }); return; }
+    updateVehicle(v.id, (veh) => ({ ...veh, listingStatus: closeStatus, closedDate: closeDate, updatedAt: new Date().toISOString() }));
+    setCloseFor(null);
+  }
+  function reopen(v) {
+    updateVehicle(v.id, (veh) => ({ ...veh, listingStatus: "Aktiv", closedDate: "", updatedAt: new Date().toISOString() }));
+  }
 
   /* ---- Export (Backup als JSON-Datei) ---- */
   async function exportGarage() {
@@ -443,10 +574,24 @@ export default function App() {
   /* ---- Chart Preisverlauf ---- */
   const chart = useMemo(() => {
     const withHistory = list.filter((v) => v.priceHistory?.length);
+    if (chartMode === "tage") {
+      // Alle Inserate beginnen bei Tag 0 und liegen dadurch übereinander.
+      const proAuto = withHistory.map((v) => {
+        const start = inseriertSeit(v);
+        return { v, punkte: v.priceHistory.map((p) => ({ tag: tageZwischen(start, p.date) ?? 0, price: p.price })) };
+      });
+      const tage = [...new Set(proAuto.flatMap((a) => a.punkte.map((p) => p.tag)))].sort((a, b) => a - b);
+      const rows = tage.map((tag) => {
+        const row = { tag };
+        proAuto.forEach(({ v, punkte }) => { const pt = punkte.find((p) => p.tag === tag); row[v.id] = pt ? pt.price : null; });
+        return row;
+      });
+      return { rows, series: withHistory, xKey: "tag" };
+    }
     const dates = [...new Set(withHistory.flatMap((v) => v.priceHistory.map((p) => p.date)))].sort();
     const rows = dates.map((date) => { const row = { date }; withHistory.forEach((v) => { const pt = v.priceHistory.find((p) => p.date === date); row[v.id] = pt ? pt.price : null; }); return row; });
-    return { rows, series: withHistory };
-  }, [list]);
+    return { rows, series: withHistory, xKey: "date" };
+  }, [list, chartMode]);
   const totalDrop = useMemo(() => list.reduce((s, v) => { const h = v.priceHistory; if (!h || h.length < 2) return s; const d = h[0].price - h[h.length - 1].price; return s + (d > 0 ? d : 0); }, 0), [list]);
   const colorFor = (id) => { const i = chart.series.findIndex((s) => s.id === id); return COLORS[(i < 0 ? Object.keys(vehicles).indexOf(id) : i) % COLORS.length]; };
 
@@ -474,6 +619,19 @@ export default function App() {
       return { group, count: vs.length, avg, avgKm };
     }).sort((a, b) => (b.avg || 0) - (a.avg || 0));
   }, [filtered, groupBy]);
+
+  /* ---- Laufzeiten ---- */
+  const laufzeiten = useMemo(() => list.map((v) => {
+    const { anzahl, summe } = senkungen(v);
+    return { id: v.id, title: v.title || v.id, seit: inseriertSeit(v), tage: laufzeitTage(v),
+      anzahl, summe, status: v.listingStatus || "Aktiv", closedDate: v.closedDate || "" };
+  }).sort((a, b) => (b.tage ?? -1) - (a.tage ?? -1)), [list]);
+
+  const laufSchnitt = useMemo(() => {
+    const fertig = laufzeiten.filter((r) => r.status !== "Aktiv" && r.tage != null);
+    return { abgeschlossen: fertig.length,
+      schnitt: fertig.length ? Math.round(fertig.reduce((s, r) => s + r.tage, 0) / fertig.length) : null };
+  }, [laufzeiten]);
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length + (priceMax ? 1 : 0) + (kmMax ? 1 : 0) + (q.trim() ? 1 : 0);
   const resetFilters = () => { setQ(""); setFilters({}); setPriceMax(""); setKmMax(""); };
@@ -519,18 +677,28 @@ export default function App() {
           <div style={S.draft}>
             <div style={S.draftHead}><span>Wird importiert</span><span style={S.badge}>{preview.length} {preview.length === 1 ? "Fahrzeug" : "Fahrzeuge"}</span></div>
             {preview.map((v) => (
-              <div key={v.id} style={S.previewRow}>
-                <span style={S.previewTitle}>{v.title || "(ohne Titel)"}</span>
-                <span style={S.previewMeta}>
-                  {[erstzulassung(v), v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.repairScope ? `Rep. ${v.repairScope}` : null,
-                    v.priceHistory.length ? fmtEUR(v.priceHistory[v.priceHistory.length - 1].price) : "kein Preis"].filter(Boolean).join(" · ")}
-                  {vehicles[v.id] && <span style={S.updTag}> aktualisiert</span>}
-                </span>
+              <div key={v.id} style={S.previewBlock}>
+                <div style={S.previewRow}>
+                  <span style={S.previewTitle}>{v.title || "(ohne Titel)"}</span>
+                  <span style={S.previewMeta}>
+                    {[erstzulassung(v), v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.repairScope ? `Rep. ${v.repairScope}` : null,
+                      v.priceHistory.length ? fmtEUR(v.priceHistory[v.priceHistory.length - 1].price) : "kein Preis"].filter(Boolean).join(" · ")}
+                    {vehicles[v.id] && <span style={S.updTag}> aktualisiert</span>}
+                  </span>
+                </div>
+                <div style={S.askBlock}>
+                  <div style={S.askIntro}>Deine Einschätzung — das kann dir keine KI abnehmen:</div>
+                  <ChoiceQuestion frage={PHOTO_DAMAGE_FRAGE} options={PHOTO_DAMAGE_OPTS} hilfe={PHOTO_DAMAGE_HILFE}
+                    value={answers[v.id]?.photoDamage || ""} onChange={(w) => setAnswer(v.id, "photoDamage", w)} />
+                  <ChoiceQuestion frage={LISTING_PREP_FRAGE} options={LISTING_PREP_OPTS} hilfe={LISTING_PREP_HILFE}
+                    value={answers[v.id]?.listingPrep || ""} onChange={(w) => setAnswer(v.id, "listingPrep", w)} />
+                </div>
               </div>
             ))}
             <div style={S.row}>
-              <button style={S.primaryBtn} onClick={confirmImport}><Check size={16} /> Importieren</button>
+              <button style={S.primaryBtn} onClick={confirmImport} disabled={!alleBeantwortet}><Check size={16} /> Importieren</button>
               <button style={S.ghostBtn} onClick={() => setPreview(null)}><X size={15} /> Abbrechen</button>
+              {!alleBeantwortet && <span style={S.askHint}>Beantworte beide Fragen, dann geht es weiter.</span>}
             </div>
           </div>
         )}
@@ -538,7 +706,14 @@ export default function App() {
 
       {/* Preisverlauf */}
       <section style={S.panel}>
-        <div style={S.panelTitle}><TrendingDown size={15} /> Preisverlauf aller Fahrzeuge</div>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><TrendingDown size={15} /> Preisverlauf aller Fahrzeuge</span>
+          <span style={S.toggleGroup}>
+            <button style={chartMode === "datum" ? S.toggleOn : S.toggleOff} onClick={() => setChartMode("datum")}>Nach Datum</button>
+            <button style={chartMode === "tage" ? S.toggleOn : S.toggleOff} onClick={() => setChartMode("tage")}
+              title="Alle Inserate starten bei Tag 0 — so lassen sich die Verläufe direkt übereinanderlegen">Tage seit Inserat</button>
+          </span>
+        </div>
         {chart.rows.length === 0 ? (
           <div style={S.empty}><Car size={30} color={T.line} /><span>Noch keine Preisdaten. Importiere ein Fahrzeug oder trage über „+ Preis-Update" einen Preis mit Datum ein.</span></div>
         ) : (
@@ -546,9 +721,12 @@ export default function App() {
             <ResponsiveContainer>
               <LineChart data={chart.rows} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
                 <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                <XAxis dataKey="date" tickFormatter={fmtDate} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} />
+                <XAxis dataKey={chart.xKey} type={chartMode === "tage" ? "number" : "category"}
+                  domain={chartMode === "tage" ? [0, "dataMax"] : undefined}
+                  tickFormatter={chartMode === "tage" ? (t) => `${t} T` : fmtDate}
+                  stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} />
                 <YAxis tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} width={44} />
-                <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }} labelFormatter={(d) => fmtDate(d)} formatter={(val, key) => [fmtEUR(val), vehicles[key]?.title?.slice(0, 28) || key]} />
+                <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }} labelFormatter={(d) => (chartMode === "tage" ? `Tag ${d}` : fmtDate(d))} formatter={(val, key) => [fmtEUR(val), vehicles[key]?.title?.slice(0, 28) || key]} />
                 <Legend wrapperStyle={{ fontSize: 11 }} formatter={(id) => (vehicles[id]?.title?.slice(0, 24) || id)} />
                 {chart.series.map((v) => (<Line key={v.id} type="monotone" dataKey={v.id} name={v.id} stroke={colorFor(v.id)} strokeWidth={2} connectNulls dot={{ r: 3 }} activeDot={{ r: 5 }} />))}
               </LineChart>
@@ -646,6 +824,44 @@ export default function App() {
         )}
       </section>
 
+      {/* Laufzeiten */}
+      {list.length > 0 && (
+        <section style={S.panel}>
+          <div style={S.panelTitle}><CalendarClock size={15} /> Laufzeiten der Inserate</div>
+          <p style={S.hint}>
+            Wie lange steht ein Auto schon drin, wann wurde der Preis gesenkt, und wann war es weg.
+            Schließe ein Inserat unten am Fahrzeug ab, sobald es aus den Suchergebnissen verschwunden ist.
+          </p>
+          <div style={S.laufTable}>
+            <div style={{ ...S.laufRow, ...S.laufHead }}>
+              <span style={S.laufTitle}>Fahrzeug</span>
+              <span style={S.laufCell}>seit</span>
+              <span style={S.laufCell}>Laufzeit</span>
+              <span style={S.laufCell}>Senkungen</span>
+              <span style={S.laufCell}>gesenkt um</span>
+              <span style={S.laufCell}>Stand</span>
+            </div>
+            {laufzeiten.map((r) => (
+              <div key={r.id} style={S.laufRow}>
+                <span style={S.laufTitle} title={r.title}>{r.title}</span>
+                <span style={S.laufCell}>{r.seit ? fmtDate(r.seit) : "—"}</span>
+                <span style={S.laufCell}>{laufzeitText(r.tage)}</span>
+                <span style={S.laufCell}>{r.anzahl > 0 ? `${r.anzahl}×` : "—"}</span>
+                <span style={S.laufCell}>{r.summe > 0 ? fmtEUR(r.summe) : "—"}</span>
+                <span style={{ ...S.laufCell, color: tagColor("listingStatus", r.status), fontWeight: 700 }}>
+                  {r.status}{r.status !== "Aktiv" && r.closedDate ? ` ${fmtDate(r.closedDate)}` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div style={S.laufSummary}>
+            {laufSchnitt.abgeschlossen > 0
+              ? `${laufSchnitt.abgeschlossen} abgeschlossen · Ø Laufzeit ${laufzeitText(laufSchnitt.schnitt)}`
+              : "Noch kein Inserat abgeschlossen — sobald du das erste abschließt, erscheint hier die durchschnittliche Laufzeit."}
+          </div>
+        </section>
+      )}
+
       {/* Verzeichnis */}
       <section style={S.panel}>
         <div style={{ ...S.panelTitle, justifyContent: "space-between" }}>
@@ -663,15 +879,17 @@ export default function App() {
                 {list.map((v) => (
                   <VehicleCard key={v.id} v={v} accent={colorFor(v.id)}
                     addFor={addFor} addDate={addDate} addPrice={addPrice} setAddDate={setAddDate} setAddPrice={setAddPrice}
-                    openAdd={openAdd} cancelAdd={() => setAddFor(null)} addPoint={addPoint} deletePoint={deletePoint} removeVehicle={removeVehicle} />
+                    openAdd={openAdd} cancelAdd={() => setAddFor(null)} addPoint={addPoint} deletePoint={deletePoint} removeVehicle={removeVehicle}
+                    closeFor={closeFor} closeStatus={closeStatus} closeDate={closeDate} setCloseStatus={setCloseStatus} setCloseDate={setCloseDate}
+                    openClose={openClose} cancelClose={() => setCloseFor(null)} confirmClose={confirmClose} reopen={reopen} />
                 ))}
               </div>
             )}
       </section>
 
       <footer style={S.footer}>
-        Die App speichert, zeigt und vergleicht — die Auswertung des Inserats macht Claude anhand fester Begriffe.
-        Daten bleiben lokal in diesem Browser erhalten. Mit „Exportieren" sicherst du alles als JSON-Datei —
+        Die Daten aus dem Inserat liefert die KI, die Beurteilung der Fotos machst du selbst.
+        Alles bleibt lokal in diesem Browser. Mit „Exportieren" sicherst du den Bestand als JSON-Datei —
         zum Wiederherstellen den Dateiinhalt einfach oben ins Import-Feld einfügen.
       </footer>
     </div>
@@ -680,7 +898,8 @@ export default function App() {
 
 /* --------------------------- Karte ------------------------------- */
 
-function VehicleCard({ v, accent, addFor, addDate, addPrice, setAddDate, setAddPrice, openAdd, cancelAdd, addPoint, deletePoint, removeVehicle }) {
+function VehicleCard({ v, accent, addFor, addDate, addPrice, setAddDate, setAddPrice, openAdd, cancelAdd, addPoint, deletePoint, removeVehicle,
+  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen }) {
   const S = styles;
   const h = v.priceHistory || [];
   const last = h[h.length - 1]?.price;
@@ -689,6 +908,7 @@ function VehicleCard({ v, accent, addFor, addDate, addPrice, setAddDate, setAddP
   const dir = diff < 0 ? "down" : diff > 0 ? "up" : "flat";
   const dirColor = dir === "down" ? T.good : dir === "up" ? T.bad : T.muted;
   const isDealer = /h(ä|ae)ndl|dealer|autohaus|gewerb/i.test(`${v.sellerType} ${v.dealerName}`);
+  const geschlossen = v.listingStatus && v.listingStatus !== "Aktiv";
 
   const chips = [erstzulassung(v), v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.power, v.displacement, v.fuel, v.gearbox, v.drivetrain, v.category, v.condition, v.owners ? `${v.owners} Vorbesitzer` : null, v.color].filter(Boolean);
   const idChips = [v.model, v.series, v.trimline].filter(Boolean);
@@ -714,6 +934,8 @@ function VehicleCard({ v, accent, addFor, addDate, addPrice, setAddDate, setAddP
 
         {/* Analyse-Begriffe */}
         <div style={S.tagRow}>
+          {v.photoDamage && <StatusTag field="photoDamage" value={`Fotos: ${v.photoDamage}`} raw={v.photoDamage} icon={<Camera size={11} />} />}
+          {v.listingPrep && <StatusTag field="listingPrep" value={v.listingPrep} raw={v.listingPrep} />}
           {v.accidentStatus && <StatusTag field="accidentStatus" value={v.accidentStatus} icon={<ShieldCheck size={11} />} />}
           {v.currentIssueStatus && <StatusTag field="currentIssueStatus" value={`Mängel: ${v.currentIssueStatus}`} raw={v.currentIssueStatus} />}
           {v.repairScope && <StatusTag field="repairScope" value={`Rep.: ${v.repairScope}${v.repairCount != null ? ` (${v.repairCount})` : ""}`} raw={v.repairScope} icon={<Wrench size={11} />} />}
@@ -731,7 +953,7 @@ function VehicleCard({ v, accent, addFor, addDate, addPrice, setAddDate, setAddP
 
         <div style={S.seller}>
           {isDealer ? <Store size={13} color={T.muted} /> : <User size={13} color={T.muted} />}
-          <span>{isDealer ? (v.dealerName || "Händler") : (v.sellerType || "Privatanbieter")}
+          <span>{isDealer ? (v.dealerName || "Händler") : (v.sellerType || "Anbieter unbekannt")}
             {v.stars && <span style={S.stars}> <Star size={11} fill={T.accent} color={T.accent} style={{ verticalAlign: -1 }} /> {v.stars}</span>}</span>
           {isDealer && v.address && <span style={S.addr}>· {v.address}</span>}
         </div>
@@ -776,6 +998,43 @@ function VehicleCard({ v, accent, addFor, addDate, addPrice, setAddDate, setAddP
           </div>
         )}
 
+        <div style={S.lifeBox}>
+          <div style={S.lifeRow}>
+            <span style={S.lifeLabel}><Clock size={11} style={{ verticalAlign: -1 }} /> Laufzeit</span>
+            <span style={S.lifeValue}>
+              {laufzeitText(laufzeitTage(v))}
+              {inseriertSeit(v) && <span style={S.lifeSince}> seit {fmtDate(inseriertSeit(v))}</span>}
+            </span>
+          </div>
+          {geschlossen ? (
+            <div style={S.lifeRow}>
+              <span style={{ ...S.lifeLabel, color: tagColor("listingStatus", v.listingStatus) }}>{v.listingStatus}</span>
+              <span style={S.lifeValue}>
+                {v.closedDate ? fmtDate(v.closedDate) : "—"}
+                <button style={S.reopenBtn} onClick={() => reopen(v)} title="Inserat wieder als aktiv führen"><RotateCcw size={11} /> öffnen</button>
+              </span>
+            </div>
+          ) : closeFor === v.id ? (
+            <div style={S.closeForm}>
+              <div style={S.closeOptions}>
+                {STATUS_OPTS.filter((s) => s !== "Aktiv").map((s) => (
+                  <button key={s} onClick={() => setCloseStatus(s)} style={closeStatus === s ? S.askOptionOn : S.askOption}>{s}</button>
+                ))}
+              </div>
+              <div style={S.addRow}>
+                <input type="date" value={closeDate} onChange={(e) => setCloseDate(e.target.value)} style={S.dateInput} />
+                <button style={S.iconBtnAccent} title="Abschließen" onClick={() => confirmClose(v)}><Check size={15} /></button>
+                <button style={S.iconBtn} title="Abbrechen" onClick={cancelClose}><X size={15} /></button>
+              </div>
+            </div>
+          ) : (
+            <button style={S.closeBtn} onClick={() => openClose(v)}
+              title="Festhalten, wann das Inserat verschwunden oder das Fahrzeug verkauft war">
+              <Archive size={12} /> Inserat abschließen
+            </button>
+          )}
+        </div>
+
         {v.url && <a href={v.url} target="_blank" rel="noreferrer" style={S.link}>Inserat öffnen ↗</a>}
       </div>
     </div>
@@ -794,6 +1053,20 @@ function DamageLine({ label, value, bad, good, icon }) {
     <div style={styles.damageLine}>
       <span style={styles.damageLabel}>{icon && <Wrench size={10} style={{ verticalAlign: -1 }} />} {label}</span>
       <span style={{ ...styles.damageVal, color: col }}>{val}</span>
+    </div>
+  );
+}
+function ChoiceQuestion({ frage, options, hilfe, value, onChange }) {
+  return (
+    <div style={styles.askItem}>
+      <div style={styles.askFrage}>{frage}</div>
+      <div style={styles.askOptions}>
+        {options.map((o) => (
+          <button key={o} onClick={() => onChange(o)} title={hilfe?.[o] || ""}
+            style={value === o ? styles.askOptionOn : styles.askOption}>{o}</button>
+        ))}
+      </div>
+      {value && hilfe?.[value] && <div style={styles.askHilfe}>{hilfe[value]}</div>}
     </div>
   );
 }
@@ -852,7 +1125,39 @@ const styles = {
   draft: { marginTop: 16, padding: 15, background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 11 },
   draftHead: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12, fontWeight: 700, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 12 },
   badge: { background: T.accent + "22", color: T.accent, border: `1px solid ${T.accent}55`, borderRadius: 20, padding: "3px 10px", fontSize: 10.5 },
-  previewRow: { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.line}`, fontSize: 12.5, flexWrap: "wrap" },
+  previewBlock: { borderBottom: `1px solid ${T.line}`, paddingBottom: 12, marginBottom: 12 },
+  previewRow: { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", fontSize: 12.5, flexWrap: "wrap" },
+
+  askBlock: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "11px 12px", marginTop: 8 },
+  askIntro: { fontSize: 10.5, color: T.accent, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, marginBottom: 10 },
+  askItem: { marginBottom: 12 },
+  askFrage: { fontSize: 12.5, marginBottom: 7, lineHeight: 1.4 },
+  askOptions: { display: "flex", gap: 6, flexWrap: "wrap" },
+  askOption: { background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "5px 11px", fontSize: 11.5, fontWeight: 600 },
+  askOptionOn: { background: T.accent, color: T.bg, border: `1px solid ${T.accent}`, borderRadius: 20, padding: "5px 11px", fontSize: 11.5, fontWeight: 700 },
+  askHilfe: { fontSize: 11, color: T.muted, marginTop: 6, fontStyle: "italic" },
+  askHint: { fontSize: 11.5, color: T.accent },
+
+  toggleGroup: { display: "inline-flex", gap: 4, background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: 3 },
+  toggleOn: { background: T.accent, color: T.bg, border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, textTransform: "none", letterSpacing: 0 },
+  toggleOff: { background: "transparent", color: T.muted, border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 600, textTransform: "none", letterSpacing: 0 },
+
+  laufTable: { display: "flex", flexDirection: "column", gap: 2, overflowX: "auto" },
+  laufRow: { display: "grid", gridTemplateColumns: "minmax(140px,2fr) 74px 84px 84px 92px minmax(110px,1fr)", gap: 8, alignItems: "center", fontSize: 12, padding: "6px 8px", background: T.bg, borderRadius: 6, minWidth: 620 },
+  laufHead: { background: "transparent", color: T.muted, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", padding: "2px 8px" },
+  laufTitle: { fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  laufCell: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11.5 },
+  laufSummary: { marginTop: 10, fontSize: 11.5, color: T.muted, lineHeight: 1.6 },
+
+  lifeBox: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10, display: "flex", flexDirection: "column", gap: 7 },
+  lifeRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 11.5, flexWrap: "wrap" },
+  lifeLabel: { color: T.muted, textTransform: "uppercase", letterSpacing: "0.04em", fontSize: 10, fontWeight: 700 },
+  lifeValue: { display: "flex", alignItems: "center", gap: 8, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11.5 },
+  lifeSince: { color: T.muted },
+  closeBtn: { display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 5, background: "transparent", color: T.muted, border: `1px dashed ${T.line}`, borderRadius: 7, padding: "6px 10px", fontSize: 11.5, fontWeight: 600, width: "100%" },
+  closeForm: { display: "flex", flexDirection: "column", gap: 7 },
+  closeOptions: { display: "flex", gap: 6, flexWrap: "wrap" },
+  reopenBtn: { display: "inline-flex", alignItems: "center", gap: 4, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 6, padding: "3px 8px", fontSize: 10.5, fontWeight: 600 },
   previewTitle: { fontWeight: 600 },
   previewMeta: { color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11.5 },
   updTag: { color: T.accent },
