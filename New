@@ -118,12 +118,53 @@ function normalizeVehicle(v) {
   out.id = (v.id && String(v.id).trim()) || slugId(out);
   return out;
 }
+// Schneidet den JSON-Block aus einer KI-Antwort heraus:
+// Codeblock-Zeichen, Einleitungssätze und Nachtext werden verworfen.
+function extractJson(text) {
+  let t = (text || "").trim();
+  const fence = t.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) t = fence[1].trim();
+  t = t.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/, "").trim();
+  const start = t.search(/[[{]/);
+  if (start > 0) t = t.slice(start);
+  if (!/^[[{]/.test(t)) return t;
+
+  // Bis zur passenden schließenden Klammer schneiden (Anführungszeichen beachten)
+  const open = t[0];
+  const close = open === "[" ? "]" : "}";
+  let depth = 0, inString = false, escaped = false;
+  for (let i = 0; i < t.length; i++) {
+    const c = t[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+    } else if (c === '"') inString = true;
+    else if (c === open) depth++;
+    else if (c === close && --depth === 0) return t.slice(0, i + 1);
+  }
+  return t;
+}
+
+// Typische Schludrigkeiten schwacher Modelle: Komma vor der schließenden
+// Klammer und typografische Anführungszeichen.
+function repairJson(t) {
+  return t
+    .replace(/[“”„‟]/g, '"')
+    .replace(/[‘’‚]/g, "'")
+    .replace(/,\s*([}\]])/g, "$1");
+}
+
 function parseImport(text) {
-  const t = (text || "").trim();
-  if (!t) return { error: "Nichts eingefügt." };
+  if (!(text || "").trim()) return { error: "Nichts eingefügt." };
+  const t = extractJson(text);
+  if (!t) return { error: "Darin steckt kein JSON. Kopiere die Antwort der KI komplett — Text drumherum ist kein Problem." };
   let data;
   try { data = JSON.parse(t); }
-  catch (e) { return { error: "Das ist kein gültiges JSON. Füge den JSON-Block ein, den Claude dir aus dem Inserat erstellt hat." }; }
+  catch (e) {
+    try { data = JSON.parse(repairJson(t)); }
+    catch (e2) { return { error: "Der JSON-Block ist unvollständig oder fehlerhaft. Lass ihn dir von der KI noch einmal komplett ausgeben und füge die ganze Antwort ein." }; }
+  }
   const arr = Array.isArray(data) ? data : [data];
   const vehicles = arr.filter((x) => x && typeof x === "object").map(normalizeVehicle);
   if (!vehicles.length) return { error: "Im JSON wurde kein Fahrzeug gefunden." };
@@ -294,11 +335,12 @@ export default function App() {
       <section style={S.panel}>
         <div style={S.panelTitle}><Upload size={15} /> Fahrzeug importieren</div>
         <p style={S.hint}>
-          Schick Claude das Inserat als PDF → du bekommst einen <b style={{ color: T.text }}>JSON-Block</b> mit allen Daten
-          und den definierten Analyse-Begriffen. Hier einfügen und importieren. Gleiche <code style={S.code}>id</code> = Preis-Punkte werden ergänzt.
+          Schick einer KI das Inserat als PDF → du bekommst einen <b style={{ color: T.text }}>JSON-Block</b> mit allen Daten
+          und den definierten Analyse-Begriffen. Antwort einfach komplett hier einfügen — Codeblock-Zeichen und Text
+          drumherum werden ignoriert. Gleiche <code style={S.code}>id</code> = Preis-Punkte werden ergänzt.
         </p>
         <textarea value={raw} onChange={(e) => setRaw(e.target.value)}
-          placeholder='JSON-Block von Claude einfügen…' style={S.textarea} spellCheck={false} />
+          placeholder='Antwort der KI hier einfügen…' style={S.textarea} spellCheck={false} />
         <div style={S.row}>
           <button style={S.primaryBtn} onClick={handlePreview} disabled={!raw.trim()}><Upload size={16} /> Prüfen</button>
           {raw && <button style={S.ghostBtn} onClick={() => { setRaw(""); setPreview(null); setNotice(null); }}><X size={15} /> Leeren</button>}
