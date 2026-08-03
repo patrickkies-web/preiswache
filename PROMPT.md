@@ -35,7 +35,7 @@ Lies das Fahrzeug-Inserat im Anhang und fülle diese JSON-Vorlage aus. Antworte 
   "dealerName": "Autohaus Muster",
   "accidentStatus": "Unfallfrei",
   "currentIssueStatus": "Keine",
-  "previousDamageStatus": "Keine bekannt",
+  "previousDamageStatus": "Keine",
   "repairScope": "Keine",
   "damageCurrent": "",
   "damagePrevious": "",
@@ -49,15 +49,15 @@ Lies das Fahrzeug-Inserat im Anhang und fülle diese JSON-Vorlage aus. Antworte 
 Regeln:
 1. Ersetze ALLE Beispielwerte durch die echten Werte aus dem Inserat.
 2. "mileage" und "price" sind reine Zahlen ohne Punkt, Komma und Einheit.
-3. Diese vier Felder dürfen NUR diese Werte haben:
-   accidentStatus: Unfallfrei ODER Unfallwagen ODER Unklar
-   currentIssueStatus: Keine ODER Vorhanden
-   previousDamageStatus: Keine bekannt ODER Bekannt
-   repairScope: Keine ODER Gering ODER Mittel ODER Umfangreich ODER Unbekannt
-4. Steht etwas nicht im Inserat: "" schreiben. Nichts erfinden.
-5. Wenn im Inserat steht, dass das Auto nicht geprüft wurde, ohne
-   Gewährleistung verkauft wird oder "an Bastler / Export / Gewerbe" geht:
-   repairScope = "Unbekannt" (NICHT "Keine") und currentIssueStatus = "Vorhanden".
+3. Diese vier Felder IMMER ausfüllen, nur mit diesen Wörtern:
+   accidentStatus: Unfallfrei / Unfallwagen / Unbekannt
+   currentIssueStatus: Keine / Vorhanden / Unbekannt
+   previousDamageStatus: Keine / Vorhanden / Unbekannt
+   repairScope: Keine / Gering / Mittel / Umfangreich / Unbekannt
+   Wenn das Inserat dazu nichts sagt: immer "Unbekannt".
+4. Alle anderen Felder, die im Inserat fehlen: "" schreiben. Nichts erfinden.
+5. Steht im Inserat "nicht geprüft", "ohne Gewährleistung", "Bastlerfahrzeug",
+   "nur an Gewerbe" oder "Export": repairScope = "Unbekannt".
 6. "id": marke-modell-baujahr in Kleinbuchstaben mit Bindestrichen.
 7. "date": das heutige Datum als JJJJ-MM-TT.
 ```
@@ -94,7 +94,7 @@ Mehrere Inserate: gib ein JSON-Array aus, also [ {...}, {...} ].
 | `repairScope` | Umfang nötiger Reparaturen: `Keine` = nichts zu tun · `Gering` = Kleinkram wie Kratzer oder Verschleißteile · `Mittel` = spürbare Arbeiten wie Bremsen oder Kupplung · `Umfangreich` = Motor, Getriebe oder Unfallschaden · `Unbekannt` = nicht geprüft, ohne Gewährleistung, Bastler-/Exportverkauf |
 
 Nach diesen Feldern filtert und vergleicht die App — deshalb müssen sie immer gesetzt sein.
-Im Zweifel: `Unklar`, `Keine`, `Keine bekannt`, `Unbekannt`.
+Weiß die KI etwas nicht, gehört überall dasselbe Wort hin: `Unbekannt`.
 
 `Unbekannt` ist wichtig: Ein ungeprüftes Auto unter `Keine` einzusortieren
 verfälscht den Preisvergleich, weil es dort wie ein mängelfreies Fahrzeug wirkt.
