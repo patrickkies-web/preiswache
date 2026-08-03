@@ -29,10 +29,36 @@ const TEXT_FIELDS = [
 ];
 
 // Definierte Begriffe (kontrolliertes Vokabular)
-const ACCIDENT_OPTS = ["Unfallfrei", "Unfallwagen", "Unklar"];
-const ISSUE_OPTS = ["Keine", "Vorhanden"];
-const PREV_OPTS = ["Keine bekannt", "Bekannt"];
+// Ein Vokabular für alle vier Felder: "Unbekannt" heißt überall dasselbe.
+const ACCIDENT_OPTS = ["Unfallfrei", "Unfallwagen", "Unbekannt"];
+const ISSUE_OPTS = ["Keine", "Vorhanden", "Unbekannt"];
+const PREV_OPTS = ["Keine", "Vorhanden", "Unbekannt"];
 const SCOPE_OPTS = ["Keine", "Gering", "Mittel", "Umfangreich", "Unbekannt"];
+
+// Was Modelle sonst noch schreiben, wird auf das Vokabular abgebildet.
+// Enthält auch die früheren Begriffe, damit alte Einträge gültig bleiben.
+const STATUS_SYNONYME = {
+  "unklar": "Unbekannt", "unsicher": "Unbekannt", "unbekannt": "Unbekannt",
+  "keine angabe": "Unbekannt", "k.a.": "Unbekannt", "ka": "Unbekannt",
+  "nicht bekannt": "Unbekannt", "nicht geprüft": "Unbekannt",
+  "nicht angegeben": "Unbekannt", "weiß nicht": "Unbekannt", "?": "Unbekannt",
+  "keine bekannt": "Keine", "keine bekannten": "Keine", "keine hinweise": "Keine",
+  "nein": "Keine", "ohne": "Keine",
+  "bekannt": "Vorhanden", "ja": "Vorhanden", "vorhanden bekannt": "Vorhanden",
+};
+
+function normalizeStatus(value, options) {
+  const raw = String(value == null ? "" : value).trim();
+  if (!raw) return "Unbekannt";
+  const key = raw.toLowerCase();
+  const treffer = options.find((o) => o.toLowerCase() === key);
+  if (treffer) return treffer;
+  const syn = STATUS_SYNONYME[key];
+  if (syn && options.includes(syn)) return syn;
+  const teil = options.find((o) => o !== "Unbekannt" && key.includes(o.toLowerCase()));
+  if (teil) return teil;
+  return "Unbekannt";
+}
 
 // Kategorien, die als Filter-Dropdown auswählbar sind
 const FILTER_FIELDS = [
@@ -85,10 +111,11 @@ function slugId(v) {
 // Farbe je Begriff
 function tagColor(field, value) {
   if (!value) return T.muted;
-  if (field === "accidentStatus") return value === "Unfallfrei" ? T.good : value === "Unfallwagen" ? T.bad : T.muted;
+  if (value === "Unbekannt") return T.accent;
+  if (field === "accidentStatus") return value === "Unfallfrei" ? T.good : T.bad;
   if (field === "currentIssueStatus") return value === "Vorhanden" ? T.bad : T.good;
-  if (field === "previousDamageStatus") return value === "Bekannt" ? T.accent : T.good;
-  if (field === "repairScope") return value === "Umfangreich" || value === "Unbekannt" ? T.accent : value === "Keine" ? T.muted : T.text;
+  if (field === "previousDamageStatus") return value === "Vorhanden" ? T.accent : T.good;
+  if (field === "repairScope") return value === "Umfangreich" ? T.accent : value === "Keine" ? T.muted : T.text;
   return T.text;
 }
 
@@ -108,6 +135,10 @@ function normalizeHistory(h) {
 function normalizeVehicle(v) {
   const out = {};
   TEXT_FIELDS.forEach((k) => { out[k] = v[k] != null ? String(v[k]).trim() : ""; });
+  out.accidentStatus = normalizeStatus(v.accidentStatus, ACCIDENT_OPTS);
+  out.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS);
+  out.previousDamageStatus = normalizeStatus(v.previousDamageStatus, PREV_OPTS);
+  out.repairScope = normalizeStatus(v.repairScope, SCOPE_OPTS);
   out.mileage = coerceNum(v.mileage);
   out.repairCount = coerceNum(v.repairCount);
   out.priceHistory = normalizeHistory(v.priceHistory);
@@ -176,7 +207,19 @@ function parseImport(text) {
 async function loadGarage() {
   try {
     const r = await window.storage.get(STORE_KEY);
-    if (r && r.value) { const data = typeof r.value === "string" ? JSON.parse(r.value) : r.value; return data.vehicles || {}; }
+    if (r && r.value) {
+      const data = typeof r.value === "string" ? JSON.parse(r.value) : r.value;
+      const vehicles = data.vehicles || {};
+      // Früher gespeicherte Begriffe auf das heutige Vokabular heben,
+      // sonst wären sie über die Filter nicht mehr erreichbar.
+      Object.values(vehicles).forEach((v) => {
+        v.accidentStatus = normalizeStatus(v.accidentStatus, ACCIDENT_OPTS);
+        v.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS);
+        v.previousDamageStatus = normalizeStatus(v.previousDamageStatus, PREV_OPTS);
+        v.repairScope = normalizeStatus(v.repairScope, SCOPE_OPTS);
+      });
+      return vehicles;
+    }
   } catch (_) {}
   return {};
 }
