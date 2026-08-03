@@ -6,6 +6,11 @@ Die Antwort komplett kopieren und in der App oben ins Import-Feld einfügen → 
 Codeblock-Zeichen oder Text drumherum stören nicht — die App schneidet sich das JSON selbst heraus
 und bügelt abweichende Schreibweisen glatt.
 
+**Zwei Felder füllt die KI nicht aus:** Nach „Prüfen" fragt die App dich selbst,
+ob auf den Fotos Beschädigungen zu erkennen sind und wie das Fahrzeug im Inserat
+dargestellt ist. Beides sind Analyse-Kategorien wie alle anderen — du kannst danach
+filtern und Durchschnittspreise vergleichen.
+
 ---
 
 ```
