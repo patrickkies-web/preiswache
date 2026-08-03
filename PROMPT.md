@@ -53,10 +53,13 @@ Regeln:
    accidentStatus: Unfallfrei ODER Unfallwagen ODER Unklar
    currentIssueStatus: Keine ODER Vorhanden
    previousDamageStatus: Keine bekannt ODER Bekannt
-   repairScope: Keine ODER Gering ODER Mittel ODER Umfangreich
+   repairScope: Keine ODER Gering ODER Mittel ODER Umfangreich ODER Unbekannt
 4. Steht etwas nicht im Inserat: "" schreiben. Nichts erfinden.
-5. "id": marke-modell-baujahr in Kleinbuchstaben mit Bindestrichen.
-6. "date": das heutige Datum als JJJJ-MM-TT.
+5. Wenn im Inserat steht, dass das Auto nicht geprüft wurde, ohne
+   Gewährleistung verkauft wird oder "an Bastler / Export / Gewerbe" geht:
+   repairScope = "Unbekannt" (NICHT "Keine") und currentIssueStatus = "Vorhanden".
+6. "id": marke-modell-baujahr in Kleinbuchstaben mit Bindestrichen.
+7. "date": das heutige Datum als JJJJ-MM-TT.
 ```
 
 ---
@@ -88,7 +91,10 @@ Mehrere Inserate: gib ein JSON-Array aus, also [ {...}, {...} ].
 | `accidentStatus` | Unfallhistorie laut Inserat |
 | `currentIssueStatus` | Hat das Auto jetzt Mängel? |
 | `previousDamageStatus` | Sind frühere Schäden bekannt? |
-| `repairScope` | Umfang nötiger Reparaturen: `Keine` = nichts zu tun · `Gering` = Kleinkram wie Kratzer oder Verschleißteile · `Mittel` = spürbare Arbeiten wie Bremsen oder Kupplung · `Umfangreich` = Motor, Getriebe oder Unfallschaden |
+| `repairScope` | Umfang nötiger Reparaturen: `Keine` = nichts zu tun · `Gering` = Kleinkram wie Kratzer oder Verschleißteile · `Mittel` = spürbare Arbeiten wie Bremsen oder Kupplung · `Umfangreich` = Motor, Getriebe oder Unfallschaden · `Unbekannt` = nicht geprüft, ohne Gewährleistung, Bastler-/Exportverkauf |
 
 Nach diesen Feldern filtert und vergleicht die App — deshalb müssen sie immer gesetzt sein.
-Im Zweifel: `Unklar`, `Keine`, `Keine bekannt`, `Keine`.
+Im Zweifel: `Unklar`, `Keine`, `Keine bekannt`, `Unbekannt`.
+
+`Unbekannt` ist wichtig: Ein ungeprüftes Auto unter `Keine` einzusortieren
+verfälscht den Preisvergleich, weil es dort wie ein mängelfreies Fahrzeug wirkt.

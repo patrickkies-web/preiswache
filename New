@@ -32,7 +32,7 @@ const TEXT_FIELDS = [
 const ACCIDENT_OPTS = ["Unfallfrei", "Unfallwagen", "Unklar"];
 const ISSUE_OPTS = ["Keine", "Vorhanden"];
 const PREV_OPTS = ["Keine bekannt", "Bekannt"];
-const SCOPE_OPTS = ["Keine", "Gering", "Mittel", "Umfangreich"];
+const SCOPE_OPTS = ["Keine", "Gering", "Mittel", "Umfangreich", "Unbekannt"];
 
 // Kategorien, die als Filter-Dropdown auswählbar sind
 const FILTER_FIELDS = [
@@ -88,7 +88,7 @@ function tagColor(field, value) {
   if (field === "accidentStatus") return value === "Unfallfrei" ? T.good : value === "Unfallwagen" ? T.bad : T.muted;
   if (field === "currentIssueStatus") return value === "Vorhanden" ? T.bad : T.good;
   if (field === "previousDamageStatus") return value === "Bekannt" ? T.accent : T.good;
-  if (field === "repairScope") return value === "Umfangreich" ? T.accent : value === "Keine" ? T.muted : T.text;
+  if (field === "repairScope") return value === "Umfangreich" || value === "Unbekannt" ? T.accent : value === "Keine" ? T.muted : T.text;
   return T.text;
 }
 
