@@ -21,7 +21,7 @@ const STORE_KEY = "garage-v3";
 // Alle Textfelder (mileage/repairCount/priceHistory separat)
 const TEXT_FIELDS = [
   "title", "subtitle", "make", "model", "series", "trimline", "condition", "category",
-  "year", "displacement", "power", "drivetrain", "fuel", "gearbox", "owners", "hu",
+  "year", "month", "displacement", "power", "drivetrain", "fuel", "gearbox", "owners", "hu",
   "color", "location", "sellerType", "dealerName", "stars", "address",
   "damageCurrent", "damagePrevious", "damageRepaired",
   "accidentStatus", "currentIssueStatus", "previousDamageStatus", "repairScope",
@@ -59,6 +59,111 @@ function normalizeStatus(value, options) {
   if (teil) return teil;
   return "Unbekannt";
 }
+
+/* --- Weitere abschließende Listen: die App erzwingt sie, damit sich
+       Gruppierung und Filter nicht durch Schreibweisen zersplittern. --- */
+
+const CATEGORY_OPTS = ["Limousine", "Coupé", "Kombi", "Kleinwagen", "SUV"];
+const FUEL_OPTS = ["Benzin", "Diesel"];
+const GEARBOX_OPTS = ["Automatik", "Manuell"];
+const DRIVE_OPTS = ["Heckantrieb", "Frontantrieb", "Allrad"];
+const SELLER_OPTS = ["Händler", "Privat"];
+const CONDITION_OPTS = ["Gebraucht", "Neu", "Vorführwagen", "Jahreswagen"];
+const COLOR_OPTS = ["Schwarz", "Weiß", "Grau", "Silber", "Blau", "Rot", "Grün",
+  "Gelb", "Orange", "Braun", "Beige", "Gold", "Violett"];
+
+// Stichwort -> Zielwert. Wird als Teilstring gesucht, längere zuerst.
+const CHOICE_SYNONYME = {
+  category: {
+    "t-modell": "Kombi", "touring": "Kombi", "avant": "Kombi", "variant": "Kombi",
+    "sportbrake": "Kombi", "shooting brake": "Kombi", "station": "Kombi", "estate": "Kombi",
+    "caravan": "Kombi", "turnier": "Kombi", "sw": "Kombi", "kombi": "Kombi",
+    "cabrio": "Coupé", "roadster": "Coupé", "coupe": "Coupé", "coupé": "Coupé",
+    "gelände": "SUV", "crossover": "SUV", "pickup": "SUV", "suv": "SUV",
+    "schrägheck": "Kleinwagen", "kompakt": "Kleinwagen", "kleinwagen": "Kleinwagen",
+    "stufenheck": "Limousine", "limousine": "Limousine", "berlina": "Limousine",
+  },
+  fuel: {
+    "diesel": "Diesel", "tdi": "Diesel", "cdi": "Diesel", "hdi": "Diesel",
+    "bluetec": "Diesel", "dci": "Diesel", "crdi": "Diesel",
+    "super plus": "Benzin", "superplus": "Benzin", "super": "Benzin",
+    "benzin": "Benzin", "otto": "Benzin", "e10": "Benzin", "tsi": "Benzin",
+    "tfsi": "Benzin", "petrol": "Benzin",
+  },
+  gearbox: {
+    "halbautomatik": "Automatik", "automatik": "Automatik", "automatic": "Automatik",
+    "dsg": "Automatik", "tiptronic": "Automatik", "s-tronic": "Automatik",
+    "steptronic": "Automatik", "g-tronic": "Automatik", "wandler": "Automatik",
+    "cvt": "Automatik", "doppelkupplung": "Automatik", "pdk": "Automatik",
+    "schaltgetriebe": "Manuell", "handschalt": "Manuell", "schalt": "Manuell",
+    "manuell": "Manuell", "manual": "Manuell",
+  },
+  drivetrain: {
+    "hinterrad": "Heckantrieb", "heck": "Heckantrieb", "rwd": "Heckantrieb",
+    "vorderrad": "Frontantrieb", "front": "Frontantrieb", "fwd": "Frontantrieb",
+    "4matic": "Allrad", "quattro": "Allrad", "xdrive": "Allrad", "4motion": "Allrad",
+    "allrad": "Allrad", "awd": "Allrad", "4x4": "Allrad", "4wd": "Allrad",
+  },
+  sellerType: {
+    "autohaus": "Händler", "gewerblich": "Händler", "gewerbe": "Händler",
+    "händler": "Händler", "dealer": "Händler", "haendler": "Händler",
+    "privatanbieter": "Privat", "privat": "Privat", "private": "Privat",
+  },
+  condition: {
+    "vorführ": "Vorführwagen", "vorfuehr": "Vorführwagen", "tageszulassung": "Vorführwagen",
+    "jahreswagen": "Jahreswagen", "neufahrzeug": "Neu", "neuwagen": "Neu", "neu": "Neu",
+    "gebraucht": "Gebraucht",
+  },
+  color: {
+    "weiss": "Weiß", "weiß": "Weiß", "white": "Weiß",
+    "schwarz": "Schwarz", "black": "Schwarz",
+    "silber": "Silber", "silver": "Silber",
+    "grau": "Grau", "anthrazit": "Grau", "grey": "Grau", "gray": "Grau",
+    "blau": "Blau", "blue": "Blau", "rot": "Rot", "red": "Rot",
+    "grün": "Grün", "gruen": "Grün", "green": "Grün",
+    "gelb": "Gelb", "orange": "Orange", "braun": "Braun", "bronze": "Braun",
+    "beige": "Beige", "sand": "Beige", "gold": "Gold",
+    "violett": "Violett", "lila": "Violett",
+  },
+};
+
+// Leer bleibt leer: ein erfundener Wert wäre schlimmer als eine Lücke.
+function normalizeChoice(value, feld, options) {
+  const raw = String(value == null ? "" : value).trim();
+  if (!raw) return "";
+  const key = raw.toLowerCase();
+  const treffer = options.find((o) => o.toLowerCase() === key);
+  if (treffer) return treffer;
+  const syn = CHOICE_SYNONYME[feld] || {};
+  const stichwort = Object.keys(syn).sort((a, b) => b.length - a.length).find((s) => key.includes(s));
+  if (stichwort) return syn[stichwort];
+  const teil = options.find((o) => key.includes(o.toLowerCase()));
+  return teil || "";
+}
+
+// "3" -> "03", "März" -> "03"; alles andere fällt weg.
+const MONATE = ["januar", "februar", "märz", "april", "mai", "juni",
+  "juli", "august", "september", "oktober", "november", "dezember"];
+function normalizeMonth(value) {
+  const raw = String(value == null ? "" : value).trim();
+  if (!raw) return "";
+  const zahl = raw.match(/^(\d{1,2})/);
+  if (zahl) { const n = parseInt(zahl[1], 10); return n >= 1 && n <= 12 ? String(n).padStart(2, "0") : ""; }
+  const i = MONATE.findIndex((m) => raw.toLowerCase().startsWith(m.slice(0, 3)));
+  return i >= 0 ? String(i + 1).padStart(2, "0") : "";
+}
+
+// Erstzulassung als "MM/JJJJ", sonst nur das Jahr.
+const erstzulassung = (v) => (v.month && v.year ? `${v.month}/${v.year}` : v.year || "");
+
+// Feste Auswahllisten je Feld, sofern vorhanden
+const FIXED_OPTS = {
+  accidentStatus: ACCIDENT_OPTS, currentIssueStatus: ISSUE_OPTS,
+  previousDamageStatus: PREV_OPTS, repairScope: SCOPE_OPTS,
+  category: CATEGORY_OPTS, fuel: FUEL_OPTS, gearbox: GEARBOX_OPTS,
+  drivetrain: DRIVE_OPTS, sellerType: SELLER_OPTS, condition: CONDITION_OPTS,
+  color: COLOR_OPTS,
+};
 
 // Kategorien, die als Filter-Dropdown auswählbar sind
 const FILTER_FIELDS = [
@@ -139,6 +244,15 @@ function normalizeVehicle(v) {
   out.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS);
   out.previousDamageStatus = normalizeStatus(v.previousDamageStatus, PREV_OPTS);
   out.repairScope = normalizeStatus(v.repairScope, SCOPE_OPTS);
+  out.category = normalizeChoice(v.category, "category", CATEGORY_OPTS);
+  out.fuel = normalizeChoice(v.fuel, "fuel", FUEL_OPTS);
+  out.gearbox = normalizeChoice(v.gearbox, "gearbox", GEARBOX_OPTS);
+  out.drivetrain = normalizeChoice(v.drivetrain, "drivetrain", DRIVE_OPTS);
+  out.sellerType = normalizeChoice(v.sellerType, "sellerType", SELLER_OPTS);
+  out.condition = normalizeChoice(v.condition, "condition", CONDITION_OPTS);
+  out.color = normalizeChoice(v.color, "color", COLOR_OPTS);
+  out.month = normalizeMonth(v.month);
+  out.year = (String(v.year || "").match(/\d{4}/) || [""])[0];
   out.mileage = coerceNum(v.mileage);
   out.repairCount = coerceNum(v.repairCount);
   out.priceHistory = normalizeHistory(v.priceHistory);
@@ -217,6 +331,14 @@ async function loadGarage() {
         v.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS);
         v.previousDamageStatus = normalizeStatus(v.previousDamageStatus, PREV_OPTS);
         v.repairScope = normalizeStatus(v.repairScope, SCOPE_OPTS);
+        v.category = normalizeChoice(v.category, "category", CATEGORY_OPTS);
+        v.fuel = normalizeChoice(v.fuel, "fuel", FUEL_OPTS);
+        v.gearbox = normalizeChoice(v.gearbox, "gearbox", GEARBOX_OPTS);
+        v.drivetrain = normalizeChoice(v.drivetrain, "drivetrain", DRIVE_OPTS);
+        v.sellerType = normalizeChoice(v.sellerType, "sellerType", SELLER_OPTS);
+        v.condition = normalizeChoice(v.condition, "condition", CONDITION_OPTS);
+        v.color = normalizeChoice(v.color, "color", COLOR_OPTS);
+        v.month = normalizeMonth(v.month);
       });
       return vehicles;
     }
@@ -400,7 +522,7 @@ export default function App() {
               <div key={v.id} style={S.previewRow}>
                 <span style={S.previewTitle}>{v.title || "(ohne Titel)"}</span>
                 <span style={S.previewMeta}>
-                  {[v.year, v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.repairScope ? `Rep. ${v.repairScope}` : null,
+                  {[erstzulassung(v), v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.repairScope ? `Rep. ${v.repairScope}` : null,
                     v.priceHistory.length ? fmtEUR(v.priceHistory[v.priceHistory.length - 1].price) : "kein Preis"].filter(Boolean).join(" · ")}
                   {vehicles[v.id] && <span style={S.updTag}> aktualisiert</span>}
                 </span>
@@ -460,7 +582,8 @@ export default function App() {
         {moreFilters && (
           <div style={S.filterGrid}>
             {FILTER_FIELDS.filter(([f]) => !["repairScope", "currentIssueStatus", "accidentStatus", "make"].includes(f)).map(([f, label]) => {
-              const opts = f === "previousDamageStatus" ? PREV_OPTS : distinct(f);
+              const vorhanden = distinct(f);
+              const opts = FIXED_OPTS[f] ? FIXED_OPTS[f].filter((o) => vorhanden.includes(o)) : vorhanden;
               if (!opts.length) return null;
               return <SelectFilter key={f} label={label} value={filters[f] || ""} onChange={(v) => setFilter(f, v)} options={opts} />;
             })}
@@ -567,7 +690,7 @@ function VehicleCard({ v, accent, addFor, addDate, addPrice, setAddDate, setAddP
   const dirColor = dir === "down" ? T.good : dir === "up" ? T.bad : T.muted;
   const isDealer = /h(ä|ae)ndl|dealer|autohaus|gewerb/i.test(`${v.sellerType} ${v.dealerName}`);
 
-  const chips = [v.year, v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.power, v.displacement, v.fuel, v.gearbox, v.drivetrain, v.category, v.condition, v.owners ? `${v.owners} Vorbesitzer` : null, v.color].filter(Boolean);
+  const chips = [erstzulassung(v), v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.power, v.displacement, v.fuel, v.gearbox, v.drivetrain, v.category, v.condition, v.owners ? `${v.owners} Vorbesitzer` : null, v.color].filter(Boolean);
   const idChips = [v.model, v.series, v.trimline].filter(Boolean);
 
   return (
