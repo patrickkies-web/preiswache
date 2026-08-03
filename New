@@ -158,6 +158,15 @@ function normalizeMonth(value) {
   return i >= 0 ? String(i + 1).padStart(2, "0") : "";
 }
 
+// Sieht das nach einem Link aus? Bewusst großzügig: mobile.de-Adressen
+// werden oft ohne "https://" kopiert.
+const istLink = (s) => /^\S+\.\S{2,}/.test(String(s == null ? "" : s).trim());
+function normalizeUrl(s) {
+  const t = String(s == null ? "" : s).trim();
+  if (!t) return "";
+  return /^https?:\/\//i.test(t) ? t : `https://${t.replace(/^\/+/, "")}`;
+}
+
 // Erstzulassung als "MM/JJJJ", sonst nur das Jahr.
 const erstzulassung = (v) => (v.month && v.year ? `${v.month}/${v.year}` : v.year || "");
 
@@ -483,6 +492,7 @@ export default function App() {
       vorbelegt[v.id] = {
         photoDamage: v.photoDamage || alt?.photoDamage || "",
         listingPrep: v.listingPrep || alt?.listingPrep || "",
+        url: v.url || alt?.url || "",
       };
     });
     setAnswers(vorbelegt);
@@ -490,13 +500,16 @@ export default function App() {
   }
   const setAnswer = (id, feld, wert) =>
     setAnswers((prev) => ({ ...prev, [id]: { ...prev[id], [feld]: wert } }));
-  const alleBeantwortet = !preview || preview.every((v) =>
-    answers[v.id]?.photoDamage && answers[v.id]?.listingPrep);
+  const alleBeantwortet = !preview || preview.every((v) => {
+    const a = answers[v.id] || {};
+    return a.photoDamage && a.listingPrep && istLink(a.url);
+  });
 
   function confirmImport() {
     const next = { ...vehicles }; let added = 0, updated = 0;
     preview.forEach((raw_) => {
-      const incoming = { ...raw_, ...(answers[raw_.id] || {}) };
+      const antw = answers[raw_.id] || {};
+      const incoming = { ...raw_, ...antw, url: normalizeUrl(antw.url || raw_.url) };
       const existing = next[incoming.id];
       if (existing) {
         const merged = { ...existing };
@@ -692,13 +705,23 @@ export default function App() {
                     value={answers[v.id]?.photoDamage || ""} onChange={(w) => setAnswer(v.id, "photoDamage", w)} />
                   <ChoiceQuestion frage={LISTING_PREP_FRAGE} options={LISTING_PREP_OPTS} hilfe={LISTING_PREP_HILFE}
                     value={answers[v.id]?.listingPrep || ""} onChange={(w) => setAnswer(v.id, "listingPrep", w)} />
+                  <div style={S.askItem}>
+                    <div style={S.askFrage}>Link zum Inserat</div>
+                    <input value={answers[v.id]?.url || ""} onChange={(e) => setAnswer(v.id, "url", e.target.value)}
+                      placeholder="mobile.de/…" style={S.askInput} inputMode="url" spellCheck={false} />
+                    <div style={S.askHilfe}>
+                      {istLink(answers[v.id]?.url)
+                        ? "Von hier kommst du später mit einem Klick zurück ins Inserat."
+                        : "Pflichtangabe — ohne Link findest du das Inserat später nicht wieder."}
+                    </div>
+                  </div>
                 </div>
               </div>
             ))}
             <div style={S.row}>
               <button style={S.primaryBtn} onClick={confirmImport} disabled={!alleBeantwortet}><Check size={16} /> Importieren</button>
               <button style={S.ghostBtn} onClick={() => setPreview(null)}><X size={15} /> Abbrechen</button>
-              {!alleBeantwortet && <span style={S.askHint}>Beantworte beide Fragen, dann geht es weiter.</span>}
+              {!alleBeantwortet && <span style={S.askHint}>Beide Fragen beantworten und den Link einfügen, dann geht es weiter.</span>}
             </div>
           </div>
         )}
@@ -1136,6 +1159,7 @@ const styles = {
   askOption: { background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "5px 11px", fontSize: 11.5, fontWeight: 600 },
   askOptionOn: { background: T.accent, color: T.bg, border: `1px solid ${T.accent}`, borderRadius: 20, padding: "5px 11px", fontSize: 11.5, fontWeight: 700 },
   askHilfe: { fontSize: 11, color: T.muted, marginTop: 6, fontStyle: "italic" },
+  askInput: { width: "100%", background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace" },
   askHint: { fontSize: 11.5, color: T.accent },
 
   toggleGroup: { display: "inline-flex", gap: 4, background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: 3 },

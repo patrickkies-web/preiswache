@@ -6,10 +6,11 @@ Die Antwort komplett kopieren und in der App oben ins Import-Feld einfügen → 
 Codeblock-Zeichen oder Text drumherum stören nicht — die App schneidet sich das JSON selbst heraus
 und bügelt abweichende Schreibweisen glatt.
 
-**Zwei Felder füllt die KI nicht aus:** Nach „Prüfen" fragt die App dich selbst,
-ob auf den Fotos Beschädigungen zu erkennen sind und wie das Fahrzeug im Inserat
-dargestellt ist. Beides sind Analyse-Kategorien wie alle anderen — du kannst danach
-filtern und Durchschnittspreise vergleichen.
+**Drei Angaben macht die KI nicht:** Nach „Prüfen" fragt die App dich selbst,
+ob auf den Fotos Beschädigungen zu erkennen sind, wie das Fahrzeug im Inserat
+dargestellt ist, und nach dem Link zum Inserat. Die ersten beiden sind
+Analyse-Kategorien wie alle anderen — du kannst danach filtern und
+Durchschnittspreise vergleichen. Alle drei sind Pflicht.
 
 ---
 
@@ -220,6 +221,8 @@ SO FÜLLST DU JEDES FELD AUS:
 
 34. "url"
     Der Link zum Inserat, falls er im Dokument steht. Sonst "".
+    (Findest du keinen, ist das nicht schlimm — die App fragt mich beim
+    Import ohnehin selbst danach.)
 
 35. "price"
     Der geforderte Preis in Euro als reine Zahl, ohne Punkt und ohne "€".
