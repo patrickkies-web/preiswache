@@ -20,6 +20,11 @@ festen Analyse-Begriffen filtern und vergleichen.
    angeben. Daraus entstehen die Laufzeiten: wie lange stand das Auto drin, wann
    wurde der Preis gesenkt, wann war es weg.
 
+Die App hat zwei Reiter: **Erfassen &amp; Analysieren** mit Import, Preisverlauf,
+Filtern und Laufzeiten, sowie **Verzeichnis** mit der Fahrzeugliste. Dort steht jedes
+Auto als Zeile mit fünf Kennzahlen — Preis, Veränderung, Kilometer, Erstzulassung,
+Reparatur-Umfang — und klappt auf Klick zu allen Angaben auf.
+
 Der Preisverlauf lässt sich auf „Tage seit Inserat" umschalten. Dann beginnen alle
 Kurven bei Tag 0 und liegen übereinander — so sind die Verläufe direkt vergleichbar,
 unabhängig davon, wann ein Auto inseriert wurde.
