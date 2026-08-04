@@ -1410,16 +1410,18 @@ export default function App() {
 
         {!abInserat ? (
           <div style={S.emptySmall}>Für die aktuelle Auswahl gibt es keine Preisdaten.</div>
-        ) : abInserat.beobachtet === 0 ? (
-          <div style={S.empty}>
-            <Clock size={28} color={T.line} />
-            <span>
-              Noch kein Inserat mit mehr als einem Preis-Punkt. Trage bei einem Fahrzeug über „+ Preis-Update"
-              einen zweiten Preis mit Datum ein — ab dann entsteht hier eine Kurve.
-            </span>
-          </div>
         ) : (
           <>
+            {abInserat.beobachtet === 0 && (
+              <div style={S.hinweisZeile}>
+                <Clock size={13} />
+                <span>
+                  Zu keinem dieser Fahrzeuge ist bisher eine Preisänderung erfasst — die Linien laufen deshalb
+                  waagerecht. Sobald du am Fahrzeug über „+ Preis-Update" einen weiteren Preis mit Datum
+                  nachträgst, entstehen Stufen.
+                </span>
+              </div>
+            )}
             <div style={{ width: "100%", height: 330 }}>
               <ResponsiveContainer>
                 <ComposedChart data={verlaufRows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
@@ -1505,9 +1507,10 @@ export default function App() {
               </div>
             )}
             <div style={S.kennzahlen}>
-              <Kennzahl label="Inserate ausgewertet" wert={`${abInserat.beobachtet}`} zusatz={`von ${abInserat.anzahl} mit Preisdaten`} />
+              <Kennzahl label="Inserate im Bild" wert={`${abInserat.anzahl}`}
+                zusatz={`${abInserat.beobachtet} mit Preisänderung`} />
               <Kennzahl label="davon mit Senkung" wert={`${abInserat.mitSenkung}`}
-                zusatz={abInserat.beobachtet ? `${Math.round((abInserat.mitSenkung / abInserat.beobachtet) * 100)} % der auswertbaren` : ""} />
+                zusatz={abInserat.beobachtet ? `${Math.round((abInserat.mitSenkung / abInserat.beobachtet) * 100)} % der auswertbaren` : "noch keine erfasst"} />
               <Kennzahl label="1. Senkung im Mittel" wert={abInserat.medianTage == null ? "—" : `${abInserat.medianTage} Tage`}
                 zusatz={abInserat.schnittTage == null ? "" : `Durchschnitt ${abInserat.schnittTage} Tage`} accent />
               <Kennzahl label="Ø Senkung insgesamt" wert={abInserat.schnittSenkung == null ? "—" : `${abInserat.schnittSenkung} %`}
@@ -2049,6 +2052,7 @@ const styles = {
   kennzahlZusatz: { fontSize: 10.5, color: T.muted, marginTop: 2 },
   schluss: { background: T.bg, border: `1px solid ${T.accent}44`, borderLeft: `3px solid ${T.accent}`, borderRadius: 8, padding: "11px 13px", fontSize: 12.5, lineHeight: 1.6, marginTop: 12 },
   hinweisKlein: { fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginTop: 12, paddingTop: 10, borderTop: `1px solid ${T.line}` },
+  hinweisZeile: { display: "flex", alignItems: "flex-start", gap: 8, background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 8, padding: "9px 12px", fontSize: 11.5, color: T.muted, lineHeight: 1.6, marginBottom: 12 },
   abTable: { display: "flex", flexDirection: "column", gap: 2, marginTop: 14 },
   abRow: { display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 8, alignItems: "center", fontSize: 12, padding: "6px 10px", background: T.bg, borderRadius: 6 },
   abHead: { background: "transparent", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, padding: "2px 10px", color: T.muted },
