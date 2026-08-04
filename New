@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend, Cell,
+  ResponsiveContainer, Legend, Cell, ReferenceLine,
 } from "recharts";
 import {
   Gauge, Plus, Trash2, Check, X, TrendingDown, TrendingUp, Minus, Car,
@@ -216,6 +216,23 @@ function laufzeitText(tage) {
   if (tage < 70) return `${Math.round(tage / 7)} Wochen`;
   return `${Math.round((tage / 365) * 12)} Monate`;
 }
+const median = (zahlen) => {
+  if (!zahlen.length) return null;
+  const s = [...zahlen].sort((a, b) => a - b);
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
+};
+const mittel = (zahlen) => (zahlen.length ? zahlen.reduce((a, b) => a + b, 0) / zahlen.length : null);
+
+// Fächer für „nach wie vielen Tagen kam die erste Senkung"
+const FAECHER = [
+  { label: "bis 1 Woche", bis: 7 },
+  { label: "1–2 Wochen", bis: 14 },
+  { label: "2–4 Wochen", bis: 28 },
+  { label: "4–8 Wochen", bis: 56 },
+  { label: "über 8 Wochen", bis: Infinity },
+];
+
 // Preissenkungen im Verlauf: Anzahl und Gesamtbetrag.
 function senkungen(v) {
   const h = v.priceHistory || [];
@@ -239,6 +256,7 @@ const FIXED_OPTS = {
 
 // Kategorien, die als Filter-Dropdown auswählbar sind
 const FILTER_FIELDS = [
+  ["year", "Baujahr"],
   ["make", "Marke"], ["model", "Modell"], ["series", "Baureihe"], ["category", "Kategorie"],
   ["fuel", "Kraftstoff"], ["gearbox", "Getriebe"], ["drivetrain", "Antrieb"],
   ["condition", "Zustand"], ["color", "Farbe"], ["sellerType", "Anbieter"],
@@ -758,7 +776,7 @@ export default function App() {
   const colorFor = (id) => { const i = chart.series.findIndex((s) => s.id === id); return COLORS[(i < 0 ? Object.keys(vehicles).indexOf(id) : i) % COLORS.length]; };
 
   /* ---- Analyse: Filter + Vergleich ---- */
-  const searchable = (v) => [v.title, v.subtitle, v.make, v.model, v.series, v.trimline, v.category, v.fuel, v.gearbox, v.drivetrain, v.condition, v.color, v.location, v.sellerType, v.dealerName, v.note, v.damageCurrent, v.damagePrevious, v.damageRepaired].join(" ").toLowerCase();
+  const searchable = (v) => [v.title, v.subtitle, v.make, v.model, v.series, v.trimline, v.category, v.year, erstzulassung(v), v.fuel, v.gearbox, v.drivetrain, v.condition, v.color, v.location, v.sellerType, v.dealerName, v.note, v.damageCurrent, v.damagePrevious, v.damageRepaired].join(" ").toLowerCase();
 
   const filtered = useMemo(() => list.filter((v) => {
     if (q.trim() && !searchable(v).includes(q.trim().toLowerCase())) return false;
@@ -781,6 +799,84 @@ export default function App() {
       return { group, count: vs.length, avg, avgKm };
     }).sort((a, b) => (b.avg || 0) - (a.avg || 0));
   }, [filtered, groupBy]);
+
+  /* ---- Preisentwicklung ab Inserat (folgt den Filtern oben) ---- */
+  const abInserat = useMemo(() => {
+    const reihen = [];
+    filtered.forEach((v) => {
+      const h = (v.priceHistory || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+      if (!h.length) return;
+      const start = inseriertSeit(v) || h[0].date;
+      const startPreis = h[0].price;
+      if (!startPreis) return;
+      const punkte = h.map((p) => ({ tag: Math.max(0, tageZwischen(start, p.date) ?? 0), price: p.price }));
+      // Bis wann ist das Inserat beobachtet? Danach endet die Linie.
+      const geschlossen = v.listingStatus && v.listingStatus !== "Aktiv" && v.closedDate;
+      const ende = Math.max(tageZwischen(start, geschlossen ? v.closedDate : todayISO()) ?? 0,
+        punkte[punkte.length - 1].tag);
+      reihen.push({ id: v.id, title: v.title || v.id, punkte, startPreis, ende });
+    });
+    if (!reihen.length) return null;
+
+    const maxTag = Math.max(...reihen.map((r) => r.ende), 1);
+    // Stützstellen: jeder beobachtete Tag plus ein gleichmäßiges Raster
+    const schritt = maxTag > 240 ? 21 : maxTag > 120 ? 14 : maxTag > 45 ? 7 : 2;
+    const tage = new Set([0, maxTag]);
+    reihen.forEach((r) => r.punkte.forEach((p) => tage.add(p.tag)));
+    for (let t = 0; t <= maxTag; t += schritt) tage.add(t);
+    const achse = [...tage].filter((t) => t <= maxTag).sort((a, b) => a - b);
+
+    // Ein Preis gilt weiter, bis der Verkäufer ihn ändert.
+    const wertBei = (r, tag) => {
+      if (tag > r.ende) return null;
+      let letzter = null;
+      for (const p of r.punkte) { if (p.tag <= tag) letzter = p; else break; }
+      return letzter ? (letzter.price / r.startPreis) * 100 : null;
+    };
+
+    const rows = achse.map((tag) => {
+      const row = { tag };
+      const werte = [];
+      reihen.forEach((r) => {
+        const w = wertBei(r, tag);
+        row[r.id] = w == null ? null : Math.round(w * 10) / 10;
+        if (w != null) werte.push(w);
+      });
+      row.__schnitt = werte.length ? Math.round(mittel(werte) * 10) / 10 : null;
+      row.__anzahl = werte.length;
+      return row;
+    });
+
+    // Kennzahlen
+    const bisSenkung = [], gesamtSenkung = [], abstaende = [];
+    let mitSenkung = 0;
+    reihen.forEach((r) => {
+      const erste = r.punkte.find((p) => p.price < r.startPreis);
+      if (erste) { bisSenkung.push(erste.tag); mitSenkung++; }
+      const letzter = r.punkte[r.punkte.length - 1];
+      if (letzter.price < r.startPreis) gesamtSenkung.push((1 - letzter.price / r.startPreis) * 100);
+      const stufen = r.punkte.filter((p, i) => i > 0 && p.price < r.punkte[i - 1].price);
+      for (let i = 1; i < stufen.length; i++) abstaende.push(stufen[i].tag - stufen[i - 1].tag);
+    });
+
+    // Fächer müssen sich lückenlos, aber überschneidungsfrei aneinanderreihen.
+    const faecher = FAECHER.map((f, i) => {
+      const von = i === 0 ? 0 : FAECHER[i - 1].bis + 1;
+      return { label: f.label, anzahl: bisSenkung.filter((t) => t >= von && t <= f.bis).length };
+    });
+
+    return {
+      reihen, rows, maxTag,
+      anzahl: reihen.length,
+      beobachtet: reihen.filter((r) => r.punkte.length > 1).length,
+      mitSenkung,
+      medianTage: median(bisSenkung),
+      schnittTage: mittel(bisSenkung) == null ? null : Math.round(mittel(bisSenkung)),
+      schnittSenkung: mittel(gesamtSenkung) == null ? null : Math.round(mittel(gesamtSenkung) * 10) / 10,
+      schnittAbstand: mittel(abstaende) == null ? null : Math.round(mittel(abstaende)),
+      faecher,
+    };
+  }, [filtered]);
 
   /* ---- Laufzeiten ---- */
   const laufzeiten = useMemo(() => list.map((v) => {
@@ -987,6 +1083,7 @@ export default function App() {
           <SelectFilter label="Aktuelle Mängel" value={filters.currentIssueStatus || ""} onChange={(v) => setFilter("currentIssueStatus", v)} options={ISSUE_OPTS} />
           <SelectFilter label="Unfallstatus" value={filters.accidentStatus || ""} onChange={(v) => setFilter("accidentStatus", v)} options={ACCIDENT_OPTS} />
           <SelectFilter label="Marke" value={filters.make || ""} onChange={(v) => setFilter("make", v)} options={distinct("make")} />
+          <SelectFilter label="Baujahr" value={filters.year || ""} onChange={(v) => setFilter("year", v)} options={distinct("year")} />
           <div style={S.rangeField}><span style={S.fieldLabel}>Preis max (€)</span><input inputMode="decimal" value={priceMax} onChange={(e) => setPriceMax(e.target.value)} style={S.input} placeholder="z. B. 15000" /></div>
           <div style={S.rangeField}><span style={S.fieldLabel}>km max</span><input inputMode="decimal" value={kmMax} onChange={(e) => setKmMax(e.target.value)} style={S.input} placeholder="z. B. 150000" /></div>
         </div>
@@ -996,7 +1093,7 @@ export default function App() {
         </button>
         {moreFilters && (
           <div style={S.filterGrid}>
-            {FILTER_FIELDS.filter(([f]) => !["repairScope", "currentIssueStatus", "accidentStatus", "make"].includes(f)).map(([f, label]) => {
+            {FILTER_FIELDS.filter(([f]) => !["repairScope", "currentIssueStatus", "accidentStatus", "make", "year"].includes(f)).map(([f, label]) => {
               const vorhanden = distinct(f);
               const opts = FIXED_OPTS[f] ? FIXED_OPTS[f].filter((o) => vorhanden.includes(o)) : vorhanden;
               if (!opts.length) return null;
@@ -1058,6 +1155,106 @@ export default function App() {
               </div>
             ))}
           </div>
+        )}
+      </section>
+
+      {/* Preisentwicklung ab Inserat */}
+      <section style={S.panel}>
+        <div style={S.panelTitle}><TrendingDown size={15} /> Preisentwicklung ab Inserat</div>
+        <p style={S.hint}>
+          Jedes Inserat startet bei Tag 0 und 100 % — unabhängig davon, wann es online ging.
+          So liegen die Verläufe übereinander und du siehst, nach welcher Zeit Verkäufer üblicherweise nachgeben.
+          Die Auswahl folgt den Filtern oben: <b style={{ color: T.text }}>{filtered.length}</b> von {list.length} Fahrzeugen.
+        </p>
+
+        {!abInserat ? (
+          <div style={S.emptySmall}>Für die aktuelle Auswahl gibt es keine Preisdaten.</div>
+        ) : abInserat.beobachtet === 0 ? (
+          <div style={S.empty}>
+            <Clock size={28} color={T.line} />
+            <span>
+              Noch kein Inserat mit mehr als einem Preis-Punkt. Trage bei einem Fahrzeug über „+ Preis-Update"
+              einen zweiten Preis mit Datum ein — ab dann entsteht hier eine Kurve.
+            </span>
+          </div>
+        ) : (
+          <>
+            <div style={{ width: "100%", height: 320 }}>
+              <ResponsiveContainer>
+                <LineChart data={abInserat.rows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
+                  <XAxis dataKey="tag" type="number" domain={[0, abInserat.maxTag]}
+                    tickFormatter={(t) => `${t} T`} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} />
+                  <YAxis domain={["dataMin - 2", 101]} tickFormatter={(w) => `${Math.round(w)} %`}
+                    stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} width={48} />
+                  <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }}
+                    labelFormatter={(t) => `Tag ${t}`}
+                    formatter={(w, key) => [`${w} %`, key === "__schnitt" ? "Durchschnitt" : (vehicles[key]?.title?.slice(0, 26) || key)]} />
+                  <ReferenceLine y={100} stroke={T.muted} strokeDasharray="3 3" />
+                  {abInserat.reihen.map((r, i) => (
+                    <Line key={r.id} type="stepAfter" dataKey={r.id} stroke={COLORS[i % COLORS.length]}
+                      strokeWidth={1.2} strokeOpacity={0.55} dot={false} connectNulls={false} isAnimationActive={false} />
+                  ))}
+                  <Line type="monotone" dataKey="__schnitt" name="Durchschnitt" stroke={T.accent}
+                    strokeWidth={3} dot={{ r: 3 }} connectNulls isAnimationActive={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={S.legendHint}>
+              Dünne Linien: einzelne Inserate · dicke gelbe Linie: Durchschnitt aller ausgewählten
+            </div>
+
+            <div style={S.kennzahlen}>
+              <Kennzahl label="Inserate ausgewertet" wert={`${abInserat.beobachtet}`} zusatz={`von ${abInserat.anzahl} mit Preisdaten`} />
+              <Kennzahl label="davon mit Senkung" wert={`${abInserat.mitSenkung}`}
+                zusatz={abInserat.beobachtet ? `${Math.round((abInserat.mitSenkung / abInserat.beobachtet) * 100)} % der auswertbaren` : ""} />
+              <Kennzahl label="1. Senkung im Mittel" wert={abInserat.medianTage == null ? "—" : `${abInserat.medianTage} Tage`}
+                zusatz={abInserat.schnittTage == null ? "" : `Durchschnitt ${abInserat.schnittTage} Tage`} accent />
+              <Kennzahl label="Ø Senkung insgesamt" wert={abInserat.schnittSenkung == null ? "—" : `${abInserat.schnittSenkung} %`}
+                zusatz={abInserat.schnittAbstand == null ? "" : `nächste nach ~${abInserat.schnittAbstand} Tagen`} />
+            </div>
+
+            {abInserat.mitSenkung > 0 && (
+              <>
+                <div style={S.compareHead}>
+                  <span style={S.compareTitle}>Wann kam die erste Senkung</span>
+                </div>
+                <div style={{ width: "100%", height: 150 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={abInserat.faecher} margin={{ top: 4, right: 12, left: 4, bottom: 4 }}>
+                      <CartesianGrid stroke={T.line} strokeDasharray="2 4" vertical={false} />
+                      <XAxis dataKey="label" stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} interval={0} />
+                      <YAxis allowDecimals={false} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} width={28} />
+                      <Tooltip cursor={{ fill: T.line + "44" }}
+                        contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }}
+                        formatter={(w) => [`${w} Inserat${w === 1 ? "" : "e"}`, "erste Senkung"]} />
+                      <Bar dataKey="anzahl" radius={[4, 4, 0, 0]}>
+                        {abInserat.faecher.map((f, i) => (
+                          <Cell key={i} fill={f.anzahl === Math.max(...abInserat.faecher.map((x) => x.anzahl)) && f.anzahl > 0 ? T.accent : T.line} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+                <div style={S.schluss}>
+                  <b style={{ color: T.accent }}>Was das für dich heißt:</b>{" "}
+                  {abInserat.medianTage == null ? "Noch keine Senkung beobachtet." : (
+                    <>
+                      Die Hälfte der Verkäufer hat den Preis innerhalb von <b style={{ color: T.text }}>{abInserat.medianTage} Tagen</b> gesenkt
+                      {abInserat.schnittSenkung != null && <> — im Schnitt um <b style={{ color: T.text }}>{abInserat.schnittSenkung} %</b></>}.
+                      {" "}Wer kurz vor diesem Punkt anschreibt, trifft den Verkäufer, während er ohnehin über den Preis nachdenkt:
+                      also etwa ab <b style={{ color: T.text }}>Tag {Math.max(1, Math.round(abInserat.medianTage * 0.8))}</b>.
+                    </>
+                  )}
+                </div>
+              </>
+            )}
+            <div style={S.hinweisKlein}>
+              Tag 0 ist der erste Preis, den du erfasst hast — nicht zwingend der echte Inseratsbeginn.
+              Und die Kurve ist nur so genau wie deine Preis-Updates: Trägst du wöchentlich nach, liegt die
+              Auflösung bei einer Woche.
+            </div>
+          </>
         )}
       </section>
 
@@ -1356,6 +1553,15 @@ function SelectFilter({ label, value, onChange, options }) {
     </div>
   );
 }
+function Kennzahl({ label, wert, zusatz, accent }) {
+  return (
+    <div style={styles.kennzahl}>
+      <div style={styles.kennzahlLabel}>{label}</div>
+      <div style={{ ...styles.kennzahlWert, color: accent ? T.accent : T.text }}>{wert}</div>
+      {zusatz && <div style={styles.kennzahlZusatz}>{zusatz}</div>}
+    </div>
+  );
+}
 function Stat({ label, value, accent }) {
   return (<div style={styles.stat}><div style={{ ...styles.statValue, color: accent || styles.statValue.color }}>{value}</div><div style={styles.statLabel}>{label}</div></div>);
 }
@@ -1475,6 +1681,14 @@ const styles = {
   selectInline: { background: T.bg, color: T.accent, border: `1px solid ${T.line}`, borderRadius: 7, padding: "5px 9px", fontSize: 12, fontWeight: 600, cursor: "pointer" },
   resultCount: { marginLeft: "auto", fontSize: 11.5, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
   emptySmall: { color: T.muted, fontSize: 12, padding: "16px 4px" },
+  legendHint: { fontSize: 11, color: T.muted, textAlign: "center", marginTop: 4 },
+  kennzahlen: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, margin: "16px 0 4px" },
+  kennzahl: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "10px 12px" },
+  kennzahlLabel: { fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 },
+  kennzahlWert: { fontSize: 19, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace", marginTop: 4 },
+  kennzahlZusatz: { fontSize: 10.5, color: T.muted, marginTop: 2 },
+  schluss: { background: T.bg, border: `1px solid ${T.accent}44`, borderLeft: `3px solid ${T.accent}`, borderRadius: 8, padding: "11px 13px", fontSize: 12.5, lineHeight: 1.6, marginTop: 12 },
+  hinweisKlein: { fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginTop: 12, paddingTop: 10, borderTop: `1px solid ${T.line}` },
   groupTable: { display: "flex", flexDirection: "column", gap: 2, marginTop: 6 },
   groupRow: { display: "flex", alignItems: "center", gap: 10, fontSize: 12, padding: "5px 8px", background: T.bg, borderRadius: 6 },
   groupTag: { fontWeight: 700, minWidth: 96, fontSize: 11.5 },

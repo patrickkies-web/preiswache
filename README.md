@@ -25,7 +25,28 @@ Filtern und Laufzeiten, sowie **Verzeichnis** mit der Fahrzeugliste. Dort steht 
 Auto als Zeile mit fünf Kennzahlen — Preis, Veränderung, Kilometer, Erstzulassung,
 Reparatur-Umfang — und klappt auf Klick zu allen Angaben auf.
 
-Der Preisverlauf lässt sich auf „Tage seit Inserat" umschalten. Dann beginnen alle
+### Preisentwicklung ab Inserat
+
+Der Abschnitt beantwortet die Frage, **wann Verkäufer üblicherweise nachgeben**.
+Jedes Inserat beginnt bei Tag 0 und 100 % des eigenen Startpreises, sodass die
+Verläufe übereinanderliegen — unabhängig davon, wann ein Auto online ging.
+Prozent statt Euro deshalb, weil sich ein Fahrzeug für 5.000 € und eines für
+21.000 € in absoluten Beträgen nicht vergleichen lassen.
+
+Die Auswertung folgt den Filtern aus „Analyse & Suche". Filterst du auf Baujahr
+2013, zeigen Kurve und Kennzahlen nur diese Fahrzeuge.
+
+Ausgewiesen werden der Median der Tage bis zur ersten Senkung, der Anteil der
+Inserate mit Senkung, die durchschnittliche Gesamtsenkung und der typische
+Abstand zwischen zwei Senkungen. Ein Balkendiagramm zeigt, in welchem Zeitfenster
+die erste Senkung fiel; daraus leitet die App einen Vorschlag ab, ab wann sich
+das Anschreiben lohnt.
+
+Zwei Einschränkungen stehen auch in der App: Tag 0 ist der erste selbst erfasste
+Preis, nicht zwingend der echte Inseratsbeginn, und die Auflösung entspricht dem
+Abstand der eigenen Preis-Updates.
+
+Der Preisverlauf lässt sich zusätzlich auf „Tage seit Inserat" umschalten. Dann beginnen alle
 Kurven bei Tag 0 und liegen übereinander — so sind die Verläufe direkt vergleichbar,
 unabhängig davon, wann ein Auto inseriert wurde.
 
