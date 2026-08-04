@@ -16,6 +16,13 @@
 
 const REDIS_KEY = "preiswache:garage";
 
+// Groß- und Kleinschreibung des Variablennamens ist beim Anlegen leicht
+// zu übersehen, für die Funktion aber ohne Bedeutung — also egal.
+function passwort() {
+  const name = Object.keys(process.env).find((n) => n.toLowerCase() === "preiswache_key");
+  return name ? String(process.env[name]).trim() : "";
+}
+
 function speicherZugang() {
   const url = process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN;
@@ -56,7 +63,7 @@ module.exports = async function handler(req, res) {
 
   // Beide Voraussetzungen zusammen melden, damit beim Einrichten
   // nicht ein Problem das andere verdeckt.
-  const erwartet = process.env.PREISWACHE_KEY;
+  const erwartet = passwort();
   const fehlt = [];
   if (!erwartet) fehlt.push("PREISWACHE_KEY");
   if (!speicherZugang()) fehlt.push("Speicher");
