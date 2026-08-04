@@ -20,10 +20,16 @@ festen Analyse-Begriffen filtern und vergleichen.
    angeben. Daraus entstehen die Laufzeiten: wie lange stand das Auto drin, wann
    wurde der Preis gesenkt, wann war es weg.
 
-Die App hat zwei Reiter: **Erfassen &amp; Analysieren** mit Import, Preisverlauf,
-Filtern und Laufzeiten, sowie **Verzeichnis** mit der Fahrzeugliste. Dort steht jedes
-Auto als Zeile mit fünf Kennzahlen — Preis, Veränderung, Kilometer, Erstzulassung,
-Reparatur-Umfang — und klappt auf Klick zu allen Angaben auf.
+Die App hat vier Reiter:
+
+- **Erfassen** — Import, mögliche Doppel-Inserate, Preisverlauf aller Fahrzeuge, Laufzeiten
+- **Analyse A** und **Analyse B** — zwei vollständig getrennte Auswertungen mit je
+  eigenen Filtern. Beide lassen sich unabhängig einstellen und behalten ihre
+  Einstellung beim Wechsel; über einen Schalter kann die jeweils andere
+  Durchschnittslinie zum Vergleich eingeblendet werden.
+- **Verzeichnis** — die Fahrzeugliste. Jedes Auto steht als Zeile mit fünf Kennzahlen
+  (Preis, Veränderung, Kilometer, Erstzulassung, Reparatur-Umfang) und klappt auf
+  Klick zu allen Angaben auf.
 
 ### Doppelte und neu eingestellte Inserate
 
@@ -51,8 +57,14 @@ Verläufe übereinanderliegen — unabhängig davon, wann ein Auto online ging.
 Prozent statt Euro deshalb, weil sich ein Fahrzeug für 5.000 € und eines für
 21.000 € in absoluten Beträgen nicht vergleichen lassen.
 
-Die Auswertung folgt den Filtern aus „Analyse & Suche". Filterst du auf Baujahr
-2013, zeigen Kurve und Kennzahlen nur diese Fahrzeuge.
+Jedes Fahrzeug ist eine **durchgehende Linie von Tag 0 bis heute** — auch eines,
+zu dem erst ein einziger Preis erfasst ist; es läuft dann waagerecht bei 100 %.
+Gezeichnet wird der Verlauf, nicht die einzelnen Eintragungen: Ein Preis gilt
+fort, bis der Verkäufer ihn ändert.
+
+Die Auswertung folgt den Filtern des jeweiligen Analyse-Reiters. Filterst du in
+Analyse A auf Baujahr 2013, zeigen Kurve und Kennzahlen dort nur diese Fahrzeuge —
+Analyse B bleibt davon unberührt.
 
 Um die Durchschnittslinie liegt ein **Streuungsband** (Mittelwert ± eine
 Standardabweichung, dem Gedanken der Bollinger-Bänder entlehnt). Ein schmales
@@ -61,11 +73,13 @@ Ein breites Band heißt: Die Einzelfälle gehen weit auseinander. Über die
 **Glättung** lässt sich zusätzlich ein gleitender Durchschnitt über ein, zwei
 oder vier Wochen legen, was bei wenigen Daten die Sprünge herausnimmt.
 
-**Zwei Auswahlen im Vergleich:** Über „+ vergleichen" erscheint eine zweite
-Filtergarnitur. Die Umschalter A und B bestimmen, welche gerade bearbeitet wird;
-im Diagramm liegen beide Durchschnittslinien samt Bändern übereinander, darunter
-stellt eine Tabelle die Kennzahlen gegenüber. So lässt sich etwa Händler gegen
-Privat oder ein Baujahr gegen ein anderes prüfen.
+**Zwei Auswahlen im Vergleich:** Analyse A und Analyse B sind getrennte Reiter mit
+eigenen Filtern. Innerhalb eines Reiters lässt sich die Durchschnittslinie des
+anderen zusätzlich einblenden — durchgezogen die eigene, gestrichelt die
+eingeblendete, beide mit ihrem Band. Eine Tabelle stellt die Kennzahlen
+gegenüber. So lässt sich etwa Händler gegen Privat oder ein Baujahr gegen ein
+anderes prüfen. Solange etwas eingeblendet ist, treten die Einzellinien zurück,
+sonst wird das Bild unlesbar.
 
 Ausgewiesen werden der Median der Tage bis zur ersten Senkung, der Anteil der
 Inserate mit Senkung, die durchschnittliche Gesamtsenkung und der typische

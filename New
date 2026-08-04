@@ -327,6 +327,10 @@ const T = {
 const leereAuswahl = () => ({ q: "", filters: {}, priceMax: "", kmMax: "" });
 const AUSWAHL_FARBE = ["#F5B301", "#4EA8F4"];   // A gelb, B blau
 const AUSWAHL_NAME = ["Auswahl A", "Auswahl B"];
+// Eigene Palette für die Einzellinien — bewusst ohne Gelb und Blau,
+// damit sie sich von den Durchschnittslinien der Auswahlen abheben.
+const LINIEN_FARBEN = ["#35C46B", "#C77DFF", "#F4544E", "#2DD4BF", "#FB923C",
+  "#E879A9", "#A3E635", "#22D3EE", "#F97316", "#94A3B8"];
 
 const SYNC_INFO = {
   lokal:      { kurz: "nur lokal",   farbe: "#8A93A0", lang: "Die Daten liegen nur in diesem Browser." },
@@ -559,6 +563,8 @@ export default function App() {
   const [chartMode, setChartMode] = useState("datum");
   // Reiter und aufgeklappte Zeilen im Verzeichnis
   const [tab, setTab] = useState("erfassen");
+  const aktiv = tab === "analyseB" ? 1 : 0;
+  const andere = 1 - aktiv;
   const [openRows, setOpenRows] = useState({});
   const fileRef = useRef(null);
   // Synchronisierung
@@ -570,7 +576,6 @@ export default function App() {
   // Analyse & Suche
   // Zwei getrennte Filtersätze, damit sich zwei Auswahlen vergleichen lassen.
   const [auswahlen, setAuswahlen] = useState([leereAuswahl(), leereAuswahl()]);
-  const [aktiv, setAktiv] = useState(0);
   const [vergleich, setVergleich] = useState(false);
   const [glaettung, setGlaettung] = useState(0);   // Fenster in Tagen, 0 = aus
 
@@ -914,20 +919,23 @@ export default function App() {
     };
   };
 
-  const verlaufA = useMemo(() => bauVerlauf(trefferA), [trefferA]);
-  const verlaufB = useMemo(() => (vergleich ? bauVerlauf(trefferB) : null), [trefferB, vergleich]);
-  // Die ausführlichen Kennzahlen zeigen die gerade bearbeitete Auswahl —
-  // wie Trefferliste und Ø-Preis-Vergleich weiter oben auch.
-  const abInserat = aktiv === 1 && verlaufB ? verlaufB : verlaufA;
+  const verlauf0 = useMemo(() => bauVerlauf(trefferA), [trefferA]);
+  const verlauf1 = useMemo(() => bauVerlauf(trefferB), [trefferB]);
+  const primaer = aktiv === 1 ? verlauf1 : verlauf0;
+  const sekundaer = vergleich ? (aktiv === 1 ? verlauf0 : verlauf1) : null;
+  const abInserat = primaer;
 
   // Gemeinsame Zeitachse, Durchschnitt und Streuungsband je Auswahl.
+  // "P" ist die Auswahl dieses Reiters, "S" die eingeblendete zum Vergleich.
   const verlaufRows = useMemo(() => {
-    const saetze = [["A", verlaufA], ["B", verlaufB]].filter(([, v]) => v);
+    const saetze = [["P", primaer], ["S", sekundaer]].filter(([, v]) => v);
     if (!saetze.length) return [];
     const maxTag = Math.max(...saetze.map(([, v]) => v.maxTag), 1);
     const schritt = maxTag > 240 ? 21 : maxTag > 120 ? 14 : maxTag > 45 ? 7 : 2;
     const tage = new Set([0, maxTag]);
     saetze.forEach(([, v]) => v.reihen.forEach((r) => r.punkte.forEach((p) => tage.add(p.tag))));
+    // Jedes Inserat endet auf der Achse, damit seine Linie dort sichtbar ausläuft.
+    saetze.forEach(([, v]) => v.reihen.forEach((r) => tage.add(r.ende)));
     for (let t = 0; t <= maxTag; t += schritt) tage.add(t);
     const achse = [...tage].filter((t) => t <= maxTag).sort((a, b) => a - b);
 
@@ -943,15 +951,15 @@ export default function App() {
         row["sd" + name] = sd;
         row["n" + name] = werte.length;
       });
-      // Einzellinien nur, solange nichts verglichen wird — sonst wird es unlesbar
-      if (!verlaufB) verlaufA.reihen.forEach((r) => { row[r.id] = verlaufA.wertBei(r, tag); });
+      // Einzellinien nur, solange nichts eingeblendet ist — sonst wird es unlesbar
+      if (!sekundaer) primaer.reihen.forEach((r) => { row[r.id] = primaer.wertBei(r, tag); });
       return row;
     });
 
     // Gleitender Durchschnitt über ein Zeitfenster in Tagen
     const geglaettet = !glaettung ? roh : roh.map((r) => {
       const out = { ...r };
-      ["A", "B"].forEach((n) => {
+      ["P", "S"].forEach((n) => {
         const fenster = roh.filter((x) => Math.abs(x.tag - r.tag) <= glaettung / 2 && x["schnitt" + n] != null);
         if (fenster.length) {
           out["schnitt" + n] = mittel(fenster.map((x) => x["schnitt" + n]));
@@ -964,15 +972,15 @@ export default function App() {
     const r1 = (x) => (x == null ? null : Math.round(x * 10) / 10);
     return geglaettet.map((r) => {
       const out = { ...r };
-      ["A", "B"].forEach((n) => {
+      ["P", "S"].forEach((n) => {
         const m = r["schnitt" + n], sd = r["sd" + n];
         out["schnitt" + n] = r1(m);
         out["band" + n] = m == null ? null : [r1(m - sd), r1(m + sd)];
       });
-      Object.keys(out).forEach((k) => { if (!/^(tag|schnitt|band|sd|n)[AB]?$/.test(k)) out[k] = r1(out[k]); });
+      Object.keys(out).forEach((k) => { if (!/^(tag|schnitt|band|sd|n)[PS]?$/.test(k)) out[k] = r1(out[k]); });
       return out;
     });
-  }, [verlaufA, verlaufB, glaettung]);
+  }, [primaer, sekundaer, glaettung]);
 
   /* ---- Doppelte / neu eingestellte Inserate ---- */
   // Beim Import: gegen den gesamten Bestand prüfen, ausdrücklich auch
@@ -1045,8 +1053,19 @@ export default function App() {
 
       <nav style={S.tabs}>
         <button style={tab === "erfassen" ? S.tabOn : S.tabOff} onClick={() => setTab("erfassen")}>
-          <Upload size={14} /> Erfassen &amp; Analysieren
+          <Upload size={14} /> Erfassen
         </button>
+        {[0, 1].map((i) => {
+          const name = i === 0 ? "analyseA" : "analyseB";
+          const treffer = (i === 0 ? trefferA : trefferB).length;
+          return (
+            <button key={i} onClick={() => setTab(name)}
+              style={tab === name ? { ...S.tabOn, color: AUSWAHL_FARBE[i] } : S.tabOff}>
+              <TrendingDown size={14} /> Analyse {i === 0 ? "A" : "B"}
+              {treffer > 0 && <span style={tab === name ? { ...S.tabCountOn, background: AUSWAHL_FARBE[i] } : S.tabCount}>{treffer}</span>}
+            </button>
+          );
+        })}
         <button style={tab === "verzeichnis" ? S.tabOn : S.tabOff} onClick={() => setTab("verzeichnis")}>
           <Car size={14} /> Verzeichnis
           {list.length > 0 && <span style={tab === "verzeichnis" ? S.tabCountOn : S.tabCount}>{list.length}</span>}
@@ -1237,26 +1256,20 @@ export default function App() {
         )}
       </section>
 
+      </>)}
+
+      {(tab === "analyseA" || tab === "analyseB") && (<>
+
       {/* Analyse & Suche */}
-      <section style={S.panel}>
+      <section style={{ ...S.panel, borderTop: `3px solid ${AUSWAHL_FARBE[aktiv]}` }}>
         <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Search size={15} /> Analyse &amp; Suche</span>
-          <span style={S.toggleGroup}>
-            {[0, 1].map((i) => (
-              (i === 0 || vergleich) && (
-                <button key={i} onClick={() => setAktiv(i)}
-                  style={aktiv === i ? { ...S.toggleOn, background: AUSWAHL_FARBE[i] } : S.toggleOff}
-                  title={`Filter für ${AUSWAHL_NAME[i]} bearbeiten`}>
-                  {AUSWAHL_NAME[i]} · {(i === 0 ? trefferA : trefferB).length}
-                </button>
-              )
-            ))}
-            <button onClick={() => { const an = !vergleich; setVergleich(an); if (!an) setAktiv(0); }}
-              style={vergleich ? S.toggleOff : S.toggleOff}
-              title={vergleich ? "Zweite Auswahl ausblenden" : "Zweite Auswahl zum Vergleichen einblenden"}>
-              {vergleich ? "Vergleich aus" : "+ vergleichen"}
-            </button>
+          <span style={{ display: "flex", alignItems: "center", gap: 8, color: AUSWAHL_FARBE[aktiv] }}>
+            <Search size={15} /> Filter für {AUSWAHL_NAME[aktiv]}
           </span>
+          <button onClick={() => setVergleich((v) => !v)} style={vergleich ? S.toggleOn : S.toggleOff}
+            title={`Die Durchschnittslinie von ${AUSWAHL_NAME[andere]} zusätzlich einblenden`}>
+            {vergleich ? `${AUSWAHL_NAME[andere]} ausblenden` : `${AUSWAHL_NAME[andere]} einblenden`}
+          </button>
         </div>
 
         <div style={{ ...S.searchWrap, borderColor: vergleich ? AUSWAHL_FARBE[aktiv] + "77" : T.line }}>
@@ -1351,10 +1364,11 @@ export default function App() {
         <p style={S.hint}>
           Jedes Inserat startet bei Tag 0 und 100 % — unabhängig davon, wann es online ging.
           So liegen die Verläufe übereinander und du siehst, nach welcher Zeit Verkäufer üblicherweise nachgeben.
-          Das getönte Band zeigt die Streuung: Zwei Drittel der Inserate liegen darin, der Rest darüber oder darunter.
-          {vergleich
-            ? <> Verglichen werden <b style={{ color: AUSWAHL_FARBE[0] }}>A ({trefferA.length})</b> und <b style={{ color: AUSWAHL_FARBE[1] }}>B ({trefferB.length})</b>.</>
-            : <> Die Auswahl folgt den Filtern oben: <b style={{ color: T.text }}>{filtered.length}</b> von {list.length} Fahrzeugen.</>}
+          Jedes Fahrzeug ist eine durchgehende Linie von Tag 0 bis heute — auch eines, zu dem du erst einen
+          einzigen Preis erfasst hast; es läuft dann eben waagerecht. Das getönte Band zeigt die Streuung.
+          {sekundaer
+            ? <> Eingeblendet ist zusätzlich <b style={{ color: AUSWAHL_FARBE[andere] }}>{AUSWAHL_NAME[andere]}</b> mit {(andere === 0 ? trefferA : trefferB).length} Fahrzeugen.</>
+            : <> Diese Auswahl umfasst <b style={{ color: AUSWAHL_FARBE[aktiv] }}>{filtered.length}</b> von {list.length} Fahrzeugen.</>}
         </p>
         <div style={S.row}>
           <span style={S.fieldLabel}>Glättung</span>
@@ -1389,52 +1403,53 @@ export default function App() {
                   <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }}
                     labelFormatter={(t) => `Tag ${t}`}
                     formatter={(w, key) => {
-                      if (key === "bandA" || key === "bandB")
-                        return [Array.isArray(w) ? `${w[0]} – ${w[1]} %` : `${w} %`, `Streuung ${key.slice(-1)}`];
-                      if (key === "schnittA" || key === "schnittB")
-                        return [`${w} %`, vergleich ? `Ø ${AUSWAHL_NAME[key.endsWith("A") ? 0 : 1]}` : "Durchschnitt"];
+                      if (key === "bandP" || key === "bandS")
+                        return [Array.isArray(w) ? `${w[0]} – ${w[1]} %` : `${w} %`,
+                          `Streuung ${AUSWAHL_NAME[key === "bandP" ? aktiv : andere]}`];
+                      if (key === "schnittP" || key === "schnittS")
+                        return [`${w} %`, `Ø ${AUSWAHL_NAME[key === "schnittP" ? aktiv : andere]}`];
                       return [`${w} %`, vehicles[key]?.title?.slice(0, 26) || key];
                     }} />
                   <ReferenceLine y={100} stroke={T.muted} strokeDasharray="3 3" />
-                  {!verlaufB && abInserat.reihen.map((r, i) => (
-                    <Line key={r.id} type="stepAfter" dataKey={r.id} stroke={COLORS[i % COLORS.length]}
-                      strokeWidth={1.1} strokeOpacity={0.4} dot={false} connectNulls={false} isAnimationActive={false} />
-                  ))}
-                  <Area type="monotone" dataKey="bandA" stroke="none" fill={AUSWAHL_FARBE[0]} fillOpacity={0.16}
+                  <Area type="monotone" dataKey="bandP" stroke="none" fill={AUSWAHL_FARBE[aktiv]} fillOpacity={0.13}
                     connectNulls isAnimationActive={false} activeDot={false} />
-                  {verlaufB && (
-                    <Area type="monotone" dataKey="bandB" stroke="none" fill={AUSWAHL_FARBE[1]} fillOpacity={0.16}
+                  {sekundaer && (
+                    <Area type="monotone" dataKey="bandS" stroke="none" fill={AUSWAHL_FARBE[andere]} fillOpacity={0.13}
                       connectNulls isAnimationActive={false} activeDot={false} />
                   )}
-                  <Line type="monotone" dataKey="schnittA" stroke={AUSWAHL_FARBE[0]}
-                    strokeWidth={3} dot={{ r: 2.5 }} connectNulls isAnimationActive={false} />
-                  {verlaufB && (
-                    <Line type="monotone" dataKey="schnittB" stroke={AUSWAHL_FARBE[1]}
-                      strokeWidth={3} dot={{ r: 2.5 }} connectNulls isAnimationActive={false} />
+                  {!sekundaer && abInserat.reihen.map((r, i) => (
+                    <Line key={r.id} type="stepAfter" dataKey={r.id} stroke={LINIEN_FARBEN[i % LINIEN_FARBEN.length]}
+                      strokeWidth={1.7} strokeOpacity={0.85} dot={false} connectNulls={false} isAnimationActive={false} />
+                  ))}
+                  <Line type="monotone" dataKey="schnittP" stroke={AUSWAHL_FARBE[aktiv]}
+                    strokeWidth={3.5} dot={{ r: 2.5 }} connectNulls isAnimationActive={false} />
+                  {sekundaer && (
+                    <Line type="monotone" dataKey="schnittS" stroke={AUSWAHL_FARBE[andere]}
+                      strokeWidth={3.5} strokeDasharray="6 3" dot={{ r: 2.5 }} connectNulls isAnimationActive={false} />
                   )}
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
             <div style={S.legendHint}>
-              {vergleich
-                ? <>Dicke Linien: Durchschnitt je Auswahl · getönte Flächen: Streuung um den Durchschnitt</>
-                : <>Dünne Linien: einzelne Inserate · dicke Linie: Durchschnitt · getönte Fläche: Streuung</>}
+              {sekundaer
+                ? <>Durchgezogen: {AUSWAHL_NAME[aktiv]} · gestrichelt: {AUSWAHL_NAME[andere]} · getönte Flächen: Streuung</>
+                : <>Je Inserat eine Linie von Tag 0 bis heute · dicke Linie: Durchschnitt · getönte Fläche: Streuung</>}
               {glaettung > 0 && <> · geglättet über {glaettung} Tage</>}
             </div>
 
-            {vergleich && verlaufB && (
+            {sekundaer && (
               <div style={S.abTable}>
                 <div style={{ ...S.abRow, ...S.abHead }}>
                   <span>Kennzahl</span>
-                  <span style={{ color: AUSWAHL_FARBE[0] }}>Auswahl A</span>
-                  <span style={{ color: AUSWAHL_FARBE[1] }}>Auswahl B</span>
+                  <span style={{ color: AUSWAHL_FARBE[aktiv] }}>{AUSWAHL_NAME[aktiv]}</span>
+                  <span style={{ color: AUSWAHL_FARBE[andere] }}>{AUSWAHL_NAME[andere]}</span>
                 </div>
                 {[
-                  ["Fahrzeuge", `${verlaufA.anzahl}`, `${verlaufB.anzahl}`],
-                  ["auswertbar", `${verlaufA.beobachtet}`, `${verlaufB.beobachtet}`],
-                  ["1. Senkung (Median)", verlaufA.medianTage == null ? "—" : `${verlaufA.medianTage} Tage`, verlaufB.medianTage == null ? "—" : `${verlaufB.medianTage} Tage`],
-                  ["Ø Senkung", verlaufA.schnittSenkung == null ? "—" : `${verlaufA.schnittSenkung} %`, verlaufB.schnittSenkung == null ? "—" : `${verlaufB.schnittSenkung} %`],
-                  ["mit Senkung", `${verlaufA.mitSenkung}`, `${verlaufB.mitSenkung}`],
+                  ["Fahrzeuge", `${primaer.anzahl}`, `${sekundaer.anzahl}`],
+                  ["auswertbar", `${primaer.beobachtet}`, `${sekundaer.beobachtet}`],
+                  ["1. Senkung (Median)", primaer.medianTage == null ? "—" : `${primaer.medianTage} Tage`, sekundaer.medianTage == null ? "—" : `${sekundaer.medianTage} Tage`],
+                  ["Ø Senkung", primaer.schnittSenkung == null ? "—" : `${primaer.schnittSenkung} %`, sekundaer.schnittSenkung == null ? "—" : `${sekundaer.schnittSenkung} %`],
+                  ["mit Senkung", `${primaer.mitSenkung}`, `${sekundaer.mitSenkung}`],
                 ].map(([label, a, b]) => (
                   <div key={label} style={S.abRow}>
                     <span style={{ color: T.muted }}>{label}</span>
@@ -1445,12 +1460,12 @@ export default function App() {
               </div>
             )}
 
-            {vergleich && verlaufB && (
+            {sekundaer && (
               <div style={{ ...S.compareHead, marginBottom: 0 }}>
                 <span style={{ ...S.compareTitle, color: AUSWAHL_FARBE[aktiv] }}>
                   Einzelheiten zu {AUSWAHL_NAME[aktiv]}
                 </span>
-                <span style={S.resultCount}>oben umschalten für die andere</span>
+                <span style={S.resultCount}>für die andere in den Reiter wechseln</span>
               </div>
             )}
             <div style={S.kennzahlen}>
@@ -1506,6 +1521,10 @@ export default function App() {
           </>
         )}
       </section>
+
+      </>)}
+
+      {tab === "erfassen" && (<>
 
       {/* Laufzeiten */}
       {list.length > 0 && (
@@ -1873,6 +1892,8 @@ const globalCss = `
   select { -webkit-appearance: none; appearance: none; }
   a { color: ${T.accent}; }
   @media (max-width: 620px) { .pw-header { flex-direction: column; align-items: flex-start !important; gap: 16px; } }
+  /* Reiterleiste bleibt einzeilig und wird bei Bedarf seitlich geschoben */
+  nav::-webkit-scrollbar { display: none; }
 
   /* Verzeichnis: auf breiten Schirmen eine Tabelle, auf schmalen zwei Zeilen */
   .pw-dirhead, .pw-dirrow {
@@ -2017,9 +2038,9 @@ const styles = {
 
   empty: { display: "flex", flexDirection: "column", alignItems: "center", gap: 12, textAlign: "center", color: T.muted, fontSize: 12.5, lineHeight: 1.55, padding: "34px 20px", maxWidth: 460, margin: "0 auto" },
 
-  tabs: { display: "flex", gap: 6, marginBottom: 18, borderBottom: `1px solid ${T.line}`, paddingBottom: 0 },
-  tabOn: { display: "inline-flex", alignItems: "center", gap: 7, background: T.surface, color: T.accent, border: `1px solid ${T.line}`, borderBottomColor: T.surface, borderRadius: "10px 10px 0 0", padding: "10px 16px", fontSize: 13, fontWeight: 700, marginBottom: -1 },
-  tabOff: { display: "inline-flex", alignItems: "center", gap: 7, background: "transparent", color: T.muted, border: "1px solid transparent", borderRadius: "10px 10px 0 0", padding: "10px 16px", fontSize: 13, fontWeight: 600, marginBottom: -1 },
+  tabs: { display: "flex", gap: 4, marginBottom: 18, borderBottom: `1px solid ${T.line}`, paddingBottom: 0, overflowX: "auto", scrollbarWidth: "none" },
+  tabOn: { display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0, whiteSpace: "nowrap", background: T.surface, color: T.accent, border: `1px solid ${T.line}`, borderBottomColor: T.surface, borderRadius: "10px 10px 0 0", padding: "10px 14px", fontSize: 12.5, fontWeight: 700, marginBottom: -1 },
+  tabOff: { display: "inline-flex", alignItems: "center", gap: 6, flexShrink: 0, whiteSpace: "nowrap", background: "transparent", color: T.muted, border: "1px solid transparent", borderRadius: "10px 10px 0 0", padding: "10px 14px", fontSize: 12.5, fontWeight: 600, marginBottom: -1 },
   tabCount: { background: T.surface2, color: T.muted, borderRadius: 20, padding: "1px 8px", fontSize: 11, fontFamily: "ui-monospace, Menlo, monospace" },
   tabCountOn: { background: T.accent, color: T.bg, borderRadius: 20, padding: "1px 8px", fontSize: 11, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace" },
 
