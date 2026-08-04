@@ -244,6 +244,45 @@ function senkungen(v) {
   return { anzahl, summe };
 }
 
+/* --- Doppelte oder neu eingestellte Inserate erkennen ---
+   Verglichen wird über Merkmale, die eine Neueinstellung überdauern:
+   Marke, Modell, Farbe, Erstzulassung und Ort. Der Kilometerstand ist
+   bewusst keine Bedingung — den gibt der Verkäufer beim zweiten Mal neu
+   ein, meist mit anderem Wert. Der Anbietername ebenso wenig, weil bei
+   Privatanzeigen überall dasselbe steht. Beide zählen nur als Indiz. */
+
+const DUBLETTE_FELDER = ["make", "model", "color", "location"];
+
+function fingerabdruck(v) {
+  return [...DUBLETTE_FELDER.map((f) => v[f]), erstzulassung(v)]
+    .map((s) => String(s == null ? "" : s).trim().toLowerCase()).join(" | ");
+}
+// Nur vergleichen, wenn alle Merkmale gefüllt sind — sonst passt eine
+// halbleere Erfassung auf beliebig viele andere.
+const fingerabdruckVollstaendig = (v) =>
+  DUBLETTE_FELDER.every((f) => String(v[f] || "").trim()) && !!erstzulassung(v);
+
+// Zusätzliche Anhaltspunkte, die den Verdacht erhärten.
+function dublettenIndizien(neu, alt) {
+  const indizien = [];
+  const nameA = String(neu.dealerName || "").trim().toLowerCase();
+  const nameB = String(alt.dealerName || "").trim().toLowerCase();
+  if (nameA && nameA === nameB) indizien.push("gleicher Anbietername");
+  if (neu.mileage != null && alt.mileage != null) {
+    const d = Math.abs(neu.mileage - alt.mileage);
+    if (d === 0) indizien.push("identischer Kilometerstand — das Auto ist seitdem nicht gefahren worden");
+    else if (d <= 3000) indizien.push(`Kilometerstand nur ${fmtNum(d)} km auseinander`);
+  }
+  const neuPreis = lastPrice(neu), altPreis = lastPrice(alt);
+  if (neuPreis != null && altPreis != null && neuPreis > altPreis) {
+    indizien.push(`Preis liegt ${fmtEUR(neuPreis - altPreis)} über dem zuletzt gesehenen — typisch für eine zurückgesetzte Anzeige`);
+  }
+  if (neu.trimline && alt.trimline && neu.trimline.toLowerCase() === alt.trimline.toLowerCase()) {
+    indizien.push("gleiche Ausstattungslinie");
+  }
+  return indizien;
+}
+
 // Feste Auswahllisten je Feld, sofern vorhanden
 const FIXED_OPTS = {
   accidentStatus: ACCIDENT_OPTS, currentIssueStatus: ISSUE_OPTS,
@@ -935,6 +974,34 @@ export default function App() {
     });
   }, [verlaufA, verlaufB, glaettung]);
 
+  /* ---- Doppelte / neu eingestellte Inserate ---- */
+  // Beim Import: gegen den gesamten Bestand prüfen, ausdrücklich auch
+  // gegen abgeschlossene Inserate — genau dort steckt die Neueinstellung.
+  const previewDubletten = useMemo(() => {
+    if (!preview) return {};
+    const treffer = {};
+    preview.forEach((v) => {
+      if (!fingerabdruckVollstaendig(v)) return;
+      const f = fingerabdruck(v);
+      const gefunden = list.filter((x) => x.id !== v.id && fingerabdruckVollstaendig(x) && fingerabdruck(x) === f);
+      if (gefunden.length) treffer[v.id] = gefunden;
+    });
+    return treffer;
+  }, [preview, list]);
+
+  // Im Bestand: bereits erfasste Fahrzeuge, die zueinander passen.
+  const dublettenGruppen = useMemo(() => {
+    const gruppen = {};
+    list.forEach((v) => {
+      if (!fingerabdruckVollstaendig(v)) return;
+      const f = fingerabdruck(v);
+      if (!gruppen[f]) gruppen[f] = [];
+      gruppen[f].push(v);
+    });
+    return Object.values(gruppen).filter((g) => g.length > 1)
+      .map((g) => g.slice().sort((a, b) => (inseriertSeit(a) || "").localeCompare(inseriertSeit(b) || "")));
+  }, [list]);
+
   /* ---- Laufzeiten ---- */
   const laufzeiten = useMemo(() => list.map((v) => {
     const { anzahl, summe } = senkungen(v);
@@ -1066,6 +1133,7 @@ export default function App() {
                     {vehicles[v.id] && <span style={S.updTag}> aktualisiert</span>}
                   </span>
                 </div>
+                {previewDubletten[v.id] && <DublettenWarnung neu={v} treffer={previewDubletten[v.id]} />}
                 <div style={S.askBlock}>
                   <div style={S.askIntro}>Deine Einschätzung — das kann dir keine KI abnehmen:</div>
                   <ChoiceQuestion frage={PHOTO_DAMAGE_FRAGE} options={PHOTO_DAMAGE_OPTS} hilfe={PHOTO_DAMAGE_HILFE}
@@ -1093,6 +1161,50 @@ export default function App() {
           </div>
         )}
       </section>
+
+      {/* Mögliche Doppel-Inserate im Bestand */}
+      {dublettenGruppen.length > 0 && (
+        <section style={{ ...S.panel, borderColor: T.accent + "55" }}>
+          <div style={{ ...S.panelTitle, color: T.accent }}>
+            <AlertTriangle size={15} /> Mögliche Doppel-Inserate · {dublettenGruppen.length}
+          </div>
+          <p style={S.hint}>
+            Bei diesen Fahrzeugen stimmen Marke, Modell, Farbe, Erstzulassung und Ort überein.
+            Entweder steht dasselbe Auto zweimal im Bestand — oder es wurde vom Verkäufer neu eingestellt,
+            um die Standzeit zurückzusetzen.
+          </p>
+          {dublettenGruppen.map((gruppe, i) => (
+            <div key={i} style={S.dublettePaar}>
+              <div style={S.dubletteKopf}>
+                {[gruppe[0].make, gruppe[0].model, gruppe[0].color, erstzulassung(gruppe[0]), gruppe[0].location].filter(Boolean).join(" · ")}
+              </div>
+              {gruppe.map((v, n) => (
+                <div key={v.id} style={S.dubletteZeile}>
+                  <span style={S.dubletteZiffer}>{n + 1}</span>
+                  <span style={S.dubletteTitelKlein} title={v.title}>{v.title || v.id}</span>
+                  <span style={S.dubletteAngabe}>{inseriertSeit(v) ? fmtDate(inseriertSeit(v)) : "—"}</span>
+                  <span style={S.dubletteAngabe}>{v.mileage != null ? `${fmtNum(v.mileage)} km` : "—"}</span>
+                  <span style={S.dubletteAngabe}>{fmtEUR(lastPrice(v))}</span>
+                  <span style={{ ...S.dubletteAngabe, color: tagColor("listingStatus", v.listingStatus || "Aktiv"), fontWeight: 700 }}>
+                    {v.listingStatus || "Aktiv"}
+                  </span>
+                </div>
+              ))}
+              {gruppe.length === 2 && dublettenIndizien(gruppe[1], gruppe[0]).length > 0 && (
+                <ul style={S.dubletteListe}>
+                  {dublettenIndizien(gruppe[1], gruppe[0]).map((x, n) => <li key={n}>{x}</li>)}
+                </ul>
+              )}
+              {gruppe.some((v) => v.listingStatus && v.listingStatus !== "Aktiv") && gruppe.some((v) => !v.listingStatus || v.listingStatus === "Aktiv") && (
+                <div style={S.dubletteSchluss}>
+                  Eines ist abgeschlossen, eines läuft — das spricht für eine Neueinstellung.
+                  Echte Standzeit ab {fmtDate(inseriertSeit(gruppe[0]))}: <b style={{ color: T.text }}>{laufzeitText(tageZwischen(inseriertSeit(gruppe[0]), todayISO()))}</b>.
+                </div>
+              )}
+            </div>
+          ))}
+        </section>
+      )}
 
       {/* Preisverlauf */}
       <section style={S.panel}>
@@ -1665,6 +1777,51 @@ function DamageLine({ label, value, bad, good, icon }) {
     </div>
   );
 }
+function DublettenWarnung({ neu, treffer }) {
+  const S = styles;
+  const geschlossen = treffer.filter((t) => t.listingStatus && t.listingStatus !== "Aktiv");
+  const aktiv = treffer.filter((t) => !t.listingStatus || t.listingStatus === "Aktiv");
+  const wiedereinstellung = geschlossen.length > 0;
+  return (
+    <div style={{ ...S.dubletteBox, borderLeftColor: wiedereinstellung ? T.accent : T.bad }}>
+      <div style={{ ...S.dubletteTitel, color: wiedereinstellung ? T.accent : T.bad }}>
+        <AlertTriangle size={13} />
+        {wiedereinstellung ? "Vermutlich dasselbe Auto, neu eingestellt" : "Das hast du vermutlich schon erfasst"}
+      </div>
+      <div style={S.dubletteText}>
+        Marke, Modell, Farbe, Erstzulassung und Ort stimmen mit {treffer.length === 1 ? "einem bereits erfassten Inserat" : `${treffer.length} bereits erfassten Inseraten`} überein.
+      </div>
+      {treffer.map((t) => {
+        const indizien = dublettenIndizien(neu, t);
+        const seit = inseriertSeit(t);
+        const zu = t.listingStatus && t.listingStatus !== "Aktiv";
+        return (
+          <div key={t.id} style={S.dubletteTreffer}>
+            <div style={S.dubletteName}>{t.title || t.id}</div>
+            <div style={S.dubletteMeta}>
+              {seit && <>erfasst seit {fmtDate(seit)} · Laufzeit {laufzeitText(laufzeitTage(t))}</>}
+              {zu && <> · <span style={{ color: tagColor("listingStatus", t.listingStatus) }}>{t.listingStatus}{t.closedDate ? ` am ${fmtDate(t.closedDate)}` : ""}</span></>}
+              {lastPrice(t) != null && <> · zuletzt {fmtEUR(lastPrice(t))}</>}
+            </div>
+            {indizien.length > 0 && (
+              <ul style={S.dubletteListe}>
+                {indizien.map((i, n) => <li key={n}>{i}</li>)}
+              </ul>
+            )}
+          </div>
+        );
+      })}
+      <div style={S.dubletteText}>
+        {wiedereinstellung
+          ? "Wenn das zutrifft, läuft dieses Auto in Wahrheit schon deutlich länger als die neue Anzeige vermuten lässt — ein starkes Argument beim Verhandeln. Importiere es trotzdem, dann hast du beide Anzeigen dokumentiert."
+          : aktiv.length > 0
+            ? "Prüfe, ob es wirklich zwei verschiedene Autos sind. Falls nicht, brich ab und trage stattdessen beim vorhandenen Eintrag ein Preis-Update nach."
+            : ""}
+      </div>
+    </div>
+  );
+}
+
 function ChoiceQuestion({ frage, options, hilfe, value, onChange }) {
   return (
     <div style={styles.askItem}>
@@ -1830,6 +1987,21 @@ const styles = {
   abRow: { display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 8, alignItems: "center", fontSize: 12, padding: "6px 10px", background: T.bg, borderRadius: 6 },
   abHead: { background: "transparent", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, padding: "2px 10px", color: T.muted },
   abWert: { fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 600 },
+
+  dubletteBox: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: "3px solid", borderRadius: 9, padding: "11px 13px", marginTop: 8 },
+  dubletteTitel: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, marginBottom: 7 },
+  dubletteText: { fontSize: 11.5, color: T.muted, lineHeight: 1.6, marginTop: 8 },
+  dubletteTreffer: { background: T.surface2, borderRadius: 7, padding: "8px 10px", marginTop: 7 },
+  dubletteName: { fontSize: 12.5, fontWeight: 600 },
+  dubletteMeta: { fontSize: 11, color: T.muted, marginTop: 3, fontFamily: "ui-monospace, Menlo, monospace" },
+  dubletteListe: { margin: "7px 0 0", paddingLeft: 16, fontSize: 11.5, color: T.text, lineHeight: 1.7 },
+  dublettePaar: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "11px 13px", marginBottom: 10 },
+  dubletteKopf: { fontSize: 11, color: T.accent, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 },
+  dubletteZeile: { display: "grid", gridTemplateColumns: "20px minmax(90px,2fr) 78px 96px 88px 96px", gap: 8, alignItems: "center", fontSize: 11.5, padding: "5px 0", borderTop: `1px solid ${T.line}`, overflowX: "auto" },
+  dubletteZiffer: { color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
+  dubletteTitelKlein: { fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  dubletteAngabe: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11, color: T.muted, whiteSpace: "nowrap" },
+  dubletteSchluss: { fontSize: 11.5, color: T.muted, lineHeight: 1.6, marginTop: 9, paddingTop: 8, borderTop: `1px solid ${T.line}` },
   groupTable: { display: "flex", flexDirection: "column", gap: 2, marginTop: 6 },
   groupRow: { display: "flex", alignItems: "center", gap: 10, fontSize: 12, padding: "5px 8px", background: T.bg, borderRadius: 6 },
   groupTag: { fontWeight: 700, minWidth: 96, fontSize: 11.5 },
