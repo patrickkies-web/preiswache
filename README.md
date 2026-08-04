@@ -25,6 +25,24 @@ Filtern und Laufzeiten, sowie **Verzeichnis** mit der Fahrzeugliste. Dort steht 
 Auto als Zeile mit fünf Kennzahlen — Preis, Veränderung, Kilometer, Erstzulassung,
 Reparatur-Umfang — und klappt auf Klick zu allen Angaben auf.
 
+### Doppelte und neu eingestellte Inserate
+
+Verkäufer löschen Anzeigen und stellen sie neu ein, damit die Standzeit von vorn
+zählt. Die App vergleicht deshalb jedes neue Fahrzeug mit dem gesamten Bestand —
+ausdrücklich auch mit bereits abgeschlossenen Inseraten, denn genau dort steckt
+der Vorgänger.
+
+Verglichen wird über **Marke, Modell, Farbe, Erstzulassung und Ort**: Merkmale,
+die eine Neueinstellung überdauern. Der Kilometerstand ist bewusst keine
+Bedingung, weil der Verkäufer ihn beim zweiten Mal neu einträgt; ebenso wenig der
+Anbietername, weil bei Privatanzeigen überall dasselbe steht. Beide zählen nur
+als zusätzliches Indiz — ebenso wie ein Preis, der über dem zuletzt gesehenen
+liegt.
+
+Gemeldet wird, nie automatisch zusammengeführt. Ist der Vorgänger abgeschlossen,
+weist die App auf eine mutmaßliche Neueinstellung hin und nennt die echte
+Standzeit; läuft er noch, warnt sie vor einer doppelten Eingabe.
+
 ### Preisentwicklung ab Inserat
 
 Der Abschnitt beantwortet die Frage, **wann Verkäufer üblicherweise nachgeben**.
