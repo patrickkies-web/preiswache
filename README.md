@@ -29,7 +29,43 @@ Der Preisverlauf lässt sich auf „Tage seit Inserat" umschalten. Dann beginnen
 Kurven bei Tag 0 und liegen übereinander — so sind die Verläufe direkt vergleichbar,
 unabhängig davon, wann ein Auto inseriert wurde.
 
-Die Daten liegen im lokalen Speicher des Browsers — kein Server, kein Konto.
+## Synchronisierung einrichten
+
+Ohne Server liegen die Daten nur im jeweiligen Browser. Auf dem iPhone löscht
+Safari diesen Speicher nach etwa sieben Tagen ohne Besuch der Seite. Mit den
+folgenden Schritten liegen sie zusätzlich auf einem Server und stehen auf jedem
+Gerät zur Verfügung.
+
+1. **Speicher anlegen.** In Vercel im Projekt auf *Storage* → *Create Database*
+   → **Upstash for Redis** → mit diesem Projekt verbinden. Vercel legt die
+   Variablen `KV_REST_API_URL` und `KV_REST_API_TOKEN` selbst an.
+2. **Schlüssel festlegen.** Unter *Settings* → *Environment Variables* eine
+   Variable `PREISWACHE_KEY` mit einem selbst gewählten Passwort anlegen.
+3. **Neu ausrollen**, damit die Variablen ankommen (*Deployments* → beim
+   obersten Eintrag *Redeploy*).
+4. **In der App verbinden.** Oben rechts auf das Feld neben den Kennzahlen
+   tippen, das Passwort eintragen, *Verbinden*. Das wiederholst du einmal je
+   Gerät; der Schlüssel bleibt dort gespeichert.
+
+Ohne diese Einrichtung läuft die App unverändert weiter — sie bleibt dann
+einfach im lokalen Modus.
+
+### Wie das Zusammenspiel funktioniert
+
+Gespeichert wird immer zuerst lokal und danach auf dem Server, damit nichts
+verloren geht, wenn gerade kein Netz da ist. Beim Öffnen erscheint sofort der
+lokale Stand, anschließend zieht der Server nach.
+
+Hat ein anderes Gerät zwischenzeitlich gespeichert, überschreibt die App nichts
+stillschweigend: Sie meldet einen Konflikt und lässt dich wählen, ob der Stand
+vom Server oder dein eigener gelten soll.
+
+Der Schlüssel liegt bewusst auf dem Gerät und nicht im ausgelieferten Programm —
+die Seite ist öffentlich erreichbar, ein eingebauter Schlüssel wäre keiner.
+
+## Daten und Sicherung
+
+Ohne Synchronisierung liegen die Daten im lokalen Speicher des Browsers.
 Über „Exportieren" im Verzeichnis lässt sich alles als JSON-Datei sichern.
 Zurückspielen geht auf zwei Wegen: „Datei laden" im Import-Bereich, oder den
 Dateiinhalt ins Import-Feld einfügen. Beides funktioniert auch auf einem
@@ -40,7 +76,9 @@ anderen Gerät.
 | Datei | Inhalt |
 | --- | --- |
 | `New` | React-Quellcode der App |
+| `entry.jsx` | Einstiegspunkt für den Build |
 | `index.html` | ausgelieferte Seite: `New` mit React, Recharts und Lucide gebündelt |
+| `api/garage.js` | Server-Funktion für die Synchronisierung, ohne npm-Pakete |
 | `PROMPT.md` | Prompt, der aus einem Inserat den passenden JSON-Block erzeugt |
 
 ## Veröffentlichen
@@ -49,10 +87,12 @@ Vercel ist mit diesem Repository verbunden und veröffentlicht jeden Push nach
 `main` automatisch. `index.html` ist eine eigenständige Seite ohne externe
 Abhängigkeiten, ein Build-Schritt auf dem Server ist nicht nötig.
 
-Nach einer Änderung an `New` muss `index.html` neu gebaut werden:
+Nach einer Änderung an `New` muss `index.html` neu gebaut werden. `New` wird dazu
+als `App.jsx` neben `entry.jsx` gelegt:
 
 ```sh
 npm install esbuild react react-dom recharts lucide-react
+cp New App.jsx
 npx esbuild entry.jsx --bundle --minify --format=iife --target=es2019 \
   --define:process.env.NODE_ENV='"production"' --outfile=bundle.js
 ```

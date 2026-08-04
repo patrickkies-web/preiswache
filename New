@@ -7,6 +7,7 @@ import {
   Gauge, Plus, Trash2, Check, X, TrendingDown, TrendingUp, Minus, Car,
   AlertTriangle, Upload, Star, MapPin, Store, User, Wrench, Search, Filter, ShieldCheck, Download,
   Camera, CalendarClock, Archive, RotateCcw, Clock, ChevronRight, FileUp,
+  Cloud, CloudOff, RefreshCw,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -265,6 +266,17 @@ const T = {
   text: "#E6E9EE", muted: "#8A93A0", accent: "#F5B301", good: "#35C46B", bad: "#F4544E",
 };
 
+// Zustände der Synchronisierung, jeweils kurz für den Kopf und ausführlich im Bereich.
+const SYNC_INFO = {
+  lokal:      { kurz: "nur lokal",   farbe: "#8A93A0", lang: "Die Daten liegen nur in diesem Browser." },
+  laedt:      { kurz: "lädt…",       farbe: "#F5B301", lang: "Der Stand wird vom Server geholt." },
+  speichert:  { kurz: "speichert…",  farbe: "#F5B301", lang: "Änderungen werden auf den Server geschrieben." },
+  verbunden:  { kurz: "verbunden",   farbe: "#35C46B", lang: "Alles auf dem Server gesichert." },
+  schluessel: { kurz: "Schlüssel?",  farbe: "#F4544E", lang: "Der Schlüssel wird abgelehnt." },
+  fehler:     { kurz: "Fehler",      farbe: "#F4544E", lang: "Der Server ist gerade nicht erreichbar — lokal ist alles gespeichert." },
+  konflikt:   { kurz: "Konflikt",    farbe: "#F5B301", lang: "Auf dem Server liegt ein neuerer Stand, vermutlich von einem anderen Gerät." },
+};
+
 /* ---------------------------- Helpers ---------------------------- */
 
 const todayISO = () => new Date().toISOString().slice(0, 10);
@@ -404,40 +416,63 @@ function parseImport(text) {
 
 /* --------------------------- Storage ----------------------------- */
 
-async function loadGarage() {
+const SERVER_URL = "/api/garage";
+const KEY_STORE = "preiswache:key";
+
+// Der Schlüssel liegt auf dem Gerät, nicht im ausgelieferten Programm —
+// die Seite ist öffentlich, ein eingebauter Schlüssel wäre keiner.
+const readKey = () => { try { return localStorage.getItem(KEY_STORE) || ""; } catch (_) { return ""; } };
+const writeKey = (k) => { try { k ? localStorage.setItem(KEY_STORE, k) : localStorage.removeItem(KEY_STORE); } catch (_) {} };
+
+function localRead() {
   try {
-    const r = await window.storage.get(STORE_KEY);
-    if (r && r.value) {
-      const data = typeof r.value === "string" ? JSON.parse(r.value) : r.value;
-      const vehicles = data.vehicles || {};
-      // Früher gespeicherte Begriffe auf das heutige Vokabular heben,
-      // sonst wären sie über die Filter nicht mehr erreichbar.
-      Object.values(vehicles).forEach((v) => {
-        v.accidentStatus = normalizeStatus(v.accidentStatus, ACCIDENT_OPTS);
-        v.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS);
-        v.previousDamageStatus = normalizeStatus(v.previousDamageStatus, PREV_OPTS);
-        v.repairScope = normalizeStatus(v.repairScope, SCOPE_OPTS);
-        v.category = normalizeChoice(v.category, "category", CATEGORY_OPTS);
-        v.fuel = normalizeChoice(v.fuel, "fuel", FUEL_OPTS);
-        v.gearbox = normalizeChoice(v.gearbox, "gearbox", GEARBOX_OPTS);
-        v.drivetrain = normalizeChoice(v.drivetrain, "drivetrain", DRIVE_OPTS);
-        v.sellerType = normalizeChoice(v.sellerType, "sellerType", SELLER_OPTS);
-        v.condition = normalizeChoice(v.condition, "condition", CONDITION_OPTS);
-        v.color = normalizeChoice(v.color, "color", COLOR_OPTS);
-        v.month = normalizeMonth(v.month);
-        v.photoDamage = normalizeChoice(v.photoDamage, "photoDamage", PHOTO_DAMAGE_OPTS);
-        v.listingPrep = normalizeChoice(v.listingPrep, "listingPrep", LISTING_PREP_OPTS);
-        v.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS) || "Aktiv";
-        v.listedSince = v.listedSince || v.priceHistory?.[0]?.date || "";
-      });
-      return vehicles;
-    }
-  } catch (_) {}
-  return {};
+    const roh = localStorage.getItem(STORE_KEY);
+    return roh ? JSON.parse(roh) : null;
+  } catch (_) { return null; }
 }
-async function saveGarage(vehicles) {
-  try { await window.storage.set(STORE_KEY, JSON.stringify({ vehicles })); return true; }
-  catch (e) { console.error("Speichern fehlgeschlagen", e); return false; }
+function localWrite(vehicles) {
+  try { localStorage.setItem(STORE_KEY, JSON.stringify({ vehicles })); return true; }
+  catch (e) { console.error("Lokal speichern fehlgeschlagen", e); return false; }
+}
+
+async function serverRead(key) {
+  const r = await fetch(SERVER_URL, { headers: { authorization: `Bearer ${key}` }, cache: "no-store" });
+  const daten = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(daten.error || `Server antwortete mit ${r.status}`), { status: r.status });
+  return daten;
+}
+async function serverWrite(key, vehicles, base) {
+  const r = await fetch(SERVER_URL, {
+    method: "PUT",
+    headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
+    body: JSON.stringify({ vehicles, base }),
+  });
+  const daten = await r.json().catch(() => ({}));
+  if (!r.ok) throw Object.assign(new Error(daten.error || `Server antwortete mit ${r.status}`), { status: r.status, daten });
+  return daten;
+}
+
+// Gespeicherte Einträge auf das heutige Vokabular heben, egal woher sie stammen.
+function migrate(vehicles) {
+  Object.values(vehicles || {}).forEach((v) => {
+    v.accidentStatus = normalizeStatus(v.accidentStatus, ACCIDENT_OPTS);
+    v.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS);
+    v.previousDamageStatus = normalizeStatus(v.previousDamageStatus, PREV_OPTS);
+    v.repairScope = normalizeStatus(v.repairScope, SCOPE_OPTS);
+    v.category = normalizeChoice(v.category, "category", CATEGORY_OPTS);
+    v.fuel = normalizeChoice(v.fuel, "fuel", FUEL_OPTS);
+    v.gearbox = normalizeChoice(v.gearbox, "gearbox", GEARBOX_OPTS);
+    v.drivetrain = normalizeChoice(v.drivetrain, "drivetrain", DRIVE_OPTS);
+    v.sellerType = normalizeChoice(v.sellerType, "sellerType", SELLER_OPTS);
+    v.condition = normalizeChoice(v.condition, "condition", CONDITION_OPTS);
+    v.color = normalizeChoice(v.color, "color", COLOR_OPTS);
+    v.month = normalizeMonth(v.month);
+    v.photoDamage = normalizeChoice(v.photoDamage, "photoDamage", PHOTO_DAMAGE_OPTS);
+    v.listingPrep = normalizeChoice(v.listingPrep, "listingPrep", LISTING_PREP_OPTS);
+    v.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS) || "Aktiv";
+    v.listedSince = v.listedSince || v.priceHistory?.[0]?.date || "";
+  });
+  return vehicles || {};
 }
 
 /* ----------------------------- App ------------------------------- */
@@ -465,6 +500,10 @@ export default function App() {
   const [tab, setTab] = useState("erfassen");
   const [openRows, setOpenRows] = useState({});
   const fileRef = useRef(null);
+  // Synchronisierung
+  const [sync, setSync] = useState({ state: "lokal", savedAt: null, msg: "" });
+  const [showSync, setShowSync] = useState(false);
+  const [keyInput, setKeyInput] = useState(readKey());
   const toggleRow = useCallback((id) => setOpenRows((p) => ({ ...p, [id]: !p[id] })), []);
 
   // Analyse & Suche
@@ -475,12 +514,101 @@ export default function App() {
   const [moreFilters, setMoreFilters] = useState(false);
   const [groupBy, setGroupBy] = useState("repairScope");
 
-  useEffect(() => { loadGarage().then((v) => { setVehicles(v); setLoaded(true); }); }, []);
+  /* ---- Speichern: lokal sofort, auf dem Server sobald möglich ---- */
+  const baseRef = useRef(null);        // Stand, auf dem unsere Änderungen aufsetzen
+  const keyRef = useRef(readKey());
 
-  const persist = useCallback((next) => { setVehicles(next); saveGarage(next); }, []);
-  const updateVehicle = useCallback((id, updater) => {
-    setVehicles((prev) => { const v = prev[id]; if (!v) return prev; const next = { ...prev, [id]: updater({ ...v }) }; saveGarage(next); return next; });
+  const pushToServer = useCallback(async (next) => {
+    if (!keyRef.current) return;
+    setSync((s) => ({ ...s, state: "speichert" }));
+    try {
+      const { savedAt } = await serverWrite(keyRef.current, next, baseRef.current);
+      baseRef.current = savedAt;
+      setSync({ state: "verbunden", savedAt, msg: "" });
+    } catch (e) {
+      if (e.status === 409) {
+        setSync({ state: "konflikt", savedAt: e.daten?.savedAt || null, msg: e.message, fremd: e.daten?.vehicles || {} });
+      } else {
+        setSync({ state: e.status === 401 ? "schluessel" : "fehler", savedAt: null, msg: e.message });
+      }
+    }
   }, []);
+
+  const persist = useCallback((next) => {
+    setVehicles(next); localWrite(next); pushToServer(next);
+  }, [pushToServer]);
+
+  const updateVehicle = useCallback((id, updater) => {
+    setVehicles((prev) => {
+      const v = prev[id]; if (!v) return prev;
+      const next = { ...prev, [id]: updater({ ...v }) };
+      localWrite(next); pushToServer(next);
+      return next;
+    });
+  }, [pushToServer]);
+
+  // Beim Start: lokale Kopie sofort zeigen, dann den Server nachziehen.
+  useEffect(() => {
+    const lokal = migrate(localRead()?.vehicles || {});
+    setVehicles(lokal);
+    setLoaded(true);
+    const key = keyRef.current;
+    if (!key) { setSync({ state: "lokal", savedAt: null, msg: "" }); return; }
+    (async () => {
+      setSync((s) => ({ ...s, state: "laedt" }));
+      try {
+        const { vehicles: fern, savedAt } = await serverRead(key);
+        baseRef.current = savedAt;
+        if (savedAt) {
+          const gehoben = migrate(fern);
+          setVehicles(gehoben); localWrite(gehoben);
+          setSync({ state: "verbunden", savedAt, msg: "" });
+        } else if (Object.keys(lokal).length) {
+          await pushToServer(lokal);            // erster Abgleich: lokal hoch
+        } else {
+          setSync({ state: "verbunden", savedAt: null, msg: "" });
+        }
+      } catch (e) {
+        setSync({ state: e.status === 401 ? "schluessel" : "fehler", savedAt: null, msg: e.message });
+      }
+    })();
+  }, [pushToServer]);
+
+  // Konflikt auflösen
+  const konfliktServerNehmen = useCallback(() => {
+    setSync((s) => {
+      const fern = migrate(s.fremd || {});
+      setVehicles(fern); localWrite(fern);
+      baseRef.current = s.savedAt;
+      return { state: "verbunden", savedAt: s.savedAt, msg: "" };
+    });
+  }, []);
+  const konfliktEigenesNehmen = useCallback(() => {
+    setSync((s) => { baseRef.current = s.savedAt; return s; });
+    setTimeout(() => setVehicles((v) => { pushToServer(v); return v; }), 0);
+  }, [pushToServer]);
+
+  const schluesselSpeichern = useCallback((k) => {
+    const sauber = k.trim();
+    keyRef.current = sauber; writeKey(sauber); baseRef.current = null;
+    if (!sauber) { setSync({ state: "lokal", savedAt: null, msg: "" }); return; }
+    (async () => {
+      setSync({ state: "laedt", savedAt: null, msg: "" });
+      try {
+        const { vehicles: fern, savedAt } = await serverRead(sauber);
+        baseRef.current = savedAt;
+        if (savedAt) {
+          const gehoben = migrate(fern);
+          setVehicles(gehoben); localWrite(gehoben);
+          setSync({ state: "verbunden", savedAt, msg: "" });
+        } else {
+          setVehicles((v) => { pushToServer(v); return v; });
+        }
+      } catch (e) {
+        setSync({ state: e.status === 401 ? "schluessel" : "fehler", savedAt: null, msg: e.message });
+      }
+    })();
+  }, [pushToServer]);
 
   const list = useMemo(() => Object.values(vehicles).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "")), [vehicles]);
 
@@ -687,6 +815,11 @@ export default function App() {
         <div style={S.stats}>
           <Stat label="Fahrzeuge" value={fmtNum(list.length)} />
           <Stat label="Beob. Rückgänge" value={fmtEUR(totalDrop)} accent={T.good} />
+          <button style={{ ...S.syncChip, color: SYNC_INFO[sync.state].farbe, borderColor: SYNC_INFO[sync.state].farbe + "55" }}
+            onClick={() => setShowSync((s) => !s)} title="Synchronisierung einrichten">
+            {sync.state === "verbunden" ? <Cloud size={13} /> : sync.state === "laedt" || sync.state === "speichert" ? <RefreshCw size={13} /> : <CloudOff size={13} />}
+            {SYNC_INFO[sync.state].kurz}
+          </button>
         </div>
       </header>
 
@@ -699,6 +832,45 @@ export default function App() {
           {list.length > 0 && <span style={tab === "verzeichnis" ? S.tabCountOn : S.tabCount}>{list.length}</span>}
         </button>
       </nav>
+
+      {showSync && (
+        <section style={S.panel}>
+          <div style={S.panelTitle}><Cloud size={15} /> Synchronisierung</div>
+          <p style={S.hint}>
+            Ohne Schlüssel liegen die Daten nur in diesem Browser — und Safari löscht sie auf dem iPhone
+            nach etwa einer Woche ohne Besuch. Mit Schlüssel liegen sie zusätzlich auf dem Server und
+            stehen auf jedem Gerät zur Verfügung.
+          </p>
+          <div style={{ ...S.notice, borderColor: SYNC_INFO[sync.state].farbe, marginTop: 0 }}>
+            {sync.state === "verbunden" ? <Check size={15} color={T.good} /> : <AlertTriangle size={15} color={SYNC_INFO[sync.state].farbe} />}
+            <span>
+              {SYNC_INFO[sync.state].lang}
+              {sync.savedAt && sync.state === "verbunden" && <span style={{ color: T.muted }}> · zuletzt {new Date(sync.savedAt).toLocaleString("de-DE")}</span>}
+              {sync.msg && sync.state !== "verbunden" && <span style={{ color: T.muted }}> — {sync.msg}</span>}
+            </span>
+          </div>
+          {sync.state === "konflikt" && (
+            <div style={S.row}>
+              <button style={S.primaryBtn} onClick={konfliktServerNehmen}><Cloud size={15} /> Stand vom Server übernehmen</button>
+              <button style={S.ghostBtn} onClick={konfliktEigenesNehmen}><Upload size={15} /> Meinen Stand hochladen</button>
+            </div>
+          )}
+          <div style={{ ...S.rangeField, marginTop: 14 }}>
+            <span style={S.fieldLabel}>Schlüssel für dieses Gerät</span>
+            <input type="password" value={keyInput} onChange={(e) => setKeyInput(e.target.value)}
+              placeholder="der Wert aus PREISWACHE_KEY" style={S.askInput} autoComplete="off" spellCheck={false} />
+          </div>
+          <div style={S.row}>
+            <button style={S.primaryBtn} onClick={() => schluesselSpeichern(keyInput)} disabled={keyInput === readKey()}>
+              <Check size={16} /> Verbinden
+            </button>
+            {readKey() && <button style={S.ghostBtn} onClick={() => { setKeyInput(""); schluesselSpeichern(""); }}>
+              <CloudOff size={15} /> Trennen
+            </button>}
+            <button style={S.ghostBtn} onClick={() => setShowSync(false)}><X size={15} /> Schließen</button>
+          </div>
+        </section>
+      )}
 
       {tab === "erfassen" && (<>
 
@@ -1229,7 +1401,8 @@ const styles = {
   logo: { width: 42, height: 42, borderRadius: 11, background: T.accent, display: "grid", placeItems: "center", boxShadow: `0 0 0 4px ${T.accent}22` },
   brandName: { fontWeight: 800, letterSpacing: "0.14em", fontSize: 18 },
   brandSub: { color: T.muted, fontSize: 12, marginTop: 2 },
-  stats: { display: "flex", gap: 26 },
+  stats: { display: "flex", gap: 26, alignItems: "center", flexWrap: "wrap" },
+  syncChip: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", border: "1px solid", borderRadius: 20, padding: "5px 11px", fontSize: 11.5, fontWeight: 700 },
   stat: { textAlign: "right" },
   statValue: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 22, fontWeight: 700, color: T.text },
   statLabel: { color: T.muted, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.08em", marginTop: 3 },
