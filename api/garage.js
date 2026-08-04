@@ -65,9 +65,14 @@ module.exports = async function handler(req, res) {
       PREISWACHE_KEY: "das Passwort PREISWACHE_KEY (Settings → Environment Variables)",
       Speicher: "die Verbindung zum Speicher, also KV_REST_API_URL und KV_REST_API_TOKEN (Storage → Upstash for Redis, mit dem Projekt verbinden)",
     };
+    // Hilfe beim Einrichten: Namen ähnlicher Variablen nennen (nie Werte),
+    // damit Tippfehler auffallen, und die Kennung des Deployments zeigen —
+    // ändert sie sich nicht, wurde nach dem Speichern nicht neu ausgerollt.
     return res.status(503).json({
       error: `Auf dem Server fehlt noch ${fehlt.map((f) => texte[f]).join(" sowie ")}. Nach dem Anlegen einmal neu ausrollen, sonst kennen die Funktionen die Werte nicht.`,
       missing: fehlt,
+      aehnlicheNamen: Object.keys(process.env).filter((n) => /preis|wache/i.test(n)),
+      deployment: (process.env.VERCEL_DEPLOYMENT_ID || "unbekannt").slice(-12),
     });
   }
   if (schluesselAusAnfrage(req) !== erwartet) {
