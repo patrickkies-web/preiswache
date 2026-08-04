@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend, Cell, ReferenceLine,
+  ResponsiveContainer, Legend, Cell, ReferenceLine, ComposedChart, Area,
 } from "recharts";
 import {
   Gauge, Plus, Trash2, Check, X, TrendingDown, TrendingUp, Minus, Car,
@@ -285,6 +285,10 @@ const T = {
 };
 
 // Zustände der Synchronisierung, jeweils kurz für den Kopf und ausführlich im Bereich.
+const leereAuswahl = () => ({ q: "", filters: {}, priceMax: "", kmMax: "" });
+const AUSWAHL_FARBE = ["#F5B301", "#4EA8F4"];   // A gelb, B blau
+const AUSWAHL_NAME = ["Auswahl A", "Auswahl B"];
+
 const SYNC_INFO = {
   lokal:      { kurz: "nur lokal",   farbe: "#8A93A0", lang: "Die Daten liegen nur in diesem Browser." },
   laedt:      { kurz: "lädt…",       farbe: "#F5B301", lang: "Der Stand wird vom Server geholt." },
@@ -525,10 +529,19 @@ export default function App() {
   const toggleRow = useCallback((id) => setOpenRows((p) => ({ ...p, [id]: !p[id] })), []);
 
   // Analyse & Suche
-  const [q, setQ] = useState("");
-  const [filters, setFilters] = useState({});
-  const [priceMax, setPriceMax] = useState("");
-  const [kmMax, setKmMax] = useState("");
+  // Zwei getrennte Filtersätze, damit sich zwei Auswahlen vergleichen lassen.
+  const [auswahlen, setAuswahlen] = useState([leereAuswahl(), leereAuswahl()]);
+  const [aktiv, setAktiv] = useState(0);
+  const [vergleich, setVergleich] = useState(false);
+  const [glaettung, setGlaettung] = useState(0);   // Fenster in Tagen, 0 = aus
+
+  const A = auswahlen[aktiv];
+  const { q, filters, priceMax, kmMax } = A;
+  const aendere = (feld, wert) =>
+    setAuswahlen((prev) => prev.map((a, i) => (i === aktiv ? { ...a, [feld]: wert } : a)));
+  const setQ = (v) => aendere("q", v);
+  const setPriceMax = (v) => aendere("priceMax", v);
+  const setKmMax = (v) => aendere("kmMax", v);
   const [moreFilters, setMoreFilters] = useState(false);
   const [groupBy, setGroupBy] = useState("repairScope");
 
@@ -778,13 +791,16 @@ export default function App() {
   /* ---- Analyse: Filter + Vergleich ---- */
   const searchable = (v) => [v.title, v.subtitle, v.make, v.model, v.series, v.trimline, v.category, v.year, erstzulassung(v), v.fuel, v.gearbox, v.drivetrain, v.condition, v.color, v.location, v.sellerType, v.dealerName, v.note, v.damageCurrent, v.damagePrevious, v.damageRepaired].join(" ").toLowerCase();
 
-  const filtered = useMemo(() => list.filter((v) => {
-    if (q.trim() && !searchable(v).includes(q.trim().toLowerCase())) return false;
-    for (const [f, val] of Object.entries(filters)) { if (val && (v[f] || "") !== val) return false; }
-    const pmax = coerceNum(priceMax); if (pmax != null) { const lp = lastPrice(v); if (lp == null || lp > pmax) return false; }
-    const kmax = coerceNum(kmMax); if (kmax != null) { if (v.mileage == null || v.mileage > kmax) return false; }
+  const filtereMit = (a) => list.filter((v) => {
+    if (a.q.trim() && !searchable(v).includes(a.q.trim().toLowerCase())) return false;
+    for (const [f, val] of Object.entries(a.filters)) { if (val && (v[f] || "") !== val) return false; }
+    const pmax = coerceNum(a.priceMax); if (pmax != null) { const lp = lastPrice(v); if (lp == null || lp > pmax) return false; }
+    const kmax = coerceNum(a.kmMax); if (kmax != null) { if (v.mileage == null || v.mileage > kmax) return false; }
     return true;
-  }), [list, q, filters, priceMax, kmMax]);
+  });
+  const trefferA = useMemo(() => filtereMit(auswahlen[0]), [list, auswahlen]);
+  const trefferB = useMemo(() => filtereMit(auswahlen[1]), [list, auswahlen]);
+  const filtered = aktiv === 0 ? trefferA : trefferB;
 
   const distinct = (field) => [...new Set(list.map((v) => v[field]).filter(Boolean))].sort();
 
@@ -801,9 +817,9 @@ export default function App() {
   }, [filtered, groupBy]);
 
   /* ---- Preisentwicklung ab Inserat (folgt den Filtern oben) ---- */
-  const abInserat = useMemo(() => {
+  const bauVerlauf = (fahrzeuge) => {
     const reihen = [];
-    filtered.forEach((v) => {
+    fahrzeuge.forEach((v) => {
       const h = (v.priceHistory || []).slice().sort((a, b) => a.date.localeCompare(b.date));
       if (!h.length) return;
       const start = inseriertSeit(v) || h[0].date;
@@ -819,12 +835,6 @@ export default function App() {
     if (!reihen.length) return null;
 
     const maxTag = Math.max(...reihen.map((r) => r.ende), 1);
-    // Stützstellen: jeder beobachtete Tag plus ein gleichmäßiges Raster
-    const schritt = maxTag > 240 ? 21 : maxTag > 120 ? 14 : maxTag > 45 ? 7 : 2;
-    const tage = new Set([0, maxTag]);
-    reihen.forEach((r) => r.punkte.forEach((p) => tage.add(p.tag)));
-    for (let t = 0; t <= maxTag; t += schritt) tage.add(t);
-    const achse = [...tage].filter((t) => t <= maxTag).sort((a, b) => a - b);
 
     // Ein Preis gilt weiter, bis der Verkäufer ihn ändert.
     const wertBei = (r, tag) => {
@@ -833,19 +843,6 @@ export default function App() {
       for (const p of r.punkte) { if (p.tag <= tag) letzter = p; else break; }
       return letzter ? (letzter.price / r.startPreis) * 100 : null;
     };
-
-    const rows = achse.map((tag) => {
-      const row = { tag };
-      const werte = [];
-      reihen.forEach((r) => {
-        const w = wertBei(r, tag);
-        row[r.id] = w == null ? null : Math.round(w * 10) / 10;
-        if (w != null) werte.push(w);
-      });
-      row.__schnitt = werte.length ? Math.round(mittel(werte) * 10) / 10 : null;
-      row.__anzahl = werte.length;
-      return row;
-    });
 
     // Kennzahlen
     const bisSenkung = [], gesamtSenkung = [], abstaende = [];
@@ -866,7 +863,7 @@ export default function App() {
     });
 
     return {
-      reihen, rows, maxTag,
+      reihen, maxTag, wertBei,
       anzahl: reihen.length,
       beobachtet: reihen.filter((r) => r.punkte.length > 1).length,
       mitSenkung,
@@ -876,7 +873,67 @@ export default function App() {
       schnittAbstand: mittel(abstaende) == null ? null : Math.round(mittel(abstaende)),
       faecher,
     };
-  }, [filtered]);
+  };
+
+  const verlaufA = useMemo(() => bauVerlauf(trefferA), [trefferA]);
+  const verlaufB = useMemo(() => (vergleich ? bauVerlauf(trefferB) : null), [trefferB, vergleich]);
+  // Die ausführlichen Kennzahlen zeigen die gerade bearbeitete Auswahl —
+  // wie Trefferliste und Ø-Preis-Vergleich weiter oben auch.
+  const abInserat = aktiv === 1 && verlaufB ? verlaufB : verlaufA;
+
+  // Gemeinsame Zeitachse, Durchschnitt und Streuungsband je Auswahl.
+  const verlaufRows = useMemo(() => {
+    const saetze = [["A", verlaufA], ["B", verlaufB]].filter(([, v]) => v);
+    if (!saetze.length) return [];
+    const maxTag = Math.max(...saetze.map(([, v]) => v.maxTag), 1);
+    const schritt = maxTag > 240 ? 21 : maxTag > 120 ? 14 : maxTag > 45 ? 7 : 2;
+    const tage = new Set([0, maxTag]);
+    saetze.forEach(([, v]) => v.reihen.forEach((r) => r.punkte.forEach((p) => tage.add(p.tag))));
+    for (let t = 0; t <= maxTag; t += schritt) tage.add(t);
+    const achse = [...tage].filter((t) => t <= maxTag).sort((a, b) => a - b);
+
+    const roh = achse.map((tag) => {
+      const row = { tag };
+      saetze.forEach(([name, v]) => {
+        const werte = v.reihen.map((r) => v.wertBei(r, tag)).filter((w) => w != null);
+        if (!werte.length) return;
+        const m = mittel(werte);
+        // Streuung über die Inserate: wie weit liegen sie an diesem Tag auseinander
+        const sd = werte.length > 1 ? Math.sqrt(mittel(werte.map((w) => (w - m) ** 2))) : 0;
+        row["schnitt" + name] = m;
+        row["sd" + name] = sd;
+        row["n" + name] = werte.length;
+      });
+      // Einzellinien nur, solange nichts verglichen wird — sonst wird es unlesbar
+      if (!verlaufB) verlaufA.reihen.forEach((r) => { row[r.id] = verlaufA.wertBei(r, tag); });
+      return row;
+    });
+
+    // Gleitender Durchschnitt über ein Zeitfenster in Tagen
+    const geglaettet = !glaettung ? roh : roh.map((r) => {
+      const out = { ...r };
+      ["A", "B"].forEach((n) => {
+        const fenster = roh.filter((x) => Math.abs(x.tag - r.tag) <= glaettung / 2 && x["schnitt" + n] != null);
+        if (fenster.length) {
+          out["schnitt" + n] = mittel(fenster.map((x) => x["schnitt" + n]));
+          out["sd" + n] = mittel(fenster.map((x) => x["sd" + n]));
+        }
+      });
+      return out;
+    });
+
+    const r1 = (x) => (x == null ? null : Math.round(x * 10) / 10);
+    return geglaettet.map((r) => {
+      const out = { ...r };
+      ["A", "B"].forEach((n) => {
+        const m = r["schnitt" + n], sd = r["sd" + n];
+        out["schnitt" + n] = r1(m);
+        out["band" + n] = m == null ? null : [r1(m - sd), r1(m + sd)];
+      });
+      Object.keys(out).forEach((k) => { if (!/^(tag|schnitt|band|sd|n)[AB]?$/.test(k)) out[k] = r1(out[k]); });
+      return out;
+    });
+  }, [verlaufA, verlaufB, glaettung]);
 
   /* ---- Laufzeiten ---- */
   const laufzeiten = useMemo(() => list.map((v) => {
@@ -894,8 +951,8 @@ export default function App() {
   const alleOffen = list.length > 0 && list.every((v) => openRows[v.id]);
 
   const activeFilterCount = Object.values(filters).filter(Boolean).length + (priceMax ? 1 : 0) + (kmMax ? 1 : 0) + (q.trim() ? 1 : 0);
-  const resetFilters = () => { setQ(""); setFilters({}); setPriceMax(""); setKmMax(""); };
-  const setFilter = (f, val) => setFilters((prev) => ({ ...prev, [f]: val }));
+  const resetFilters = () => setAuswahlen((prev) => prev.map((a, i) => (i === aktiv ? leereAuswahl() : a)));
+  const setFilter = (f, val) => aendere("filters", { ...filters, [f]: val });
 
   const S = styles;
 
@@ -1070,9 +1127,27 @@ export default function App() {
 
       {/* Analyse & Suche */}
       <section style={S.panel}>
-        <div style={S.panelTitle}><Search size={15} /> Analyse &amp; Suche</div>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Search size={15} /> Analyse &amp; Suche</span>
+          <span style={S.toggleGroup}>
+            {[0, 1].map((i) => (
+              (i === 0 || vergleich) && (
+                <button key={i} onClick={() => setAktiv(i)}
+                  style={aktiv === i ? { ...S.toggleOn, background: AUSWAHL_FARBE[i] } : S.toggleOff}
+                  title={`Filter für ${AUSWAHL_NAME[i]} bearbeiten`}>
+                  {AUSWAHL_NAME[i]} · {(i === 0 ? trefferA : trefferB).length}
+                </button>
+              )
+            ))}
+            <button onClick={() => { const an = !vergleich; setVergleich(an); if (!an) setAktiv(0); }}
+              style={vergleich ? S.toggleOff : S.toggleOff}
+              title={vergleich ? "Zweite Auswahl ausblenden" : "Zweite Auswahl zum Vergleichen einblenden"}>
+              {vergleich ? "Vergleich aus" : "+ vergleichen"}
+            </button>
+          </span>
+        </div>
 
-        <div style={S.searchWrap}>
+        <div style={{ ...S.searchWrap, borderColor: vergleich ? AUSWAHL_FARBE[aktiv] + "77" : T.line }}>
           <Search size={15} color={T.muted} />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Volltext: Marke, Modell, Notiz, Schäden …" style={S.searchInput} />
           {activeFilterCount > 0 && <button style={S.resetBtn} onClick={resetFilters}><X size={13} /> {activeFilterCount}</button>}
@@ -1164,8 +1239,20 @@ export default function App() {
         <p style={S.hint}>
           Jedes Inserat startet bei Tag 0 und 100 % — unabhängig davon, wann es online ging.
           So liegen die Verläufe übereinander und du siehst, nach welcher Zeit Verkäufer üblicherweise nachgeben.
-          Die Auswahl folgt den Filtern oben: <b style={{ color: T.text }}>{filtered.length}</b> von {list.length} Fahrzeugen.
+          Das getönte Band zeigt die Streuung: Zwei Drittel der Inserate liegen darin, der Rest darüber oder darunter.
+          {vergleich
+            ? <> Verglichen werden <b style={{ color: AUSWAHL_FARBE[0] }}>A ({trefferA.length})</b> und <b style={{ color: AUSWAHL_FARBE[1] }}>B ({trefferB.length})</b>.</>
+            : <> Die Auswahl folgt den Filtern oben: <b style={{ color: T.text }}>{filtered.length}</b> von {list.length} Fahrzeugen.</>}
         </p>
+        <div style={S.row}>
+          <span style={S.fieldLabel}>Glättung</span>
+          <span style={S.toggleGroup}>
+            {[[0, "aus"], [7, "1 Woche"], [14, "2 Wochen"], [28, "4 Wochen"]].map(([w, label]) => (
+              <button key={w} onClick={() => setGlaettung(w)} style={glaettung === w ? S.toggleOn : S.toggleOff}
+                title="Gleitender Durchschnitt über dieses Zeitfenster — glättet Ausreißer bei wenigen Daten">{label}</button>
+            ))}
+          </span>
+        </div>
 
         {!abInserat ? (
           <div style={S.emptySmall}>Für die aktuelle Auswahl gibt es keine Preisdaten.</div>
@@ -1179,31 +1266,81 @@ export default function App() {
           </div>
         ) : (
           <>
-            <div style={{ width: "100%", height: 320 }}>
+            <div style={{ width: "100%", height: 330 }}>
               <ResponsiveContainer>
-                <LineChart data={abInserat.rows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                <ComposedChart data={verlaufRows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
                   <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  <XAxis dataKey="tag" type="number" domain={[0, abInserat.maxTag]}
+                  <XAxis dataKey="tag" type="number" domain={[0, "dataMax"]}
                     tickFormatter={(t) => `${t} T`} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} />
-                  <YAxis domain={["dataMin - 2", 101]} tickFormatter={(w) => `${Math.round(w)} %`}
+                  <YAxis domain={["dataMin - 2", "dataMax + 1"]} tickFormatter={(w) => `${Math.round(w)} %`}
                     stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} width={48} />
                   <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }}
                     labelFormatter={(t) => `Tag ${t}`}
-                    formatter={(w, key) => [`${w} %`, key === "__schnitt" ? "Durchschnitt" : (vehicles[key]?.title?.slice(0, 26) || key)]} />
+                    formatter={(w, key) => {
+                      if (key === "bandA" || key === "bandB")
+                        return [Array.isArray(w) ? `${w[0]} – ${w[1]} %` : `${w} %`, `Streuung ${key.slice(-1)}`];
+                      if (key === "schnittA" || key === "schnittB")
+                        return [`${w} %`, vergleich ? `Ø ${AUSWAHL_NAME[key.endsWith("A") ? 0 : 1]}` : "Durchschnitt"];
+                      return [`${w} %`, vehicles[key]?.title?.slice(0, 26) || key];
+                    }} />
                   <ReferenceLine y={100} stroke={T.muted} strokeDasharray="3 3" />
-                  {abInserat.reihen.map((r, i) => (
+                  {!verlaufB && abInserat.reihen.map((r, i) => (
                     <Line key={r.id} type="stepAfter" dataKey={r.id} stroke={COLORS[i % COLORS.length]}
-                      strokeWidth={1.2} strokeOpacity={0.55} dot={false} connectNulls={false} isAnimationActive={false} />
+                      strokeWidth={1.1} strokeOpacity={0.4} dot={false} connectNulls={false} isAnimationActive={false} />
                   ))}
-                  <Line type="monotone" dataKey="__schnitt" name="Durchschnitt" stroke={T.accent}
-                    strokeWidth={3} dot={{ r: 3 }} connectNulls isAnimationActive={false} />
-                </LineChart>
+                  <Area type="monotone" dataKey="bandA" stroke="none" fill={AUSWAHL_FARBE[0]} fillOpacity={0.16}
+                    connectNulls isAnimationActive={false} activeDot={false} />
+                  {verlaufB && (
+                    <Area type="monotone" dataKey="bandB" stroke="none" fill={AUSWAHL_FARBE[1]} fillOpacity={0.16}
+                      connectNulls isAnimationActive={false} activeDot={false} />
+                  )}
+                  <Line type="monotone" dataKey="schnittA" stroke={AUSWAHL_FARBE[0]}
+                    strokeWidth={3} dot={{ r: 2.5 }} connectNulls isAnimationActive={false} />
+                  {verlaufB && (
+                    <Line type="monotone" dataKey="schnittB" stroke={AUSWAHL_FARBE[1]}
+                      strokeWidth={3} dot={{ r: 2.5 }} connectNulls isAnimationActive={false} />
+                  )}
+                </ComposedChart>
               </ResponsiveContainer>
             </div>
             <div style={S.legendHint}>
-              Dünne Linien: einzelne Inserate · dicke gelbe Linie: Durchschnitt aller ausgewählten
+              {vergleich
+                ? <>Dicke Linien: Durchschnitt je Auswahl · getönte Flächen: Streuung um den Durchschnitt</>
+                : <>Dünne Linien: einzelne Inserate · dicke Linie: Durchschnitt · getönte Fläche: Streuung</>}
+              {glaettung > 0 && <> · geglättet über {glaettung} Tage</>}
             </div>
 
+            {vergleich && verlaufB && (
+              <div style={S.abTable}>
+                <div style={{ ...S.abRow, ...S.abHead }}>
+                  <span>Kennzahl</span>
+                  <span style={{ color: AUSWAHL_FARBE[0] }}>Auswahl A</span>
+                  <span style={{ color: AUSWAHL_FARBE[1] }}>Auswahl B</span>
+                </div>
+                {[
+                  ["Fahrzeuge", `${verlaufA.anzahl}`, `${verlaufB.anzahl}`],
+                  ["auswertbar", `${verlaufA.beobachtet}`, `${verlaufB.beobachtet}`],
+                  ["1. Senkung (Median)", verlaufA.medianTage == null ? "—" : `${verlaufA.medianTage} Tage`, verlaufB.medianTage == null ? "—" : `${verlaufB.medianTage} Tage`],
+                  ["Ø Senkung", verlaufA.schnittSenkung == null ? "—" : `${verlaufA.schnittSenkung} %`, verlaufB.schnittSenkung == null ? "—" : `${verlaufB.schnittSenkung} %`],
+                  ["mit Senkung", `${verlaufA.mitSenkung}`, `${verlaufB.mitSenkung}`],
+                ].map(([label, a, b]) => (
+                  <div key={label} style={S.abRow}>
+                    <span style={{ color: T.muted }}>{label}</span>
+                    <span style={S.abWert}>{a}</span>
+                    <span style={S.abWert}>{b}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {vergleich && verlaufB && (
+              <div style={{ ...S.compareHead, marginBottom: 0 }}>
+                <span style={{ ...S.compareTitle, color: AUSWAHL_FARBE[aktiv] }}>
+                  Einzelheiten zu {AUSWAHL_NAME[aktiv]}
+                </span>
+                <span style={S.resultCount}>oben umschalten für die andere</span>
+              </div>
+            )}
             <div style={S.kennzahlen}>
               <Kennzahl label="Inserate ausgewertet" wert={`${abInserat.beobachtet}`} zusatz={`von ${abInserat.anzahl} mit Preisdaten`} />
               <Kennzahl label="davon mit Senkung" wert={`${abInserat.mitSenkung}`}
@@ -1689,6 +1826,10 @@ const styles = {
   kennzahlZusatz: { fontSize: 10.5, color: T.muted, marginTop: 2 },
   schluss: { background: T.bg, border: `1px solid ${T.accent}44`, borderLeft: `3px solid ${T.accent}`, borderRadius: 8, padding: "11px 13px", fontSize: 12.5, lineHeight: 1.6, marginTop: 12 },
   hinweisKlein: { fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginTop: 12, paddingTop: 10, borderTop: `1px solid ${T.line}` },
+  abTable: { display: "flex", flexDirection: "column", gap: 2, marginTop: 14 },
+  abRow: { display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 8, alignItems: "center", fontSize: 12, padding: "6px 10px", background: T.bg, borderRadius: 6 },
+  abHead: { background: "transparent", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, padding: "2px 10px", color: T.muted },
+  abWert: { fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 600 },
   groupTable: { display: "flex", flexDirection: "column", gap: 2, marginTop: 6 },
   groupRow: { display: "flex", alignItems: "center", gap: 10, fontSize: 12, padding: "5px 8px", background: T.bg, borderRadius: 6 },
   groupTag: { fontWeight: 700, minWidth: 96, fontSize: 11.5 },
