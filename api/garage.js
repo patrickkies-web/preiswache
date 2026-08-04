@@ -54,12 +54,21 @@ function schluesselAusAnfrage(req) {
 module.exports = async function handler(req, res) {
   res.setHeader("cache-control", "no-store");
 
+  // Beide Voraussetzungen zusammen melden, damit beim Einrichten
+  // nicht ein Problem das andere verdeckt.
   const erwartet = process.env.PREISWACHE_KEY;
-  if (!erwartet) {
-    return res.status(503).json({ error: "Auf dem Server fehlt PREISWACHE_KEY. Lege die Variable in den Vercel-Einstellungen an." });
-  }
-  if (!speicherZugang()) {
-    return res.status(503).json({ error: "Auf dem Server fehlt der Zugang zum Speicher. Lege in Vercel unter Storage eine Upstash-Redis-Datenbank an und verbinde sie mit diesem Projekt." });
+  const fehlt = [];
+  if (!erwartet) fehlt.push("PREISWACHE_KEY");
+  if (!speicherZugang()) fehlt.push("Speicher");
+  if (fehlt.length) {
+    const texte = {
+      PREISWACHE_KEY: "das Passwort PREISWACHE_KEY (Settings → Environment Variables)",
+      Speicher: "die Verbindung zum Speicher, also KV_REST_API_URL und KV_REST_API_TOKEN (Storage → Upstash for Redis, mit dem Projekt verbinden)",
+    };
+    return res.status(503).json({
+      error: `Auf dem Server fehlt noch ${fehlt.map((f) => texte[f]).join(" sowie ")}. Nach dem Anlegen einmal neu ausrollen, sonst kennen die Funktionen die Werte nicht.`,
+      missing: fehlt,
+    });
   }
   if (schluesselAusAnfrage(req) !== erwartet) {
     return res.status(401).json({ error: "Falscher Schlüssel." });
