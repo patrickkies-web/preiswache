@@ -36,6 +36,19 @@ Prozent statt Euro deshalb, weil sich ein Fahrzeug für 5.000 € und eines für
 Die Auswertung folgt den Filtern aus „Analyse & Suche". Filterst du auf Baujahr
 2013, zeigen Kurve und Kennzahlen nur diese Fahrzeuge.
 
+Um die Durchschnittslinie liegt ein **Streuungsband** (Mittelwert ± eine
+Standardabweichung, dem Gedanken der Bollinger-Bänder entlehnt). Ein schmales
+Band heißt: Die Inserate verhalten sich ähnlich, der Durchschnitt ist belastbar.
+Ein breites Band heißt: Die Einzelfälle gehen weit auseinander. Über die
+**Glättung** lässt sich zusätzlich ein gleitender Durchschnitt über ein, zwei
+oder vier Wochen legen, was bei wenigen Daten die Sprünge herausnimmt.
+
+**Zwei Auswahlen im Vergleich:** Über „+ vergleichen" erscheint eine zweite
+Filtergarnitur. Die Umschalter A und B bestimmen, welche gerade bearbeitet wird;
+im Diagramm liegen beide Durchschnittslinien samt Bändern übereinander, darunter
+stellt eine Tabelle die Kennzahlen gegenüber. So lässt sich etwa Händler gegen
+Privat oder ein Baujahr gegen ein anderes prüfen.
+
 Ausgewiesen werden der Median der Tage bis zur ersten Senkung, der Anteil der
 Inserate mit Senkung, die durchschnittliche Gesamtsenkung und der typische
 Abstand zwischen zwei Senkungen. Ein Balkendiagramm zeigt, in welchem Zeitfenster
