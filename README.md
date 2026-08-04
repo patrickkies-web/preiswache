@@ -52,15 +52,26 @@ Standzeit; läuft er noch, warnt sie vor einer doppelten Eingabe.
 ### Preisentwicklung ab Inserat
 
 Der Abschnitt beantwortet die Frage, **wann Verkäufer üblicherweise nachgeben**.
-Jedes Inserat beginnt bei Tag 0 und 100 % des eigenen Startpreises, sodass die
-Verläufe übereinanderliegen — unabhängig davon, wann ein Auto online ging.
-Prozent statt Euro deshalb, weil sich ein Fahrzeug für 5.000 € und eines für
-21.000 € in absoluten Beträgen nicht vergleichen lassen.
+Senkrecht steht der Fahrzeugpreis, waagerecht die Zeit in Tagen seit dem Inserat.
+Jedes Auto beginnt links bei Tag 0 — unabhängig davon, wann es tatsächlich online
+ging. Ein gestern eingestelltes Inserat ergibt eine kurze Linie, ein drei Monate
+altes eine lange; alle liegen übereinander und lassen sich so vergleichen.
+
+Über **Zeitraum ab Inserat** lässt sich der Ausschnitt begrenzen, etwa auf die
+ersten 14 Tage. Die **Y-Achse** steht wahlweise auf Euro oder auf Prozent des
+eigenen Startpreises. Euro zeigt die tatsächlichen Beträge; Prozent eignet sich
+besser, wenn die Fahrzeuge sehr unterschiedlich teuer sind, weil dann jedes bei
+100 % beginnt und nur die Bewegung zählt.
+
+In der Euro-Ansicht kann die Durchschnittslinie steigen, ohne dass jemand den
+Preis erhöht hat — nämlich wenn ein günstiges Inserat aus der Beobachtung fällt
+und der Durchschnitt nur noch aus den teureren gebildet wird. Der Tooltip nennt
+deshalb die Anzahl der Fahrzeuge je Tag, und die App weist darauf hin.
 
 Jedes Fahrzeug ist eine **durchgehende Linie von Tag 0 bis heute** — auch eines,
-zu dem erst ein einziger Preis erfasst ist; es läuft dann waagerecht bei 100 %.
-Gezeichnet wird der Verlauf, nicht die einzelnen Eintragungen: Ein Preis gilt
-fort, bis der Verkäufer ihn ändert.
+zu dem erst ein einziger Preis erfasst ist; es läuft dann waagerecht. Gezeichnet
+wird der Verlauf, nicht die einzelnen Eintragungen: Ein Preis gilt fort, bis der
+Verkäufer ihn ändert.
 
 Die Auswertung folgt den Filtern des jeweiligen Analyse-Reiters. Filterst du in
 Analyse A auf Baujahr 2013, zeigen Kurve und Kennzahlen dort nur diese Fahrzeuge —

@@ -578,6 +578,8 @@ export default function App() {
   const [auswahlen, setAuswahlen] = useState([leereAuswahl(), leereAuswahl()]);
   const [vergleich, setVergleich] = useState(false);
   const [glaettung, setGlaettung] = useState(0);   // Fenster in Tagen, 0 = aus
+  const [einheit, setEinheit] = useState("euro");  // "euro" oder "prozent"
+  const [zeitfenster, setZeitfenster] = useState(0); // Tage, 0 = alles
 
   const A = auswahlen[aktiv];
   const { q, filters, priceMax, kmMax } = A;
@@ -880,12 +882,13 @@ export default function App() {
 
     const maxTag = Math.max(...reihen.map((r) => r.ende), 1);
 
-    // Ein Preis gilt weiter, bis der Verkäufer ihn ändert.
+    // Ein Preis gilt weiter, bis der Verkäufer ihn ändert. Liefert Euro;
+    // die Umrechnung auf Prozent passiert erst bei der Darstellung.
     const wertBei = (r, tag) => {
       if (tag > r.ende) return null;
       let letzter = null;
       for (const p of r.punkte) { if (p.tag <= tag) letzter = p; else break; }
-      return letzter ? (letzter.price / r.startPreis) * 100 : null;
+      return letzter ? letzter.price : null;
     };
 
     // Kennzahlen
@@ -930,8 +933,9 @@ export default function App() {
   const verlaufRows = useMemo(() => {
     const saetze = [["P", primaer], ["S", sekundaer]].filter(([, v]) => v);
     if (!saetze.length) return [];
-    const maxTag = Math.max(...saetze.map(([, v]) => v.maxTag), 1);
-    const schritt = maxTag > 240 ? 21 : maxTag > 120 ? 14 : maxTag > 45 ? 7 : 2;
+    const vorhanden = Math.max(...saetze.map(([, v]) => v.maxTag), 1);
+    const maxTag = zeitfenster ? Math.min(vorhanden, zeitfenster) : vorhanden;
+    const schritt = maxTag > 240 ? 21 : maxTag > 120 ? 14 : maxTag > 45 ? 7 : maxTag > 20 ? 2 : 1;
     const tage = new Set([0, maxTag]);
     saetze.forEach(([, v]) => v.reihen.forEach((r) => r.punkte.forEach((p) => tage.add(p.tag))));
     // Jedes Inserat endet auf der Achse, damit seine Linie dort sichtbar ausläuft.
@@ -939,10 +943,14 @@ export default function App() {
     for (let t = 0; t <= maxTag; t += schritt) tage.add(t);
     const achse = [...tage].filter((t) => t <= maxTag).sort((a, b) => a - b);
 
+    // Euro oder auf den eigenen Startpreis bezogene Prozent
+    const zeige = (r, preis) => (preis == null ? null
+      : einheit === "prozent" ? (preis / r.startPreis) * 100 : preis);
+
     const roh = achse.map((tag) => {
       const row = { tag };
       saetze.forEach(([name, v]) => {
-        const werte = v.reihen.map((r) => v.wertBei(r, tag)).filter((w) => w != null);
+        const werte = v.reihen.map((r) => zeige(r, v.wertBei(r, tag))).filter((w) => w != null);
         if (!werte.length) return;
         const m = mittel(werte);
         // Streuung über die Inserate: wie weit liegen sie an diesem Tag auseinander
@@ -952,7 +960,7 @@ export default function App() {
         row["n" + name] = werte.length;
       });
       // Einzellinien nur, solange nichts eingeblendet ist — sonst wird es unlesbar
-      if (!sekundaer) primaer.reihen.forEach((r) => { row[r.id] = primaer.wertBei(r, tag); });
+      if (!sekundaer) primaer.reihen.forEach((r) => { row[r.id] = zeige(r, primaer.wertBei(r, tag)); });
       return row;
     });
 
@@ -969,7 +977,8 @@ export default function App() {
       return out;
     });
 
-    const r1 = (x) => (x == null ? null : Math.round(x * 10) / 10);
+    // Euro auf ganze Beträge, Prozent auf eine Nachkommastelle
+    const r1 = (x) => (x == null ? null : einheit === "euro" ? Math.round(x) : Math.round(x * 10) / 10);
     return geglaettet.map((r) => {
       const out = { ...r };
       ["P", "S"].forEach((n) => {
@@ -980,7 +989,7 @@ export default function App() {
       Object.keys(out).forEach((k) => { if (!/^(tag|schnitt|band|sd|n)[PS]?$/.test(k)) out[k] = r1(out[k]); });
       return out;
     });
-  }, [primaer, sekundaer, glaettung]);
+  }, [primaer, sekundaer, glaettung, einheit, zeitfenster]);
 
   /* ---- Doppelte / neu eingestellte Inserate ---- */
   // Beim Import: gegen den gesamten Bestand prüfen, ausdrücklich auch
@@ -1362,21 +1371,40 @@ export default function App() {
       <section style={S.panel}>
         <div style={S.panelTitle}><TrendingDown size={15} /> Preisentwicklung ab Inserat</div>
         <p style={S.hint}>
-          Jedes Inserat startet bei Tag 0 und 100 % — unabhängig davon, wann es online ging.
-          So liegen die Verläufe übereinander und du siehst, nach welcher Zeit Verkäufer üblicherweise nachgeben.
-          Jedes Fahrzeug ist eine durchgehende Linie von Tag 0 bis heute — auch eines, zu dem du erst einen
-          einzigen Preis erfasst hast; es läuft dann eben waagerecht. Das getönte Band zeigt die Streuung.
+          Senkrecht der Fahrzeugpreis, waagerecht die Tage seit dem Inserat. <b style={{ color: T.text }}>Jedes Auto beginnt
+          links bei Tag 0</b> — unabhängig davon, wann es tatsächlich online ging. Ein zwei Tage altes Inserat ergibt
+          eine kurze Linie, ein drei Monate altes eine lange; alle liegen übereinander und lassen sich so vergleichen.
           {sekundaer
             ? <> Eingeblendet ist zusätzlich <b style={{ color: AUSWAHL_FARBE[andere] }}>{AUSWAHL_NAME[andere]}</b> mit {(andere === 0 ? trefferA : trefferB).length} Fahrzeugen.</>
             : <> Diese Auswahl umfasst <b style={{ color: AUSWAHL_FARBE[aktiv] }}>{filtered.length}</b> von {list.length} Fahrzeugen.</>}
         </p>
-        <div style={S.row}>
-          <span style={S.fieldLabel}>Glättung</span>
-          <span style={S.toggleGroup}>
-            {[[0, "aus"], [7, "1 Woche"], [14, "2 Wochen"], [28, "4 Wochen"]].map(([w, label]) => (
-              <button key={w} onClick={() => setGlaettung(w)} style={glaettung === w ? S.toggleOn : S.toggleOff}
-                title="Gleitender Durchschnitt über dieses Zeitfenster — glättet Ausreißer bei wenigen Daten">{label}</button>
-            ))}
+        <div style={S.steuerung}>
+          <span style={S.steuerBlock}>
+            <span style={S.fieldLabel}>Zeitraum ab Inserat</span>
+            <span style={S.toggleGroup}>
+              {[[14, "14 Tage"], [30, "30 Tage"], [60, "60 Tage"], [90, "90 Tage"], [0, "alles"]].map(([t, label]) => (
+                <button key={t} onClick={() => setZeitfenster(t)} style={zeitfenster === t ? S.toggleOn : S.toggleOff}
+                  title="Ausschnitt der Zeitachse — alle Fahrzeuge werden von Tag 0 an bis hierher gezeigt">{label}</button>
+              ))}
+            </span>
+          </span>
+          <span style={S.steuerBlock}>
+            <span style={S.fieldLabel}>Y-Achse</span>
+            <span style={S.toggleGroup}>
+              <button onClick={() => setEinheit("euro")} style={einheit === "euro" ? S.toggleOn : S.toggleOff}
+                title="Tatsächlicher Fahrzeugpreis">Euro</button>
+              <button onClick={() => setEinheit("prozent")} style={einheit === "prozent" ? S.toggleOn : S.toggleOff}
+                title="Jedes Auto startet bei 100 % — vergleichbar auch bei sehr unterschiedlichen Preisen">Prozent</button>
+            </span>
+          </span>
+          <span style={S.steuerBlock}>
+            <span style={S.fieldLabel}>Glättung</span>
+            <span style={S.toggleGroup}>
+              {[[0, "aus"], [7, "1 Wo"], [14, "2 Wo"], [28, "4 Wo"]].map(([w, label]) => (
+                <button key={w} onClick={() => setGlaettung(w)} style={glaettung === w ? S.toggleOn : S.toggleOff}
+                  title="Gleitender Durchschnitt über dieses Zeitfenster — glättet Ausreißer bei wenigen Daten">{label}</button>
+              ))}
+            </span>
           </span>
         </div>
 
@@ -1396,21 +1424,28 @@ export default function App() {
               <ResponsiveContainer>
                 <ComposedChart data={verlaufRows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
                   <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  <XAxis dataKey="tag" type="number" domain={[0, "dataMax"]}
+                  <XAxis dataKey="tag" type="number" domain={[0, "dataMax"]} allowDecimals={false}
                     tickFormatter={(t) => `${t} T`} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} />
-                  <YAxis domain={["dataMin - 2", "dataMax + 1"]} tickFormatter={(w) => `${Math.round(w)} %`}
-                    stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} width={48} />
+                  <YAxis domain={einheit === "euro" ? ["dataMin - 300", "dataMax + 300"] : ["dataMin - 2", "dataMax + 1"]}
+                    tickFormatter={(w) => (einheit === "euro" ? fmtNum(Math.round(w)) : `${Math.round(w)} %`)}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={einheit === "euro" ? 58 : 48} />
                   <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }}
-                    labelFormatter={(t) => `Tag ${t}`}
-                    formatter={(w, key) => {
+                    labelFormatter={(t) => `Tag ${t} nach Inserat`}
+                    formatter={(w, key, eintrag) => {
+                      const zeig = (x) => (einheit === "euro" ? fmtEUR(x) : `${x} %`);
                       if (key === "bandP" || key === "bandS")
-                        return [Array.isArray(w) ? `${w[0]} – ${w[1]} %` : `${w} %`,
+                        return [Array.isArray(w) ? `${zeig(w[0])} – ${zeig(w[1])}` : zeig(w),
                           `Streuung ${AUSWAHL_NAME[key === "bandP" ? aktiv : andere]}`];
-                      if (key === "schnittP" || key === "schnittS")
-                        return [`${w} %`, `Ø ${AUSWAHL_NAME[key === "schnittP" ? aktiv : andere]}`];
-                      return [`${w} %`, vehicles[key]?.title?.slice(0, 26) || key];
+                      if (key === "schnittP" || key === "schnittS") {
+                        // Anzahl mit ausweisen: Fällt ein Fahrzeug aus der Beobachtung,
+                        // verschiebt sich der Durchschnitt allein dadurch.
+                        const n = eintrag?.payload?.[key === "schnittP" ? "nP" : "nS"];
+                        return [`${zeig(w)}${n ? ` (aus ${n} Fahrzeug${n === 1 ? "" : "en"})` : ""}`,
+                          `Ø ${AUSWAHL_NAME[key === "schnittP" ? aktiv : andere]}`];
+                      }
+                      return [zeig(w), vehicles[key]?.title?.slice(0, 26) || key];
                     }} />
-                  <ReferenceLine y={100} stroke={T.muted} strokeDasharray="3 3" />
+                  {einheit === "prozent" && <ReferenceLine y={100} stroke={T.muted} strokeDasharray="3 3" />}
                   <Area type="monotone" dataKey="bandP" stroke="none" fill={AUSWAHL_FARBE[aktiv]} fillOpacity={0.13}
                     connectNulls isAnimationActive={false} activeDot={false} />
                   {sekundaer && (
@@ -1435,6 +1470,7 @@ export default function App() {
                 ? <>Durchgezogen: {AUSWAHL_NAME[aktiv]} · gestrichelt: {AUSWAHL_NAME[andere]} · getönte Flächen: Streuung</>
                 : <>Je Inserat eine Linie von Tag 0 bis heute · dicke Linie: Durchschnitt · getönte Fläche: Streuung</>}
               {glaettung > 0 && <> · geglättet über {glaettung} Tage</>}
+              {zeitfenster > 0 && <> · Ausschnitt bis Tag {zeitfenster}</>}
             </div>
 
             {sekundaer && (
@@ -1517,6 +1553,13 @@ export default function App() {
               Tag 0 ist der erste Preis, den du erfasst hast — nicht zwingend der echte Inseratsbeginn.
               Und die Kurve ist nur so genau wie deine Preis-Updates: Trägst du wöchentlich nach, liegt die
               Auflösung bei einer Woche.
+              {einheit === "euro" && (
+                <> Zur Durchschnittslinie in Euro: Sie kann steigen, ohne dass ein Verkäufer den Preis erhöht hat —
+                  nämlich dann, wenn ein günstiges Inserat aus der Beobachtung fällt und der Durchschnitt nur noch
+                  aus den teureren gebildet wird. Der Tooltip nennt deshalb die Anzahl der Fahrzeuge je Tag.
+                  Für den reinen Verlaufsvergleich ist die Ansicht <b style={{ color: T.text }}>Prozent</b> geeigneter,
+                  weil dort jedes Auto bei 100 % startet.</>
+              )}
             </div>
           </>
         )}
@@ -1997,6 +2040,8 @@ const styles = {
   resultCount: { marginLeft: "auto", fontSize: 11.5, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
   emptySmall: { color: T.muted, fontSize: 12, padding: "16px 4px" },
   legendHint: { fontSize: 11, color: T.muted, textAlign: "center", marginTop: 4 },
+  steuerung: { display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end", margin: "4px 0 14px" },
+  steuerBlock: { display: "flex", flexDirection: "column", gap: 5 },
   kennzahlen: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, margin: "16px 0 4px" },
   kennzahl: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "10px 12px" },
   kennzahlLabel: { fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 },
