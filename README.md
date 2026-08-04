@@ -30,8 +30,10 @@ Kurven bei Tag 0 und liegen übereinander — so sind die Verläufe direkt vergl
 unabhängig davon, wann ein Auto inseriert wurde.
 
 Die Daten liegen im lokalen Speicher des Browsers — kein Server, kein Konto.
-Über „Exportieren" im Verzeichnis lässt sich alles als JSON-Datei sichern und
-über dasselbe Import-Feld wieder einspielen, auch auf einem anderen Gerät.
+Über „Exportieren" im Verzeichnis lässt sich alles als JSON-Datei sichern.
+Zurückspielen geht auf zwei Wegen: „Datei laden" im Import-Bereich, oder den
+Dateiinhalt ins Import-Feld einfügen. Beides funktioniert auch auf einem
+anderen Gerät.
 
 ## Aufbau
 
