@@ -32,6 +32,8 @@ const TEXT_FIELDS = [
   "photoDamage", "listingPrep",
   // Lebenslauf des Inserats:
   "listingStatus", "listedSince", "closedDate",
+  // Datum, an dem du den Eintrag durchgesehen hast (leer = noch offen):
+  "geprueft",
 ];
 
 // Definierte Begriffe (kontrolliertes Vokabular)
@@ -272,6 +274,41 @@ const LISTING_PREP_HILFE = {
   "Normale Gebrauchsspuren": "Ordentlich, aber sichtbar benutzt",
   "Nicht vorbereitet": "Weder gereinigt noch für das Inserat hergerichtet",
 };
+
+/* --- Qualitätssicherung ---
+   "Unbekannt" gibt es beim Unfall- und beim Mängelstatus nicht mehr. Alte
+   Einträge wurden beim Laden auf "Unfallfrei" und "Keine" gesetzt, weil das
+   damals genau dasselbe bedeutete: im Inserat stand nichts dazu. Das ist
+   aber eine Annahme und keine Prüfung. Ein Eintrag gilt deshalb erst als
+   geprüft, wenn er hier einmal bestätigt wurde. */
+
+// Die Felder, die sich im Prüfbereich direkt ändern lassen.
+const PRUEF_FELDER = [
+  { feld: "accidentStatus", label: "Unfallstatus", opts: ACCIDENT_OPTS },
+  { feld: "currentIssueStatus", label: "Aktuelle Mängel", opts: ISSUE_OPTS },
+  { feld: "previousDamageStatus", label: "Frühere Schäden", opts: PREV_OPTS },
+  { feld: "repairScope", label: "Reparaturumfang", opts: SCOPE_OPTS },
+  { feld: "photoDamage", label: PHOTO_DAMAGE_FRAGE, opts: PHOTO_DAMAGE_OPTS },
+  { feld: "listingPrep", label: LISTING_PREP_FRAGE, opts: LISTING_PREP_OPTS },
+];
+
+function offenePunkte(v) {
+  const p = [];
+  // Beurteilungen: einmal bestätigt, ist die Sache erledigt — auch ein
+  // stehengelassenes "Unbekannt" ist dann eine Entscheidung.
+  if (!v.geprueft) {
+    p.push("Unfall- und Mängelstatus noch nicht bestätigt");
+    if (v.previousDamageStatus === "Unbekannt") p.push("Frühere Schäden unbekannt");
+    if (v.repairScope === "Unbekannt") p.push("Reparaturumfang unbekannt");
+  }
+  // Fehlende Angaben bleiben offen, bis sie da sind. Ein Haken hilft hier nicht.
+  if (!v.photoDamage) p.push("Frage zu den Fotos offen");
+  if (!v.listingPrep) p.push("Frage zur Aufbereitung offen");
+  if (!istLink(v.url)) p.push("Kein Link zum Inserat");
+  if (v.mileage == null) p.push("Kilometerstand fehlt — fällt aus der Preisrechnung");
+  if (!v.year) p.push("Erstzulassung fehlt — fällt aus der Preisrechnung");
+  return p;
+}
 
 /* --- Lebenslauf des Inserats --- */
 
@@ -877,7 +914,9 @@ export default function App() {
     const next = { ...vehicles }; let added = 0, updated = 0;
     preview.forEach((raw_) => {
       const antw = answers[raw_.id] || {};
-      const incoming = { ...raw_, ...antw, url: normalizeUrl(antw.url || raw_.url) };
+      // Beim Import hast du jedes Fahrzeug einzeln vor dir gehabt, inklusive
+      // der Hinweise auf Schäden — das zählt als Durchsicht.
+      const incoming = { ...raw_, ...antw, url: normalizeUrl(antw.url || raw_.url), geprueft: todayISO() };
       const existing = next[incoming.id];
       if (existing) {
         const merged = { ...existing };
@@ -904,6 +943,22 @@ export default function App() {
     });
     persist(next); setPreview(null); setRaw("");
     setNotice({ type: "ok", msg: `${added} neu · ${updated} aktualisiert.` });
+  }
+
+  /* ---- Qualitätssicherung ---- */
+  // Ändern und Abhaken sind zwei Schritte: erst alles richtigstellen, dann
+  // bestätigen. Sonst verschwände der Eintrag nach der ersten Korrektur.
+  const setzeFeld = useCallback((id, feld, wert) => {
+    updateVehicle(id, (v) => ({ ...v, [feld]: wert, updatedAt: new Date().toISOString() }));
+  }, [updateVehicle]);
+
+  function alleBestaetigen() {
+    const heute = todayISO();
+    const next = { ...vehicles };
+    Object.keys(next).forEach((id) => {
+      if (!next[id].geprueft) next[id] = { ...next[id], geprueft: heute, updatedAt: new Date().toISOString() };
+    });
+    persist(next);
   }
 
   /* ---- Preis-Updates ---- */
@@ -1261,6 +1316,13 @@ export default function App() {
   // Nur die Anzeige im Verzeichnis wird umsortiert, nicht die Daten der Auswertung.
   const verzeichnis = useMemo(() => sortiere(list, sortFeld, sortRichtung), [list, sortFeld, sortRichtung]);
 
+  // Alles, wo noch eine Entscheidung von dir aussteht. Unbestätigte zuerst,
+  // danach die mit den meisten offenen Punkten.
+  const zuPruefen = useMemo(() => list
+    .map((v) => ({ v, punkte: offenePunkte(v) }))
+    .filter((e) => e.punkte.length > 0)
+    .sort((a, b) => (!!a.v.geprueft - !!b.v.geprueft) || (b.punkte.length - a.punkte.length)), [list]);
+
   const activeFilterCount = Object.values(filters).filter(Boolean).length + (priceMax ? 1 : 0) + (kmMax ? 1 : 0) + (q.trim() ? 1 : 0);
   const resetFilters = () => setAuswahlen((prev) => prev.map((a, i) => (i === aktiv ? leereAuswahl() : a)));
   const setFilter = (f, val) => aendere("filters", { ...filters, [f]: val });
@@ -1305,6 +1367,14 @@ export default function App() {
         <button style={tab === "verzeichnis" ? S.tabOn : S.tabOff} onClick={() => setTab("verzeichnis")}>
           <Car size={14} /> Verzeichnis
           {list.length > 0 && <span style={tab === "verzeichnis" ? S.tabCountOn : S.tabCount}>{list.length}</span>}
+        </button>
+        <button style={tab === "pruefen" ? S.tabOn : S.tabOff} onClick={() => setTab("pruefen")}>
+          <ShieldCheck size={14} /> Offene Punkte
+          {zuPruefen.length > 0 && (
+            <span style={tab === "pruefen" ? S.tabCountOn : { ...S.tabCount, background: T.accent + "33", color: T.accent }}>
+              {zuPruefen.length}
+            </span>
+          )}
         </button>
       </nav>
 
@@ -2084,6 +2154,88 @@ export default function App() {
 
       </>)}
 
+      {tab === "pruefen" && (
+      <section style={S.panel}>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <ShieldCheck size={15} /> Offene Punkte · {zuPruefen.length}
+          </span>
+          {zuPruefen.length > 0 && (
+            <button style={S.exportBtn} onClick={alleBestaetigen}
+              title="Setzt bei allen unbestätigten Fahrzeugen den Haken — ohne die Werte zu ändern">
+              <Check size={13} /> Alle bestätigen
+            </button>
+          )}
+        </div>
+        <p style={S.hint}>
+          Beim Unfallstatus und bei den aktuellen Mängeln gibt es kein „Unbekannt" mehr:
+          Steht im Inserat nichts dazu, gilt das Fahrzeug als unfallfrei und ohne Mängel.
+          Bei Fahrzeugen, die du <b style={{ color: T.text }}>vor dieser Änderung</b> erfasst hast,
+          wurde das automatisch umgestellt — <b style={{ color: T.text }}>angenommen, nicht geprüft</b>.
+          Hier siehst du diese Fahrzeuge und alles andere, wo noch eine Entscheidung offen ist.
+          Du kannst die Werte direkt ändern und den Eintrag danach abhaken.
+        </p>
+
+        {!loaded ? (<div style={S.empty}><span>Lade Daten…</span></div>)
+          : zuPruefen.length === 0 ? (
+            <div style={S.empty}>
+              <Check size={16} color={T.good} />
+              <span>{list.length === 0 ? "Noch keine Fahrzeuge erfasst." : "Alles durchgesehen — hier ist gerade nichts offen."}</span>
+            </div>
+          ) : (
+            <div style={S.pruefListe}>
+              {zuPruefen.map(({ v, punkte }) => (
+                <div key={v.id} data-fahrzeug={v.id} style={S.pruefBlock}>
+                  <div style={S.pruefKopf}>
+                    <span style={S.pruefTitel}>{v.title || v.id}</span>
+                    <span style={S.pruefMeta}>
+                      {[erstzulassung(v), v.mileage != null ? `${fmtNum(v.mileage)} km` : null,
+                        v.location, lastPrice(v) != null ? fmtEUR(lastPrice(v)) : null]
+                        .filter(Boolean).join(" · ")}
+                    </span>
+                  </div>
+                  <div style={S.pruefPunkte}>
+                    {punkte.map((t) => <span key={t} style={S.pruefPunkt}>{t}</span>)}
+                  </div>
+
+                  {PRUEF_FELDER.map(({ feld, label, opts }) => (
+                    <div key={feld} style={S.askItem}>
+                      <div style={S.askFrage}>{label}</div>
+                      <div style={S.askOptions}>
+                        {opts.map((o) => (
+                          <button key={o} onClick={() => setzeFeld(v.id, feld, o)}
+                            style={v[feld] === o ? S.askOptionOn : S.askOption}>{o}</button>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+
+                  <div style={S.askItem}>
+                    <div style={S.askFrage}>Link zum Inserat</div>
+                    <input defaultValue={v.url || ""} placeholder="mobile.de/…" style={S.askInput}
+                      inputMode="url" spellCheck={false}
+                      onBlur={(e) => { const t = e.target.value.trim(); if (t !== (v.url || "")) setzeFeld(v.id, "url", normalizeUrl(t)); }} />
+                    {!istLink(v.url) && <div style={S.askHilfe}>Ohne Link findest du das Inserat später nicht wieder.</div>}
+                  </div>
+
+                  <div style={S.row}>
+                    <button style={S.primaryBtn} onClick={() => setzeFeld(v.id, "geprueft", todayISO())}>
+                      <Check size={15} /> {v.geprueft ? "Erneut bestätigen" : "Geprüft"}
+                    </button>
+                    {v.url && (
+                      <a href={normalizeUrl(v.url)} target="_blank" rel="noreferrer" style={S.ghostLink}>
+                        Inserat öffnen ↗
+                      </a>
+                    )}
+                    {v.geprueft && <span style={S.askHilfe}>bestätigt am {fmtDate(v.geprueft)}</span>}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+      </section>
+      )}
+
       {tab === "verzeichnis" && (
       <section style={S.panel}>
         <div style={{ ...S.panelTitle, justifyContent: "space-between" }}>
@@ -2610,6 +2762,15 @@ const styles = {
   askHilfe: { fontSize: 11, color: T.muted, marginTop: 6, fontStyle: "italic" },
   askInput: { width: "100%", background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace" },
   askHint: { fontSize: 11.5, color: T.accent },
+
+  pruefListe: { display: "flex", flexDirection: "column", gap: 12 },
+  pruefBlock: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 10, padding: "12px 14px" },
+  pruefKopf: { display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 10, flexWrap: "wrap", marginBottom: 8 },
+  pruefTitel: { fontSize: 13.5, fontWeight: 700 },
+  pruefMeta: { fontSize: 11, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
+  pruefPunkte: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 },
+  pruefPunkt: { fontSize: 10.5, color: T.accent, border: `1px solid ${T.accent}44`, borderRadius: 20, padding: "3px 9px" },
+  ghostLink: { fontSize: 11.5, color: T.muted, textDecoration: "none", alignSelf: "center" },
 
   fotoBox: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 9, padding: "10px 12px", marginBottom: 12 },
   fotoTitel: { display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: T.accent, marginBottom: 6 },
