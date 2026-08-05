@@ -479,6 +479,9 @@ const T = {
 
 // Zustände der Synchronisierung, jeweils kurz für den Kopf und ausführlich im Bereich.
 const leereAuswahl = () => ({ q: "", filters: {}, priceMax: "", kmMax: "" });
+// Ein Filterwert ist eine Liste. Einzelne Werte aus früheren Ständen
+// werden mitgenommen, damit nichts kaputtgeht.
+const filterWerte = (val) => (Array.isArray(val) ? val : val ? [val] : []);
 const AUSWAHL_FARBE = ["#F5B301", "#4EA8F4"];   // A gelb, B blau
 const AUSWAHL_NAME = ["Auswahl A", "Auswahl B"];
 // Eigene Palette für die Einzellinien — bewusst ohne Gelb und Blau,
@@ -1036,7 +1039,12 @@ export default function App() {
 
   const filtereMit = (a) => list.filter((v) => {
     if (a.q.trim() && !searchable(v).includes(a.q.trim().toLowerCase())) return false;
-    for (const [f, val] of Object.entries(a.filters)) { if (val && (v[f] || "") !== val) return false; }
+    // Je Feld sind mehrere Werte erlaubt; ausgewählte Werte gelten als "oder".
+    // Nichts ausgewählt heißt: dieses Feld schränkt nicht ein.
+    for (const [f, val] of Object.entries(a.filters)) {
+      const werte = filterWerte(val);
+      if (werte.length && !werte.includes(v[f] || "")) return false;
+    }
     const pmax = coerceNum(a.priceMax); if (pmax != null) { const lp = lastPrice(v); if (lp == null || lp > pmax) return false; }
     const kmax = coerceNum(a.kmMax); if (kmax != null) { if (v.mileage == null || v.mileage > kmax) return false; }
     return true;
@@ -1323,9 +1331,25 @@ export default function App() {
     .filter((e) => e.punkte.length > 0)
     .sort((a, b) => (!!a.v.geprueft - !!b.v.geprueft) || (b.punkte.length - a.punkte.length)), [list]);
 
-  const activeFilterCount = Object.values(filters).filter(Boolean).length + (priceMax ? 1 : 0) + (kmMax ? 1 : 0) + (q.trim() ? 1 : 0);
+  const activeFilterCount = Object.values(filters).filter((v) => filterWerte(v).length).length
+    + (priceMax ? 1 : 0) + (kmMax ? 1 : 0) + (q.trim() ? 1 : 0);
   const resetFilters = () => setAuswahlen((prev) => prev.map((a, i) => (i === aktiv ? leereAuswahl() : a)));
-  const setFilter = (f, val) => aendere("filters", { ...filters, [f]: val });
+  const gewaehlt = (f) => filterWerte(filters[f]);
+  const toggleFilter = (f, o) => {
+    const w = gewaehlt(f);
+    aendere("filters", { ...filters, [f]: w.includes(o) ? w.filter((x) => x !== o) : [...w, o] });
+  };
+  const leereFilter = (f) => aendere("filters", { ...filters, [f]: [] });
+
+  // Wie viele Fahrzeuge kämen je Wert dazu? Gezählt wird gegen alle anderen
+  // Filter, dieses Feld selbst ausgenommen — sonst zeigt jede Zahl nur noch
+  // die eigene Auswahl.
+  const zaehleFuer = (feld) => {
+    const menge = filtereMit({ ...A, filters: { ...filters, [feld]: [] } });
+    const m = {};
+    menge.forEach((v) => { const k = v[feld]; if (k) m[k] = (m[k] || 0) + 1; });
+    return m;
+  };
 
   const S = styles;
 
@@ -1586,12 +1610,20 @@ export default function App() {
           {activeFilterCount > 0 && <button style={S.resetBtn} onClick={resetFilters}><X size={13} /> {activeFilterCount}</button>}
         </div>
 
+        <div style={S.mfListe}>
+          {[["photoDamage", "Schäden auf Fotos", PHOTO_DAMAGE_OPTS],
+            ["repairScope", "Reparatur-Umfang", SCOPE_OPTS],
+            ["currentIssueStatus", "Aktuelle Mängel", ISSUE_OPTS],
+            ["accidentStatus", "Unfallstatus", ACCIDENT_OPTS],
+            ["make", "Marke", distinct("make")],
+            ["year", "Baujahr", distinct("year")]].map(([f, label, opts]) => (
+              opts.length ? (
+                <MehrfachFilter key={f} label={label} options={opts} werte={gewaehlt(f)} zahlen={zaehleFuer(f)}
+                  farbe={AUSWAHL_FARBE[aktiv]} onToggle={(o) => toggleFilter(f, o)} onClear={() => leereFilter(f)} />
+              ) : null
+            ))}
+        </div>
         <div style={S.filterGrid}>
-          <SelectFilter label="Reparatur-Umfang" value={filters.repairScope || ""} onChange={(v) => setFilter("repairScope", v)} options={SCOPE_OPTS} />
-          <SelectFilter label="Aktuelle Mängel" value={filters.currentIssueStatus || ""} onChange={(v) => setFilter("currentIssueStatus", v)} options={ISSUE_OPTS} />
-          <SelectFilter label="Unfallstatus" value={filters.accidentStatus || ""} onChange={(v) => setFilter("accidentStatus", v)} options={ACCIDENT_OPTS} />
-          <SelectFilter label="Marke" value={filters.make || ""} onChange={(v) => setFilter("make", v)} options={distinct("make")} />
-          <SelectFilter label="Baujahr" value={filters.year || ""} onChange={(v) => setFilter("year", v)} options={distinct("year")} />
           <div style={S.rangeField}><span style={S.fieldLabel}>Preis max (€)</span><input inputMode="decimal" value={priceMax} onChange={(e) => setPriceMax(e.target.value)} style={S.input} placeholder="z. B. 15000" /></div>
           <div style={S.rangeField}><span style={S.fieldLabel}>km max</span><input inputMode="decimal" value={kmMax} onChange={(e) => setKmMax(e.target.value)} style={S.input} placeholder="z. B. 150000" /></div>
         </div>
@@ -1600,12 +1632,15 @@ export default function App() {
           <Filter size={13} /> {moreFilters ? "Weniger Filter" : "Mehr Filter"}
         </button>
         {moreFilters && (
-          <div style={S.filterGrid}>
-            {FILTER_FIELDS.filter(([f]) => !["repairScope", "currentIssueStatus", "accidentStatus", "make", "year"].includes(f)).map(([f, label]) => {
+          <div style={S.mfListe}>
+            {FILTER_FIELDS.filter(([f]) => !["photoDamage", "repairScope", "currentIssueStatus", "accidentStatus", "make", "year"].includes(f)).map(([f, label]) => {
               const vorhanden = distinct(f);
               const opts = FIXED_OPTS[f] ? FIXED_OPTS[f].filter((o) => vorhanden.includes(o)) : vorhanden;
               if (!opts.length) return null;
-              return <SelectFilter key={f} label={label} value={filters[f] || ""} onChange={(v) => setFilter(f, v)} options={opts} />;
+              return (
+                <MehrfachFilter key={f} label={label} options={opts} werte={gewaehlt(f)} zahlen={zaehleFuer(f)}
+                  farbe={AUSWAHL_FARBE[aktiv]} onToggle={(o) => toggleFilter(f, o)} onClear={() => leereFilter(f)} />
+              );
             })}
           </div>
         )}
@@ -2567,17 +2602,36 @@ function ChoiceQuestion({ frage, options, hilfe, value, onChange }) {
     </div>
   );
 }
-function SelectFilter({ label, value, onChange, options }) {
+// Filter mit Mehrfachauswahl: nichts angeklickt heißt "alle", mehrere
+// angeklickte Werte gelten nebeneinander. Die Zahl hinter jedem Wort sagt,
+// wie viele Fahrzeuge damit übrig blieben.
+function MehrfachFilter({ label, options, werte, zahlen, farbe, onToggle, onClear }) {
+  const S = styles;
   return (
-    <div style={styles.rangeField}>
-      <span style={styles.fieldLabel}>{label}</span>
-      <select value={value} onChange={(e) => onChange(e.target.value)} style={styles.select}>
-        <option value="">Alle</option>
-        {options.map((o) => <option key={o} value={o}>{o}</option>)}
-      </select>
+    <div style={S.mfFeld}>
+      <div style={S.mfKopf}>
+        <span style={S.fieldLabel}>{label}</span>
+        {werte.length > 0
+          ? <button style={S.mfClear} onClick={onClear} title="Auswahl aufheben"><X size={10} /> {werte.length} gewählt</button>
+          : <span style={S.mfAlle}>alle</span>}
+      </div>
+      <div style={S.mfChips}>
+        {options.map((o) => {
+          const an = werte.includes(o);
+          const n = zahlen?.[o] || 0;
+          return (
+            <button key={o} onClick={() => onToggle(o)}
+              style={an ? { ...S.mfChipOn, background: farbe, borderColor: farbe }
+                : n === 0 ? S.mfChipLeer : S.mfChip}>
+              {o}<span style={an ? S.mfZahlOn : S.mfZahl}>{n}</span>
+            </button>
+          );
+        })}
+      </div>
     </div>
   );
 }
+
 // Farbe der Punkte nach Reparatur-Umfang — bewusst deutlicher als die
 // zurückhaltenden Kennzeichnungen auf der Fahrzeugkarte.
 function repFarbe(rep) {
@@ -2808,6 +2862,18 @@ const styles = {
   searchInput: { flex: 1, background: "transparent", border: "none", color: T.text, padding: "10px 0", fontSize: 13 },
   resetBtn: { display: "inline-flex", alignItems: "center", gap: 4, background: T.surface2, color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "3px 9px", fontSize: 11 },
   filterGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 12 },
+
+  mfListe: { display: "flex", flexDirection: "column", gap: 11, marginBottom: 12 },
+  mfFeld: { display: "flex", flexDirection: "column", gap: 6 },
+  mfKopf: { display: "flex", alignItems: "center", gap: 8 },
+  mfAlle: { fontSize: 10.5, color: T.line },
+  mfClear: { display: "inline-flex", alignItems: "center", gap: 3, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "1px 7px", fontSize: 10 },
+  mfChips: { display: "flex", gap: 6, flexWrap: "wrap" },
+  mfChip: { display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", color: T.text, border: `1px solid ${T.line}`, borderRadius: 20, padding: "4px 10px", fontSize: 11.5, fontWeight: 600 },
+  mfChipLeer: { display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "4px 10px", fontSize: 11.5, fontWeight: 600, opacity: 0.5 },
+  mfChipOn: { display: "inline-flex", alignItems: "center", gap: 5, color: T.bg, border: "1px solid", borderRadius: 20, padding: "4px 10px", fontSize: 11.5, fontWeight: 700 },
+  mfZahl: { fontSize: 10, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
+  mfZahlOn: { fontSize: 10, color: T.bg, opacity: 0.7, fontFamily: "ui-monospace, Menlo, monospace" },
   rangeField: { display: "flex", flexDirection: "column", gap: 5 },
   fieldLabel: { fontSize: 10.5, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em" },
   input: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 13 },
