@@ -29,7 +29,7 @@ const TEXT_FIELDS = [
   "accidentStatus", "currentIssueStatus", "previousDamageStatus", "repairScope",
   "note", "url",
   // Von dir selbst beantwortet, nicht von der KI:
-  "photoDamage", "listingPrep",
+  "photoDamage", "listingPrep", "showcase",
   // Lebenslauf des Inserats:
   "listingStatus", "listedSince", "closedDate",
   // Datum, an dem du den Eintrag durchgesehen hast (leer = noch offen):
@@ -267,6 +267,13 @@ function fotoHinweise(v) {
   return { texte, flaggen, hat: texte.length > 0 || flaggen.length > 0 };
 }
 
+/* Vorzeigefahrzeug: das Inserat macht optisch den Eindruck, dass sein Preis
+   die obere Kante markiert — ein Bezugspunkt, an dem sich die anderen messen
+   lassen. Deine Einschätzung, nicht die der KI. */
+const SHOWCASE_OPTS = ["Vorzeigefahrzeug", "Normal"];
+const SHOWCASE_FRAGE = "Vorzeigefahrzeug?";
+const SHOWCASE_HILFE = "Makelloser Auftritt auf den Fotos — der Preis taugt als oberer Bezugspunkt.";
+
 const LISTING_PREP_OPTS = ["Aufbereitet", "Normale Gebrauchsspuren", "Nicht vorbereitet"];
 const LISTING_PREP_FRAGE = "Wie ist das Fahrzeug im Inserat dargestellt?";
 const LISTING_PREP_HILFE = {
@@ -290,6 +297,7 @@ const PRUEF_FELDER = [
   { feld: "repairScope", label: "Reparaturumfang", opts: SCOPE_OPTS },
   { feld: "photoDamage", label: PHOTO_DAMAGE_FRAGE, opts: PHOTO_DAMAGE_OPTS },
   { feld: "listingPrep", label: LISTING_PREP_FRAGE, opts: LISTING_PREP_OPTS },
+  { feld: "showcase", label: SHOWCASE_FRAGE, opts: SHOWCASE_OPTS },
 ];
 
 function offenePunkte(v) {
@@ -444,6 +452,7 @@ const FIXED_OPTS = {
   category: CATEGORY_OPTS, fuel: FUEL_OPTS, gearbox: GEARBOX_OPTS,
   drivetrain: DRIVE_OPTS, sellerType: SELLER_OPTS, condition: CONDITION_OPTS,
   color: COLOR_OPTS, photoDamage: PHOTO_DAMAGE_OPTS, listingPrep: LISTING_PREP_OPTS,
+  showcase: SHOWCASE_OPTS,
   listingStatus: STATUS_OPTS,
 };
 
@@ -456,12 +465,13 @@ const FILTER_FIELDS = [
   ["accidentStatus", "Unfallstatus"], ["currentIssueStatus", "Aktuelle Mängel"],
   ["repairScope", "Reparatur-Umfang"], ["previousDamageStatus", "Vorschäden"],
   ["photoDamage", "Schäden auf Fotos"], ["listingPrep", "Aufbereitung"],
-  ["listingStatus", "Inserat"],
+  ["showcase", "Vorzeigefahrzeug"], ["listingStatus", "Inserat"],
 ];
 // Dimensionen zum Gruppieren/Vergleichen
 const GROUP_FIELDS = [
   ["repairScope", "Reparatur-Umfang"], ["currentIssueStatus", "Aktuelle Mängel"],
   ["photoDamage", "Schäden auf Fotos"], ["listingPrep", "Aufbereitung"],
+  ["showcase", "Vorzeigefahrzeug"],
   ["accidentStatus", "Unfallstatus"], ["previousDamageStatus", "Vorschäden"],
   ["listingStatus", "Inserat"],
   ["make", "Marke"], ["model", "Modell"], ["category", "Kategorie"], ["fuel", "Kraftstoff"],
@@ -531,6 +541,7 @@ function tagColor(field, value) {
   if (field === "previousDamageStatus") return value === "Vorhanden" ? T.accent : T.good;
   if (field === "repairScope") return value === "Umfangreich" ? T.accent : value === "Keine" ? T.muted : T.text;
   if (field === "photoDamage") return value === "Keine" ? T.good : value === "Deutlich erkennbar" || value === "Leicht zu übersehen" ? T.bad : T.accent;
+  if (field === "showcase") return value === "Vorzeigefahrzeug" ? T.accent : T.muted;
   if (field === "listingPrep") return value === "Aufbereitet" ? T.good : value === "Nicht vorbereitet" ? T.bad : T.text;
   if (field === "listingStatus") return value === "Aktiv" ? T.good : value === "Verkauft" ? T.muted : T.accent;
   return T.text;
@@ -574,6 +585,7 @@ function normalizeVehicle(v) {
   }
   out.photoDamage = normalizeChoice(v.photoDamage, "photoDamage", PHOTO_DAMAGE_OPTS);
   out.listingPrep = normalizeChoice(v.listingPrep, "listingPrep", LISTING_PREP_OPTS);
+  out.showcase = normalizeChoice(v.showcase, "showcase", SHOWCASE_OPTS) || "Normal";
   // Bleibt leer, wenn nichts mitgeliefert wurde — daran erkennt der Import,
   // ob ein Abschluss gemeint ist oder nur ein Preis-Update.
   out.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS);
@@ -708,6 +720,7 @@ function migrate(vehicles) {
     v.month = normalizeMonth(v.month);
     v.photoDamage = normalizeChoice(v.photoDamage, "photoDamage", PHOTO_DAMAGE_OPTS);
     v.listingPrep = normalizeChoice(v.listingPrep, "listingPrep", LISTING_PREP_OPTS);
+    v.showcase = normalizeChoice(v.showcase, "showcase", SHOWCASE_OPTS) || "Normal";
     v.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS) || "Aktiv";
     v.listedSince = v.listedSince || v.priceHistory?.[0]?.date || "";
   });
@@ -886,6 +899,8 @@ export default function App() {
       vorbelegt[v.id] = {
         photoDamage: v.photoDamage || alt?.photoDamage || "",
         listingPrep: v.listingPrep || alt?.listingPrep || "",
+        showcase: v.showcase === "Vorzeigefahrzeug" || alt?.showcase === "Vorzeigefahrzeug"
+          ? "Vorzeigefahrzeug" : "Normal",
         url: v.url || alt?.url || "",
       };
     });
@@ -953,6 +968,15 @@ export default function App() {
   // bestätigen. Sonst verschwände der Eintrag nach der ersten Korrektur.
   const setzeFeld = useCallback((id, feld, wert) => {
     updateVehicle(id, (v) => ({ ...v, [feld]: wert, updatedAt: new Date().toISOString() }));
+  }, [updateVehicle]);
+
+  // Vorzeigefahrzeug direkt im Verzeichnis an- und abschalten.
+  const toggleStern = useCallback((id) => {
+    updateVehicle(id, (v) => ({
+      ...v,
+      showcase: v.showcase === "Vorzeigefahrzeug" ? "Normal" : "Vorzeigefahrzeug",
+      updatedAt: new Date().toISOString(),
+    }));
   }, [updateVehicle]);
 
   function alleBestaetigen() {
@@ -1240,7 +1264,7 @@ export default function App() {
         marke: [v.make, v.model].filter(Boolean).join(" "),
         ez: erstzulassung(v), km: v.mileage, ort: v.location,
         rep: v.repairScope, fotos: v.photoDamage, anbieter: v.dealerName || v.sellerType,
-        stand: v.listingStatus || "Aktiv", url: v.url,
+        stand: v.listingStatus || "Aktiv", url: v.url, stern: v.showcase === "Vorzeigefahrzeug",
       }))
       .filter((p) => p.preis != null);
     if (!punkte.length) return null;
@@ -1486,6 +1510,16 @@ export default function App() {
                 <div style={S.askBlock}>
                   <div style={S.askIntro}>Deine Einschätzung — das kann dir keine KI abnehmen:</div>
                   <FotoHinweis v={v} />
+                  <div style={S.askItem}>
+                    <button
+                      onClick={() => setAnswer(v.id, "showcase",
+                        answers[v.id]?.showcase === "Vorzeigefahrzeug" ? "Normal" : "Vorzeigefahrzeug")}
+                      style={answers[v.id]?.showcase === "Vorzeigefahrzeug" ? S.sternAn : S.sternAus}>
+                      <Star size={14} fill={answers[v.id]?.showcase === "Vorzeigefahrzeug" ? T.bg : "none"} />
+                      {SHOWCASE_FRAGE}
+                    </button>
+                    <div style={S.askHilfe}>{SHOWCASE_HILFE}</div>
+                  </div>
                   <ChoiceQuestion frage={PHOTO_DAMAGE_FRAGE} options={PHOTO_DAMAGE_OPTS} hilfe={PHOTO_DAMAGE_HILFE}
                     value={answers[v.id]?.photoDamage || ""} onChange={(w) => setAnswer(v.id, "photoDamage", w)} />
                   <ChoiceQuestion frage={LISTING_PREP_FRAGE} options={LISTING_PREP_OPTS} hilfe={LISTING_PREP_HILFE}
@@ -1611,7 +1645,8 @@ export default function App() {
         </div>
 
         <div style={S.mfListe}>
-          {[["photoDamage", "Schäden auf Fotos", PHOTO_DAMAGE_OPTS],
+          {[["showcase", "Vorzeigefahrzeug", SHOWCASE_OPTS],
+            ["photoDamage", "Schäden auf Fotos", PHOTO_DAMAGE_OPTS],
             ["repairScope", "Reparatur-Umfang", SCOPE_OPTS],
             ["currentIssueStatus", "Aktuelle Mängel", ISSUE_OPTS],
             ["accidentStatus", "Unfallstatus", ACCIDENT_OPTS],
@@ -1633,7 +1668,7 @@ export default function App() {
         </button>
         {moreFilters && (
           <div style={S.mfListe}>
-            {FILTER_FIELDS.filter(([f]) => !["photoDamage", "repairScope", "currentIssueStatus", "accidentStatus", "make", "year"].includes(f)).map(([f, label]) => {
+            {FILTER_FIELDS.filter(([f]) => !["showcase", "photoDamage", "repairScope", "currentIssueStatus", "accidentStatus", "make", "year"].includes(f)).map(([f, label]) => {
               const vorhanden = distinct(f);
               const opts = FIXED_OPTS[f] ? FIXED_OPTS[f].filter((o) => vorhanden.includes(o)) : vorhanden;
               if (!opts.length) return null;
@@ -2314,6 +2349,7 @@ export default function App() {
                     </button>
                   ))}
                   <span />
+                  <span />
                 </div>
                 <div style={S.listWrap}>
                   {verzeichnis.map((v) => (
@@ -2322,7 +2358,8 @@ export default function App() {
                       addFor={addFor} addDate={addDate} addPrice={addPrice} setAddDate={setAddDate} setAddPrice={setAddPrice}
                       openAdd={openAdd} cancelAdd={() => setAddFor(null)} addPoint={addPoint} deletePoint={deletePoint} removeVehicle={removeVehicle}
                       closeFor={closeFor} closeStatus={closeStatus} closeDate={closeDate} setCloseStatus={setCloseStatus} setCloseDate={setCloseDate}
-                      openClose={openClose} cancelClose={() => setCloseFor(null)} confirmClose={confirmClose} reopen={reopen} />
+                      openClose={openClose} cancelClose={() => setCloseFor(null)} confirmClose={confirmClose} reopen={reopen}
+                      toggleStern={toggleStern} />
                   ))}
                 </div>
               </>
@@ -2342,7 +2379,7 @@ export default function App() {
 /* --------------------------- Karte ------------------------------- */
 
 function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, setAddDate, setAddPrice, openAdd, cancelAdd, addPoint, deletePoint, removeVehicle,
-  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen }) {
+  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen, toggleStern }) {
   const S = styles;
   const h = v.priceHistory || [];
   const last = h[h.length - 1]?.price;
@@ -2375,6 +2412,11 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
           <Metric label="Ort" value={v.location || "—"} />
           <Metric label="Reparatur" value={v.repairScope || "—"} color={tagColor("repairScope", v.repairScope)} />
         </span>
+        <button style={v.showcase === "Vorzeigefahrzeug" ? S.sternIconAn : S.iconBtn}
+          title={v.showcase === "Vorzeigefahrzeug" ? "Vorzeigefahrzeug — zum Aufheben klicken" : "Als Vorzeigefahrzeug markieren"}
+          onClick={() => toggleStern(v.id)}>
+          <Star size={14} fill={v.showcase === "Vorzeigefahrzeug" ? T.accent : "none"} />
+        </button>
         <button style={S.iconBtn} title="Fahrzeug entfernen" onClick={() => removeVehicle(v.id)}><Trash2 size={14} /></button>
       </div>
       {!open ? null : (
@@ -2390,6 +2432,7 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
 
         {/* Analyse-Begriffe */}
         <div style={S.tagRow}>
+          {v.showcase === "Vorzeigefahrzeug" && <StatusTag field="showcase" value="Vorzeigefahrzeug" icon={<Star size={11} />} />}
           {v.photoDamage && <StatusTag field="photoDamage" value={`Fotos: ${v.photoDamage}`} raw={v.photoDamage} icon={<Camera size={11} />} />}
           {v.listingPrep && <StatusTag field="listingPrep" value={v.listingPrep} raw={v.listingPrep} />}
           {v.accidentStatus && <StatusTag field="accidentStatus" value={v.accidentStatus} icon={<ShieldCheck size={11} />} />}
@@ -2664,6 +2707,7 @@ function Karteikarte({ p }) {
     <div style={S.karte}>
       <div style={S.karteKopf}>
         <span style={S.karteNr}>#{p.nr}</span>
+        {p.stern && <Star size={11} fill={T.accent} color={T.accent} />}
         <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparatur unbekannt"}</span>
       </div>
       <div style={S.karteTitel}>{p.title}</div>
@@ -2760,7 +2804,7 @@ const globalCss = `
   /* Verzeichnis: auf breiten Schirmen eine Tabelle, auf schmalen zwei Zeilen */
   .pw-dirhead, .pw-dirrow {
     display: grid;
-    grid-template-columns: minmax(140px, 2.2fr) 96px 100px 100px 74px minmax(90px, 1.1fr) 96px 32px;
+    grid-template-columns: minmax(140px, 2.2fr) 96px 100px 100px 74px minmax(90px, 1.1fr) 96px 28px 32px;
     gap: 9px;
     align-items: center;
   }
@@ -2771,6 +2815,7 @@ const globalCss = `
     .pw-dirhead { display: none; }
     .pw-dirrow { grid-template-columns: 1fr auto; row-gap: 9px; }
     .pw-dirrow > button:first-of-type { grid-column: 1; grid-row: 1; }
+    .pw-dirrow > button:nth-last-of-type(2) { grid-column: 2; grid-row: 1; justify-self: end; margin-right: 30px; }
     .pw-dirrow > button:last-of-type { grid-column: 2; grid-row: 1; justify-self: end; }
     .pw-metrics { grid-column: 1 / -1; grid-row: 2; display: flex; flex-wrap: wrap; gap: 8px 18px; }
     .pw-mlabel { display: block; }
@@ -2816,6 +2861,10 @@ const styles = {
   askHilfe: { fontSize: 11, color: T.muted, marginTop: 6, fontStyle: "italic" },
   askInput: { width: "100%", background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace" },
   askHint: { fontSize: 11.5, color: T.accent },
+
+  sternIconAn: { background: "transparent", color: T.accent, border: "none", padding: 4, borderRadius: 6, display: "inline-flex" },
+  sternAus: { display: "inline-flex", alignItems: "center", gap: 7, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "6px 13px", fontSize: 12, fontWeight: 600 },
+  sternAn: { display: "inline-flex", alignItems: "center", gap: 7, background: T.accent, color: T.bg, border: `1px solid ${T.accent}`, borderRadius: 20, padding: "6px 13px", fontSize: 12, fontWeight: 700 },
 
   pruefListe: { display: "flex", flexDirection: "column", gap: 12 },
   pruefBlock: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 10, padding: "12px 14px" },
