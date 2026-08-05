@@ -27,9 +27,12 @@ Die App hat vier Reiter:
   eigenen Filtern. Beide lassen sich unabhängig einstellen und behalten ihre
   Einstellung beim Wechsel; über einen Schalter kann die jeweils andere
   Durchschnittslinie zum Vergleich eingeblendet werden.
-- **Verzeichnis** — die Fahrzeugliste. Jedes Auto steht als Zeile mit fünf Kennzahlen
-  (Preis, Veränderung, Kilometer, Erstzulassung, Reparatur-Umfang) und klappt auf
-  Klick zu allen Angaben auf.
+- **Verzeichnis** — die Fahrzeugliste. Jedes Auto steht als Zeile mit sechs Kennzahlen
+  (Preis, Veränderung, Kilometer, Erstzulassung, Ort, Reparatur-Umfang) und klappt auf
+  Klick zu allen Angaben auf. Ein Klick auf einen Spaltenkopf sortiert danach, ein
+  zweiter dreht die Richtung um; Texte alphabetisch, Zahlen und Daten der Größe nach.
+  Auf schmalen Schirmen, wo die Spaltenköpfe entfallen, übernimmt das Auswahlfeld
+  „Sortieren nach" dieselbe Aufgabe. Fehlende Angaben stehen immer am Ende.
 
 ### Doppelte und neu eingestellte Inserate
 
