@@ -627,6 +627,7 @@ export default function App() {
   const [sync, setSync] = useState({ state: "lokal", savedAt: null, msg: "" });
   const [showSync, setShowSync] = useState(false);
   const [keyInput, setKeyInput] = useState(readKey());
+  const [linkSammlung, setLinkSammlung] = useState("");
   const toggleRow = useCallback((id) => setOpenRows((p) => ({ ...p, [id]: !p[id] })), []);
 
   // Analyse & Suche
@@ -781,6 +782,21 @@ export default function App() {
     }
   }
 
+  // Mehrere Links auf einmal: der Reihe nach auf die Fahrzeuge der Vorschau
+  // verteilt — dieselbe Reihenfolge, in der die KI sie ausgegeben hat.
+  function linksVerteilen(text) {
+    const gefunden = String(text || "").split(/[\s,;]+/).map((s) => s.trim()).filter(istLink);
+    if (!gefunden.length || !preview) return 0;
+    setAnswers((prev) => {
+      const next = { ...prev };
+      preview.forEach((v, i) => {
+        if (i < gefunden.length) next[v.id] = { ...next[v.id], url: gefunden[i] };
+      });
+      return next;
+    });
+    return Math.min(gefunden.length, preview.length);
+  }
+
   const setAnswer = (id, feld, wert) =>
     setAnswers((prev) => ({ ...prev, [id]: { ...prev[id], [feld]: wert } }));
   const alleBeantwortet = !preview || preview.every((v) => {
@@ -817,7 +833,7 @@ export default function App() {
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; added++;
       }
     });
-    persist(next); setPreview(null); setRaw("");
+    persist(next); setPreview(null); setRaw(""); setLinkSammlung("");
     setNotice({ type: "ok", msg: `${added} neu · ${updated} aktualisiert.` });
   }
 
@@ -1257,6 +1273,29 @@ export default function App() {
         {preview && (
           <div style={S.draft}>
             <div style={S.draftHead}><span>Wird importiert</span><span style={S.badge}>{preview.length} {preview.length === 1 ? "Fahrzeug" : "Fahrzeuge"}</span></div>
+            {preview.length > 1 && (
+              <div style={S.linkBlock}>
+                <div style={S.askIntro}>Alle Links auf einmal einfügen</div>
+                <div style={S.dubletteText}>
+                  Kopiere die {preview.length} Adressen untereinander hier hinein — sie werden der Reihe nach
+                  auf die Fahrzeuge unten verteilt, in derselben Reihenfolge wie in der KI-Antwort.
+                  Danach nur noch kurz prüfen.
+                </div>
+                <textarea value={linkSammlung} onChange={(e) => setLinkSammlung(e.target.value)}
+                  placeholder={"mobile.de/…\nmobile.de/…"} style={{ ...S.askInput, minHeight: 68, resize: "vertical" }}
+                  spellCheck={false} />
+                <div style={S.row}>
+                  <button style={S.ghostBtn} disabled={!linkSammlung.trim()}
+                    onClick={() => {
+                      const n = linksVerteilen(linkSammlung);
+                      setNotice(n ? { type: "ok", msg: `${n} ${n === 1 ? "Link" : "Links"} zugeordnet — bitte unten prüfen.` }
+                        : { type: "err", msg: "Darin war keine brauchbare Adresse." });
+                    }}>
+                    <FileUp size={15} /> Der Reihe nach zuordnen
+                  </button>
+                </div>
+              </div>
+            )}
             {preview.map((v) => (
               <div key={v.id} style={S.previewBlock}>
                 <div style={S.previewRow}>
@@ -2294,6 +2333,7 @@ const styles = {
   previewRow: { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", fontSize: 12.5, flexWrap: "wrap" },
 
   askBlock: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "11px 12px", marginTop: 8 },
+  linkBlock: { background: T.bg, border: `1px solid ${T.accent}44`, borderLeft: `3px solid ${T.accent}`, borderRadius: 9, padding: "11px 12px", marginBottom: 14 },
   askIntro: { fontSize: 10.5, color: T.accent, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, marginBottom: 10 },
   askItem: { marginBottom: 12 },
   askFrage: { fontSize: 12.5, marginBottom: 7, lineHeight: 1.4 },
