@@ -12,6 +12,14 @@ dargestellt ist, und nach dem Link zum Inserat. Die ersten beiden sind
 Analyse-Kategorien wie alle anderen — du kannst danach filtern und
 Durchschnittspreise vergleichen. Alle drei sind Pflicht.
 
+**Den Link kannst du dir sparen:** Schickst du der KI den Link zusammen mit
+den Fahrzeugdaten mit, steht er im Feld `url` und die App füllt das
+Link-Feld damit schon aus. Prüfen und weiter.
+
+**Hinweis vor der Fotofrage:** Nennt das JSON Schäden, Vorschäden oder
+Reparaturbedarf, zeigt die App das über der Frage nach den Fotos an —
+damit du weißt, wonach du auf den Bildern suchen sollst.
+
 ---
 
 ```
@@ -25,6 +33,9 @@ WICHTIG VORAB:
   diese Wörter verwenden. Keine eigenen Formulierungen, keine Zusätze.
 - Wo keine Liste steht, schreibst du ab, was im Inserat steht.
 - Was du nicht findest: "" (leerer Text). Niemals raten oder erfinden.
+- Zwei Ausnahmen davon: "accidentStatus" und "currentIssueStatus" bleiben
+  niemals leer. Dort gilt: kein Hinweis im Inserat = "Unfallfrei"
+  beziehungsweise = "Keine". Siehe Punkt 25 und 26.
 
 {
   "id": "03/2014188373",
@@ -171,18 +182,33 @@ SO FÜLLST DU JEDES FELD AUS:
 24. "address"
     Die Straßenanschrift des Händlers, falls angegeben. Sonst "".
 
-25. "accidentStatus"  --  NUR EINES DIESER DREI WÖRTER:
-       Unfallfrei  |  Unfallwagen  |  Unbekannt
-    Unfallfrei = das Inserat sagt ausdrücklich unfallfrei.
-    Unfallwagen = das Inserat nennt einen Unfall.
-    Unbekannt = dazu steht nichts.
+25. "accidentStatus"  --  NUR EINES DIESER ZWEI WÖRTER:
+       Unfallfrei  |  Unfallwagen
+    Es gibt hier kein "Unbekannt". Entweder das Inserat gibt dir einen
+    konkreten Anhaltspunkt für einen Unfall -- oder eben nicht.
+    Unfallwagen = im Text oder auf den Fotos gibt es einen konkreten
+      Hinweis auf einen Unfall oder einen reparierten Unfallschaden.
+      Zum Beispiel: "Unfallwagen", "Unfallschaden", "Vorschaden",
+      "instandgesetzt", "nachlackiert", ein verzogenes Spaltmaß,
+      ein erneuertes Blechteil, ein Gutachten über einen Unfallschaden.
+    Unfallfrei = ALLES ANDERE. Auch dann, wenn zum Thema Unfall gar nichts
+      dasteht. Steht nichts, gehe ich von unfallfrei aus.
+    KEIN Unfall sind Kleinigkeiten aus dem Alltag: ein Kratzer, eine Delle,
+    eine Beule vom Anstoßen an einer Garagenwand, Parkschrammen,
+    Steinschlag. So etwas gehört nach "damageCurrent", nicht hierher.
 
-26. "currentIssueStatus"  --  NUR EINES DIESER DREI WÖRTER:
-       Keine  |  Vorhanden  |  Unbekannt
-    Gemeint sind Mängel, die das Auto JETZT hat.
-    Vorhanden = es werden aktuelle Mängel oder Defekte genannt.
-    Keine = das Inserat sagt ausdrücklich, dass alles in Ordnung ist.
-    Unbekannt = dazu steht nichts.
+26. "currentIssueStatus"  --  NUR EINES DIESER ZWEI WÖRTER:
+       Keine  |  Vorhanden
+    Es gibt hier kein "Unbekannt". Gemeint sind Mängel, die das Auto JETZT hat.
+    Vorhanden = im Text gibt es Anzeichen dafür, dass gerade etwas nicht
+      stimmt. Zum Beispiel: Teile müssen gewechselt werden, der Motor macht
+      Geräusche, etwas ist defekt, klappert, verliert Öl, die Klimaanlage
+      kühlt nicht, eine Warnleuchte brennt, "läuft unrund", "braucht noch",
+      "muss noch gemacht werden", "Bastlerfahrzeug", "als Ersatzteilspender".
+      Das ist keine abschließende Aufzählung -- entscheidend ist, ob der Text
+      auf einen bestehenden Mangel hindeutet.
+    Keine = ALLES ANDERE. Auch dann, wenn zum Zustand gar nichts dasteht.
+      Steht nichts, gehe ich davon aus, dass nichts anliegt.
 
 27. "previousDamageStatus"  --  NUR EINES DIESER DREI WÖRTER:
        Keine  |  Vorhanden  |  Unbekannt
@@ -220,9 +246,13 @@ SO FÜLLST DU JEDES FELD AUS:
     Nenne hier auch Einschränkungen wie "Verkauf nur an Gewerbe oder Export".
 
 34. "url"
-    Der Link zum Inserat, falls er im Dokument steht. Sonst "".
-    (Findest du keinen, ist das nicht schlimm — die App fragt mich beim
-    Import ohnehin selbst danach.)
+    Der Link zum Inserat. Nimm ihn aus jeder Quelle, die du hast:
+    aus dem Dokument selbst, aus der Fußzeile eines PDFs -- und vor allem
+    dann, wenn ich dir den Link zusammen mit den Fahrzeugdaten in meiner
+    Nachricht mitgeschickt habe. Schicke ich mehrere Fahrzeuge auf einmal,
+    ordne jedem Fahrzeug den Link zu, der zu ihm gehört.
+    Schreibe ihn vollständig ab, ohne ihn zu kürzen oder zu verändern.
+    Findest du keinen: "" -- die App fragt mich dann beim Import danach.
 
 35. "price"
     Der geforderte Preis in Euro als reine Zahl, ohne Punkt und ohne "€".

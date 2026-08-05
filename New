@@ -35,9 +35,13 @@ const TEXT_FIELDS = [
 ];
 
 // Definierte Begriffe (kontrolliertes Vokabular)
-// Ein Vokabular für alle vier Felder: "Unbekannt" heißt überall dasselbe.
-const ACCIDENT_OPTS = ["Unfallfrei", "Unfallwagen", "Unbekannt"];
-const ISSUE_OPTS = ["Keine", "Vorhanden", "Unbekannt"];
+// "Unbekannt" heißt überall dasselbe — es gibt es aber nicht mehr überall:
+// Beurteilt wird nur, was im Inserat steht. Sagt das Inserat nichts zu einem
+// Unfall, gilt das Fahrzeug als unfallfrei; sagt es nichts zu Mängeln, hat es
+// keine. Nur wo eine Aussage fehlen kann, ohne dass sich daraus etwas
+// schließen lässt, bleibt "Unbekannt" erhalten.
+const ACCIDENT_OPTS = ["Unfallfrei", "Unfallwagen"];
+const ISSUE_OPTS = ["Keine", "Vorhanden"];
 const PREV_OPTS = ["Keine", "Vorhanden", "Unbekannt"];
 const SCOPE_OPTS = ["Keine", "Gering", "Mittel", "Umfangreich", "Unbekannt"];
 
@@ -53,9 +57,13 @@ const STATUS_SYNONYME = {
   "bekannt": "Vorhanden", "ja": "Vorhanden", "vorhanden bekannt": "Vorhanden",
 };
 
-function normalizeStatus(value, options) {
+// "standard" ist das Ergebnis, wenn nichts Verwertbares dasteht. Bei Unfall
+// und aktuellen Mängeln ist das nicht "Unbekannt", sondern die Aussage
+// "es gibt keine Hinweise darauf" — auch für alte Einträge, in denen noch
+// "Unbekannt" steht.
+function normalizeStatus(value, options, standard = "Unbekannt") {
   const raw = String(value == null ? "" : value).trim();
-  if (!raw) return "Unbekannt";
+  if (!raw) return standard;
   const key = raw.toLowerCase();
   const treffer = options.find((o) => o.toLowerCase() === key);
   if (treffer) return treffer;
@@ -63,7 +71,7 @@ function normalizeStatus(value, options) {
   if (syn && options.includes(syn)) return syn;
   const teil = options.find((o) => o !== "Unbekannt" && key.includes(o.toLowerCase()));
   if (teil) return teil;
-  return "Unbekannt";
+  return standard;
 }
 
 /* --- Weitere abschließende Listen: die App erzwingt sie, damit sich
@@ -229,6 +237,33 @@ const PHOTO_DAMAGE_HILFE = {
   "Bei genauem Hinsehen": "Fällt erst beim zweiten Blick auf",
   "Leicht zu übersehen": "Nur zu finden, wenn man gezielt danach sucht",
 };
+
+// Wörter, die auf etwas hindeuten, das auf einem Foto zu sehen sein müsste.
+// Damit wird die eigene Notiz der KI nur dann herangezogen, wenn sie
+// tatsächlich von etwas Sichtbarem spricht — sonst stünde bei jedem
+// Fahrzeug ein Hinweis und niemand würde ihn noch lesen.
+const SICHTBAR_RE = /kratz|schramm|dell(e|en)|beule|lack|rost|steinschlag|riss|bruch|gebrochen|beschädig|schaden|schäden|unfall|polster|sitz|verschleiß|abgenutzt|verblasst|vergilbt|matt|folie|felge|scheibe|spiegel|stoßstange|kotflügel|motorhaube|heckklappe|schweller|spaltmaß|verzogen|nachlackier|smart ?repair/i;
+
+// Alles, was aus dem Inserat auf sichtbare Mängel hindeutet — als
+// Gedächtnisstütze, bevor man die Fotos beurteilt.
+function fotoHinweise(v) {
+  const texte = [
+    ["Aktuelle Mängel", v.damageCurrent],
+    ["Frühere Schäden", v.damagePrevious],
+    ["Bereits repariert", v.damageRepaired],
+  ].filter(([, t]) => String(t || "").trim());
+  const notiz = String(v.note || "").trim();
+  if (notiz && SICHTBAR_RE.test(notiz)) texte.push(["Notiz der KI", notiz]);
+
+  const flaggen = [];
+  if (v.accidentStatus === "Unfallwagen") flaggen.push("als Unfallwagen eingetragen");
+  if (v.currentIssueStatus === "Vorhanden") flaggen.push("aktuelle Mängel vermerkt");
+  if (v.previousDamageStatus === "Vorhanden") flaggen.push("frühere Schäden vermerkt");
+  if (v.repairScope && !["Keine", "Unbekannt"].includes(v.repairScope)) {
+    flaggen.push(`Reparaturbedarf ${v.repairScope.toLowerCase()}`);
+  }
+  return { texte, flaggen, hat: texte.length > 0 || flaggen.length > 0 };
+}
 
 const LISTING_PREP_OPTS = ["Aufbereitet", "Normale Gebrauchsspuren", "Nicht vorbereitet"];
 const LISTING_PREP_FRAGE = "Wie ist das Fahrzeug im Inserat dargestellt?";
@@ -477,8 +512,8 @@ function normalizeHistory(h) {
 function normalizeVehicle(v) {
   const out = {};
   TEXT_FIELDS.forEach((k) => { out[k] = v[k] != null ? String(v[k]).trim() : ""; });
-  out.accidentStatus = normalizeStatus(v.accidentStatus, ACCIDENT_OPTS);
-  out.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS);
+  out.accidentStatus = normalizeStatus(v.accidentStatus, ACCIDENT_OPTS, "Unfallfrei");
+  out.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS, "Keine");
   out.previousDamageStatus = normalizeStatus(v.previousDamageStatus, PREV_OPTS);
   out.repairScope = normalizeStatus(v.repairScope, SCOPE_OPTS);
   out.category = normalizeChoice(v.category, "category", CATEGORY_OPTS);
@@ -617,8 +652,10 @@ async function serverWrite(key, vehicles, base) {
 // Gespeicherte Einträge auf das heutige Vokabular heben, egal woher sie stammen.
 function migrate(vehicles) {
   Object.values(vehicles || {}).forEach((v) => {
-    v.accidentStatus = normalizeStatus(v.accidentStatus, ACCIDENT_OPTS);
-    v.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS);
+    // Früher stand hier "Unbekannt", wenn das Inserat nichts dazu sagte.
+    // Genau das heißt heute "Unfallfrei" beziehungsweise "Keine".
+    v.accidentStatus = normalizeStatus(v.accidentStatus, ACCIDENT_OPTS, "Unfallfrei");
+    v.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS, "Keine");
     v.previousDamageStatus = normalizeStatus(v.previousDamageStatus, PREV_OPTS);
     v.repairScope = normalizeStatus(v.repairScope, SCOPE_OPTS);
     v.category = normalizeChoice(v.category, "category", CATEGORY_OPTS);
@@ -1354,6 +1391,7 @@ export default function App() {
                 {previewDubletten[v.id] && <DublettenWarnung neu={v} treffer={previewDubletten[v.id]} />}
                 <div style={S.askBlock}>
                   <div style={S.askIntro}>Deine Einschätzung — das kann dir keine KI abnehmen:</div>
+                  <FotoHinweis v={v} />
                   <ChoiceQuestion frage={PHOTO_DAMAGE_FRAGE} options={PHOTO_DAMAGE_OPTS} hilfe={PHOTO_DAMAGE_HILFE}
                     value={answers[v.id]?.photoDamage || ""} onChange={(w) => setAnswer(v.id, "photoDamage", w)} />
                   <ChoiceQuestion frage={LISTING_PREP_FRAGE} options={LISTING_PREP_OPTS} hilfe={LISTING_PREP_HILFE}
@@ -1363,9 +1401,11 @@ export default function App() {
                     <input value={answers[v.id]?.url || ""} onChange={(e) => setAnswer(v.id, "url", e.target.value)}
                       placeholder="mobile.de/…" style={S.askInput} inputMode="url" spellCheck={false} />
                     <div style={S.askHilfe}>
-                      {istLink(answers[v.id]?.url)
-                        ? "Von hier kommst du später mit einem Klick zurück ins Inserat."
-                        : "Pflichtangabe — ohne Link findest du das Inserat später nicht wieder."}
+                      {!istLink(answers[v.id]?.url)
+                        ? "Pflichtangabe — ohne Link findest du das Inserat später nicht wieder."
+                        : v.url && normalizeUrl(answers[v.id].url) === normalizeUrl(v.url)
+                          ? "Aus dem JSON übernommen — prüfen und bei Bedarf überschreiben."
+                          : "Von hier kommst du später mit einem Klick zurück ins Inserat."}
                     </div>
                   </div>
                 </div>
@@ -2341,6 +2381,26 @@ function DublettenWarnung({ neu, treffer }) {
   );
 }
 
+// Steht im Inserat etwas über Schäden, wird es hier vor der Fotofrage
+// wiederholt — damit man weiß, wonach man auf den Bildern suchen soll.
+function FotoHinweis({ v }) {
+  const S = styles;
+  const { texte, flaggen, hat } = fotoHinweise(v);
+  if (!hat) return null;
+  return (
+    <div style={S.fotoBox}>
+      <div style={S.fotoTitel}><Camera size={13} /> Das Inserat spricht von Schäden — gezielt hinschauen</div>
+      {flaggen.length > 0 && <div style={S.fotoFlaggen}>{flaggen.join(" · ")}</div>}
+      {texte.map(([label, wert]) => (
+        <div key={label} style={S.fotoZeile}>
+          <span style={S.fotoLabel}>{label}</span>
+          <span style={S.fotoText}>{wert}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function ChoiceQuestion({ frage, options, hilfe, value, onChange }) {
   return (
     <div style={styles.askItem}>
@@ -2550,6 +2610,13 @@ const styles = {
   askHilfe: { fontSize: 11, color: T.muted, marginTop: 6, fontStyle: "italic" },
   askInput: { width: "100%", background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace" },
   askHint: { fontSize: 11.5, color: T.accent },
+
+  fotoBox: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 9, padding: "10px 12px", marginBottom: 12 },
+  fotoTitel: { display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: T.accent, marginBottom: 6 },
+  fotoFlaggen: { fontSize: 11, color: T.muted, marginBottom: 6 },
+  fotoZeile: { display: "flex", flexDirection: "column", gap: 2, marginTop: 6 },
+  fotoLabel: { fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 },
+  fotoText: { fontSize: 11.5, color: T.text, lineHeight: 1.5 },
 
   toggleGroup: { display: "inline-flex", gap: 4, background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: 3 },
   toggleOn: { background: T.accent, color: T.bg, border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, textTransform: "none", letterSpacing: 0 },
