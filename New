@@ -318,6 +318,98 @@ function offenePunkte(v) {
   return p;
 }
 
+/* --- Zustandspunkte ---------------------------------------------------
+   Fasst alles zusammen, was du je Inserat festhältst: was auf den Fotos zu
+   sehen ist, wie das Auto hergerichtet wurde, Unfall, Mängel, Vorschäden und
+   Reparaturbedarf. Start bei 100, jedes Signal zieht ab; ein Stern gibt einen
+   kleinen Bonus. Kilometerstand und Alter stecken bewusst NICHT drin — die
+   gehören auf die Preisseite, nicht in den Zustand. */
+const ZUSTAND_ABZUG = {
+  photoDamage: { "Keine": 0, "Leicht zu übersehen": 6, "Bei genauem Hinsehen": 12, "Deutlich erkennbar": 25 },
+  listingPrep: { "Aufbereitet": 0, "Normale Gebrauchsspuren": 5, "Nicht vorbereitet": 12 },
+  accidentStatus: { "Unfallfrei": 0, "Unfallwagen": 20 },
+  currentIssueStatus: { "Keine": 0, "Vorhanden": 18 },
+  previousDamageStatus: { "Keine": 0, "Unbekannt": 4, "Vorhanden": 10 },
+  repairScope: { "Keine": 0, "Gering": 5, "Mittel": 14, "Umfangreich": 28, "Unbekannt": 8 },
+};
+const ZUSTAND_LABEL = {
+  photoDamage: "Fotos", listingPrep: "Aufbereitung", accidentStatus: "Unfall",
+  currentIssueStatus: "Mängel", previousDamageStatus: "Vorschäden", repairScope: "Reparatur",
+};
+const STERN_BONUS = 8;
+
+function zustandsPunkte(v) {
+  const abzuege = [];
+  let punkte = 100;
+  Object.entries(ZUSTAND_ABZUG).forEach(([feld, tabelle]) => {
+    const wert = v[feld];
+    const ab = wert ? tabelle[wert] : null;
+    if (!ab) return;                       // unbeantwortet oder ohne Abzug
+    punkte -= ab;
+    abzuege.push({ label: ZUSTAND_LABEL[feld], wert, ab });
+  });
+  const bonus = v.showcase === "Vorzeigefahrzeug" ? STERN_BONUS : 0;
+  return { punkte: Math.max(0, Math.min(100, punkte + bonus)), abzuege, bonus };
+}
+
+/* --- Kleinste Quadrate mit beliebig vielen Einflussgrößen --------------
+   Die Größen werden vorher zentriert und auf gleiche Streuung gebracht,
+   sonst erdrückt der Kilometerstand (Zehntausender) die Zustandspunkte
+   (Zweistellige) und das Gleichungssystem wird numerisch unbrauchbar.
+   Zurück kommen die Koeffizienten in den ursprünglichen Einheiten. */
+function kleinsteQuadrate(zeilen, y) {
+  const n = zeilen.length, k = zeilen[0].length;
+  const mx = [], sx = [];
+  for (let c = 0; c < k; c++) {
+    const spalte = zeilen.map((z) => z[c]);
+    const m = mittel(spalte);
+    const s = Math.sqrt(mittel(spalte.map((w) => (w - m) ** 2))) || 1;
+    mx.push(m); sx.push(s);
+  }
+  const my = mittel(y);
+  const Z = zeilen.map((z) => z.map((w, c) => (w - mx[c]) / sx[c]));
+  const yz = y.map((w) => w - my);
+
+  // Normalgleichungen (Z'Z)b = Z'y, gelöst per Gauß mit Spaltenpivot.
+  const A = Array.from({ length: k }, () => new Array(k + 1).fill(0));
+  Z.forEach((z, i) => {
+    for (let r = 0; r < k; r++) {
+      for (let c = 0; c < k; c++) A[r][c] += z[r] * z[c];
+      A[r][k] += z[r] * yz[i];
+    }
+  });
+  for (let s = 0; s < k; s++) {
+    let p = s;
+    for (let r = s + 1; r < k; r++) if (Math.abs(A[r][s]) > Math.abs(A[p][s])) p = r;
+    if (Math.abs(A[p][s]) < 1e-8) return null;      // Größen laufen gleich, nicht lösbar
+    [A[s], A[p]] = [A[p], A[s]];
+    for (let r = 0; r < k; r++) {
+      if (r === s) continue;
+      const f = A[r][s] / A[s][s];
+      for (let c = s; c <= k; c++) A[r][c] -= f * A[s][c];
+    }
+  }
+  const bz = A.map((zeile, r) => zeile[k] / A[r][r]);
+
+  const b = bz.map((w, c) => w / sx[c]);
+  const b0 = my - b.reduce((sum, w, c) => sum + w * mx[c], 0);
+  const vorhersage = (werte) => b0 + b.reduce((sum, w, c) => sum + w * werte[c], 0);
+
+  let ssRes = 0, ssTot = 0;
+  zeilen.forEach((z, i) => { ssRes += (y[i] - vorhersage(z)) ** 2; ssTot += (y[i] - my) ** 2; });
+  return { b0, b, vorhersage, r2: ssTot ? 1 - ssRes / ssTot : 0, n };
+}
+
+// Prozent mit einer Nachkommastelle, deutsches Komma.
+const fmtPct = (w) => `${String(Math.abs(w)).replace(".", ",")} %`;
+
+// Rangplatz in Prozent: 0 = schlechtester Wert, 100 = bester.
+function perzentil(werte, wert) {
+  if (werte.length < 2) return 100;
+  const kleiner = werte.filter((w) => w < wert).length;
+  return Math.round((kleiner / (werte.length - 1)) * 100);
+}
+
 /* --- Lebenslauf des Inserats --- */
 
 const STATUS_OPTS = ["Aktiv", "Verkauft", "Verschwunden"];
@@ -776,6 +868,8 @@ export default function App() {
   const [zeitfenster, setZeitfenster] = useState(0); // Tage, 0 = alles
   const [reiheSort, setReiheSort] = useState("preis"); // Reihenfolge der Preisleiter
   const [ankerKm, setAnkerKm] = useState("");          // Kilometerstand für den Sternrechner
+  const [masterBezug, setMasterBezug] = useState(0);   // Masterchart: Bezugsgruppe A oder B
+  const [masterSchwelle, setMasterSchwelle] = useState("haelfte");
 
   const A = auswahlen[aktiv];
   const { q, filters, priceMax, kmMax } = A;
@@ -1077,6 +1171,9 @@ export default function App() {
   const trefferA = useMemo(() => filtereMit(auswahlen[0]), [list, auswahlen]);
   const trefferB = useMemo(() => filtereMit(auswahlen[1]), [list, auswahlen]);
   const filtered = aktiv === 0 ? trefferA : trefferB;
+  // Der Masterchart hat eine eigene Seite und wählt selbst, auf welche
+  // Bezugsgruppe er schaut — verglichen wird immer nur innerhalb einer.
+  const masterBasis = masterBezug === 0 ? trefferA : trefferB;
 
   const distinct = (field) => [...new Set(list.map((v) => v[field]).filter(Boolean))].sort();
 
@@ -1220,6 +1317,76 @@ export default function App() {
       return out;
     });
   }, [primaer, sekundaer, glaettung, einheit, zeitfenster]);
+
+  /* ---- Masterchart: Zustand gegen Preisvorteil ----
+     Zwei Fragen in einem Bild. Erstens: wie gut ist das Auto gemessen an
+     allem, was du erfasst hast? Zweitens: was müsste es bei diesem Zustand,
+     dieser Laufleistung und diesem Alter kosten — und was kostet es? Interessant
+     ist nur, wer bei der ersten Frage vorn liegt und bei der zweiten darunter. */
+  const master = useMemo(() => {
+    const roh = masterBasis.map((v) => {
+      const z = zustandsPunkte(v);
+      return {
+        v, id: v.id, title: v.title || v.id, marke: [v.make, v.model].filter(Boolean).join(" "),
+        preis: lastPrice(v), km: v.mileage, alter: alterJahre(v),
+        zustand: z.punkte, abzuege: z.abzuege, bonus: z.bonus,
+        stern: v.showcase === "Vorzeigefahrzeug", url: v.url,
+        ez: erstzulassung(v), ort: v.location, rep: v.repairScope, fotos: v.photoDamage,
+      };
+    }).filter((p) => p.preis != null && p.km != null);
+    if (roh.length < 6) return { zuWenig: true, anzahl: roh.length };
+
+    // Alter nur mitnehmen, wenn es überall bekannt ist und genug Fahrzeuge da
+    // sind — mehr Einflussgrößen als Daten macht das Modell wackelig.
+    const mitAlter = roh.every((p) => p.alter != null) && roh.length >= 10;
+    let felder = mitAlter ? ["km", "alter", "zustand"] : ["km", "zustand"];
+    let modell = kleinsteQuadrate(roh.map((p) => felder.map((f) => p[f])), roh.map((p) => p.preis));
+    if (!modell && felder.length > 2) {
+      felder = ["km", "zustand"];
+      modell = kleinsteQuadrate(roh.map((p) => felder.map((f) => p[f])), roh.map((p) => p.preis));
+    }
+    if (!modell) {
+      felder = ["km"];
+      modell = kleinsteQuadrate(roh.map((p) => [p.km]), roh.map((p) => p.preis));
+    }
+    if (!modell) return { zuWenig: true, anzahl: roh.length };
+
+    const bewertet = roh.map((p) => {
+      const erwartet = modell.vorhersage(felder.map((f) => p[f]));
+      const vorteil = erwartet - p.preis;                    // positiv = günstiger als verdient
+      return {
+        ...p, erwartet: Math.round(erwartet), vorteil: Math.round(vorteil),
+        vorteilPct: erwartet > 0 ? Math.round((vorteil / erwartet) * 1000) / 10 : 0,
+      };
+    });
+
+    const zWerte = bewertet.map((p) => p.zustand);
+    const vWerte = bewertet.map((p) => p.vorteilPct);
+    const mitRang = bewertet.map((p) => ({
+      ...p,
+      zRang: perzentil(zWerte, p.zustand),
+      vRang: perzentil(vWerte, p.vorteilPct),
+    }));
+
+    // Schwelle: ab welchen Zustandspunkten zählt ein Auto als "gut"?
+    const sortiertZ = zWerte.slice().sort((a, b) => a - b);
+    const quantil = (q) => sortiertZ[Math.min(sortiertZ.length - 1, Math.floor(q * (sortiertZ.length - 1)))];
+    const schwellen = { alle: 0, haelfte: quantil(0.5), drittel: quantil(2 / 3), viertel: quantil(0.75) };
+    const schwelle = schwellen[masterSchwelle] ?? 0;
+
+    const kandidaten = mitRang.filter((p) => p.zustand >= schwelle).sort((a, b) => b.vorteil - a.vorteil);
+    const bester = kandidaten.find((p) => p.vorteil > 0) || null;
+
+    return {
+      zuWenig: false, anzahl: roh.length, felder, schwelle, schwellen,
+      r2: modell.r2,
+      jeZehntausendKm: Math.round(modell.b[felder.indexOf("km")] * 10000),
+      jeZustandspunkt: felder.includes("zustand") ? Math.round(modell.b[felder.indexOf("zustand")]) : null,
+      jeJahr: felder.includes("alter") ? Math.round(modell.b[felder.indexOf("alter")]) : null,
+      punkte: mitRang, kandidaten, bester,
+      teuerste: mitRang.slice().sort((a, b) => a.vorteil - b.vorteil).slice(0, 3),
+    };
+  }, [masterBasis, masterSchwelle]);
 
   /* ---- Sternniveau: die Vorzeigefahrzeuge als Messlatte ----
      Die Sterne hast du nach dem Erscheinungsbild vergeben, unabhängig vom
@@ -1477,6 +1644,9 @@ export default function App() {
             </button>
           );
         })}
+        <button style={tab === "master" ? S.tabOn : S.tabOff} onClick={() => setTab("master")}>
+          <TrendingUp size={14} /> Masterchart
+        </button>
         <button style={tab === "verzeichnis" ? S.tabOn : S.tabOff} onClick={() => setTab("verzeichnis")}>
           <Car size={14} /> Verzeichnis
           {list.length > 0 && <span style={tab === "verzeichnis" ? S.tabCountOn : S.tabCount}>{list.length}</span>}
@@ -2428,6 +2598,144 @@ export default function App() {
 
       </>)}
 
+      {tab === "master" && (
+      <section style={S.panel}>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <TrendingUp size={15} /> Masterchart — gut und trotzdem günstig
+          </span>
+          <span style={S.toggleGroup}>
+            {[0, 1].map((i) => (
+              <button key={i} onClick={() => setMasterBezug(i)}
+                style={masterBezug === i ? { ...S.toggleOn, background: AUSWAHL_FARBE[i] } : S.toggleOff}>
+                Bezugsgruppe {i === 0 ? "A" : "B"} · {(i === 0 ? trefferA : trefferB).length}
+              </button>
+            ))}
+          </span>
+        </div>
+        <p style={S.hint}>
+          Zwei Fragen in einem Bild. <b style={{ color: T.text }}>Waagerecht der Zustand</b> — aus allem,
+          was du erfasst hast: Fotos, Aufbereitung, Unfall, Mängel, Vorschäden, Reparaturbedarf, Stern.
+          <b style={{ color: T.text }}> Senkrecht der Preisvorteil</b> — wie weit das Auto unter dem liegt,
+          was es bei diesem Zustand, dieser Laufleistung und diesem Alter kosten müsste.
+          Interessant ist nur, wer <b style={{ color: T.accent }}>rechts oben</b> steht: gut und trotzdem billig.
+          Gerechnet wird ausschließlich innerhalb der gewählten Bezugsgruppe — der Filter der Analyseseite gilt.
+        </p>
+
+        {master.zuWenig ? (
+          <div style={S.emptySmall}>
+            Dafür braucht es mindestens sechs Fahrzeuge mit Preis und Kilometerstand in dieser
+            Bezugsgruppe — {master.anzahl === 0 ? "hier ist keines" : `hier sind es erst ${master.anzahl}`}.
+            Stell den Filter auf Analyse {masterBezug === 0 ? "A" : "B"} weiter, oder erfasse mehr Inserate.
+          </div>
+        ) : (
+          <>
+            <div style={S.kennzahlen}>
+              <Kennzahl label="je Zustandspunkt" accent
+                wert={master.jeZustandspunkt != null ? fmtEUR(master.jeZustandspunkt) : "—"}
+                zusatz="soviel ist ein Punkt am Markt wert" />
+              <Kennzahl label="je 10.000 km" wert={fmtEUR(master.jeZehntausendKm)} zusatz="bei gleichem Zustand" />
+              <Kennzahl label="Erklärungskraft" wert={`${Math.round(master.r2 * 100)} %`}
+                zusatz={master.r2 >= 0.6 ? "das Modell trägt" : master.r2 >= 0.3 ? "grobe Richtung, mehr nicht" : "Preise kommen überwiegend woanders her"} />
+              <Kennzahl label="ausgewertet" wert={`${master.anzahl}`} zusatz={`Fahrzeuge der Gruppe ${masterBezug === 0 ? "A" : "B"}`} />
+            </div>
+
+            <div style={{ ...S.compareHead, marginTop: 4 }}>
+              <span style={S.compareTitle}>Als „gut" zählt</span>
+              <span style={S.toggleGroup}>
+                {[["alle", "alle"], ["haelfte", "obere Hälfte"], ["drittel", "oberes Drittel"], ["viertel", "oberes Viertel"]].map(([k, label]) => (
+                  <button key={k} onClick={() => setMasterSchwelle(k)}
+                    style={masterSchwelle === k ? S.toggleOn : S.toggleOff}>{label}</button>
+                ))}
+              </span>
+              <span style={S.resultCount}>ab {master.schwelle} Punkten</span>
+            </div>
+
+            <div style={{ width: "100%", height: 340, marginTop: 6 }}>
+              <ResponsiveContainer>
+                <ComposedChart data={master.punkte} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
+                  <XAxis dataKey="zustand" type="number" domain={[(min) => Math.max(0, min - 5), 102]}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }}
+                    label={{ value: "Zustandspunkte", position: "insideBottom", offset: -2, fill: T.muted, fontSize: 10 }} />
+                  <YAxis dataKey="vorteilPct" type="number" tickFormatter={(w) => `${w > 0 ? "+" : ""}${w} %`}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
+                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
+                    const p = active && payload?.find((x) => x.dataKey === "vorteilPct")?.payload;
+                    return p ? <Masterkarte p={p} schwelle={master.schwelle} /> : null;
+                  }} />
+                  <ReferenceLine y={0} stroke={T.muted} strokeDasharray="4 4"
+                    label={{ value: "Preis wie erwartet", position: "insideTopLeft", fill: T.muted, fontSize: 10 }} />
+                  {master.schwelle > 0 && (
+                    <ReferenceLine x={master.schwelle} stroke={T.accent} strokeDasharray="4 4" />
+                  )}
+                  <Scatter dataKey="vorteilPct" isAnimationActive={false} cursor="pointer" onClick={oeffneInserat}>
+                    {master.punkte.map((p) => (
+                      <Cell key={p.id}
+                        fill={p.zustand >= master.schwelle && p.vorteil > 0 ? T.good
+                          : p.vorteil < 0 ? T.bad : T.muted}
+                        fillOpacity={p.zustand >= master.schwelle ? 0.95 : 0.4} />
+                    ))}
+                  </Scatter>
+                  <Scatter data={master.punkte.filter((p) => p.stern)} dataKey="vorteilPct"
+                    shape="star" fill={T.accent} isAnimationActive={false} cursor="pointer" onClick={oeffneInserat} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={S.legendHint}>
+              Rechts vom gelben Strich gilt als gut · über der Nulllinie günstiger als verdient ·
+              <span style={{ color: T.good }}> grün beides</span> ·
+              <span style={{ color: T.bad }}> rot teurer als verdient</span> ·
+              <span style={{ color: T.accent }}> Sterne die Vorzeigefahrzeuge</span>
+            </div>
+
+            {master.bester && (
+              <div style={S.schluss}>
+                <b style={{ color: T.accent }}>Bester Fund:</b>{" "}
+                <b style={{ color: T.text }}>{master.bester.title}</b> — {master.bester.zustand} von 100
+                Zustandspunkten (besser als {master.bester.zRang} % der Gruppe) und {fmtEUR(master.bester.preis)}{" "}
+                statt erwarteter {fmtEUR(master.bester.erwartet)}, also{" "}
+                <b style={{ color: T.good }}>{fmtEUR(master.bester.vorteil)} unter Wert</b>{" "}
+                ({fmtPct(master.bester.vorteilPct)}).
+              </div>
+            )}
+
+            <div style={{ ...S.compareHead, marginTop: 14 }}>
+              <span style={S.compareTitle}>Rangliste der guten Fahrzeuge</span>
+              <span style={S.resultCount}>{master.kandidaten.length} über der Schwelle · größter Vorteil zuerst</span>
+            </div>
+            <div style={S.ankerListe}>
+              {master.kandidaten.map((p, i) => (
+                <a key={p.id} className="pw-master" href={p.url ? normalizeUrl(p.url) : undefined}
+                  target="_blank" rel="noreferrer"
+                  style={{ ...S.masterZeile, borderLeftColor: p.vorteil > 0 ? T.good : T.bad }}>
+                  <span style={S.masterNr}>{i + 1}</span>
+                  <span style={S.ankerTitel} title={p.title}>
+                    {p.stern && <Star size={10} fill={T.accent} color={T.accent} style={{ marginRight: 4, verticalAlign: -1 }} />}
+                    {p.title}
+                  </span>
+                  <span style={S.masterZustand}>{p.zustand} Pkt</span>
+                  <span style={S.ankerKm}>{fmtNum(p.km)} km</span>
+                  <span style={S.ankerPreis}>{fmtEUR(p.preis)}</span>
+                  <span style={{ ...S.ankerDelta, color: p.vorteil > 0 ? T.good : T.bad }}>
+                    {p.vorteil > 0 ? `${fmtEUR(p.vorteil)} unter Wert` : `${fmtEUR(Math.abs(p.vorteil))} über Wert`}
+                  </span>
+                </a>
+              ))}
+            </div>
+
+            <div style={S.hinweisKlein}>
+              Die Zustandspunkte starten bei 100 und werden abgezogen: Fotos bis −25, Reparaturbedarf bis −28,
+              Unfallwagen −20, aktuelle Mängel −18, Vorschäden bis −10, fehlende Aufbereitung bis −12; ein Stern
+              gibt +{STERN_BONUS}. Was du nicht beantwortet hast, kostet nichts — dann ist die Bewertung aber auch
+              nur so gut wie deine Erfassung. Der erwartete Preis kommt aus deinen eigenen Fahrzeugen dieser
+              Gruppe, nicht aus einer Tabelle; Ausstattung und Wartungshistorie stecken nicht darin.
+            </div>
+          </>
+        )}
+      </section>
+      )}
+
       {tab === "pruefen" && (
       <section style={S.panel}>
         <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
@@ -2932,6 +3240,46 @@ function Karteikarte({ p }) {
   );
 }
 
+// Karte im Masterchart: Zustand, erwarteter Preis, Vorteil — und woher
+// die Abzüge kommen, damit die Punktzahl nachvollziehbar bleibt.
+function Masterkarte({ p, schwelle }) {
+  const S = styles;
+  const gut = p.zustand >= schwelle;
+  const farbe = p.vorteil > 0 ? T.good : p.vorteil < 0 ? T.bad : T.muted;
+  return (
+    <div style={S.karte}>
+      <div style={S.karteKopf}>
+        {p.stern && <Star size={11} fill={T.accent} color={T.accent} />}
+        <span style={{ ...S.karteRep, color: gut ? T.good : T.muted }}>
+          {p.zustand} von 100 Punkten · besser als {p.zRang} %
+        </span>
+      </div>
+      <div style={S.karteTitel}>{p.title}</div>
+      {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
+      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
+      <div style={S.karteListe}>
+        <div style={S.karteZeile}><span style={S.karteLabel}>erwartet</span><span style={S.karteWert}>{fmtEUR(p.erwartet)}</span></div>
+        <div style={S.karteZeile}>
+          <span style={S.karteLabel}>Vorteil</span>
+          <span style={{ ...S.karteWert, color: farbe }}>
+            {p.vorteil > 0 ? `${fmtEUR(p.vorteil)} unter Wert` : p.vorteil < 0 ? `${fmtEUR(Math.abs(p.vorteil))} über Wert` : "genau auf Wert"}
+            {p.vorteil !== 0 && ` (${fmtPct(p.vorteilPct)})`}
+          </span>
+        </div>
+        <div style={S.karteZeile}><span style={S.karteLabel}>Kilometer</span><span style={S.karteWert}>{fmtNum(p.km)} km</span></div>
+        {p.ez && <div style={S.karteZeile}><span style={S.karteLabel}>Erstzulassung</span><span style={S.karteWert}>{p.ez}</span></div>}
+      </div>
+      <div style={S.karteAbzug}>
+        {p.bonus > 0 && <span style={{ color: T.accent }}>Stern +{p.bonus}</span>}
+        {p.abzuege.length === 0
+          ? <span style={{ color: T.good }}>keine Abzüge</span>
+          : p.abzuege.map((a) => <span key={a.label}>{a.label}: {a.wert} −{a.ab}</span>)}
+      </div>
+      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
+    </div>
+  );
+}
+
 // Karte im Sternchart: was das Auto kostet und was ein Vorzeigefahrzeug
 // derselben Laufleistung kosten würde.
 function Ankerkarte({ p }) {
@@ -3058,6 +3406,10 @@ const globalCss = `
     .pw-mlabel { display: block; }
     /* Sternniveau-Zeilen: Titel oben, Zahlen darunter nebeneinander */
     .pw-anker { grid-template-columns: 1fr auto !important; row-gap: 4px; }
+    .pw-master { grid-template-columns: 26px 1fr auto !important; row-gap: 4px; }
+    .pw-master > span:nth-child(2) { grid-column: 2 / -1; }
+    .pw-master > span:nth-child(3) { grid-column: 2; }
+    .pw-master > span:nth-child(6) { text-align: right; }
     .pw-anker > span:first-child { grid-column: 1 / -1; }
     .pw-anker > span:nth-child(4) { text-align: right; }
   }
@@ -3111,6 +3463,11 @@ const styles = {
   rechnerLabel: { fontSize: 12.5, color: T.muted },
   rechnerInput: { width: 100, background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 7, padding: "6px 9px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace" },
   rechnerWert: { fontSize: 17, fontWeight: 800, color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
+
+  masterZeile: { display: "grid", gridTemplateColumns: "26px minmax(120px, 2fr) 74px 92px 92px 150px", gap: 8, alignItems: "center", background: T.bg, border: `1px solid ${T.line}`, borderLeft: "3px solid", borderRadius: 8, padding: "8px 11px", textDecoration: "none", color: T.text },
+  masterNr: { fontSize: 11, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
+  masterZustand: { fontSize: 11.5, fontWeight: 700, color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
+  karteAbzug: { display: "flex", flexWrap: "wrap", gap: "2px 10px", fontSize: 10, color: T.muted, marginTop: 7, paddingTop: 6, borderTop: `1px solid ${T.line}` },
 
   ankerListe: { display: "flex", flexDirection: "column", gap: 4 },
   ankerZeile: { display: "grid", gridTemplateColumns: "minmax(120px, 2fr) 92px 92px 148px 140px", gap: 8, alignItems: "center", background: T.bg, border: `1px solid ${T.line}`, borderLeft: "3px solid", borderRadius: 8, padding: "8px 11px", textDecoration: "none", color: T.text },
