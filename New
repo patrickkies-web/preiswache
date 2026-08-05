@@ -775,6 +775,7 @@ export default function App() {
   const [einheit, setEinheit] = useState("euro");  // "euro" oder "prozent"
   const [zeitfenster, setZeitfenster] = useState(0); // Tage, 0 = alles
   const [reiheSort, setReiheSort] = useState("preis"); // Reihenfolge der Preisleiter
+  const [ankerKm, setAnkerKm] = useState("");          // Kilometerstand für den Sternrechner
 
   const A = auswahlen[aktiv];
   const { q, filters, priceMax, kmMax } = A;
@@ -1220,6 +1221,70 @@ export default function App() {
     });
   }, [primaer, sekundaer, glaettung, einheit, zeitfenster]);
 
+  /* ---- Sternniveau: die Vorzeigefahrzeuge als Messlatte ----
+     Die Sterne hast du nach dem Erscheinungsbild vergeben, unabhängig vom
+     Kilometerstand. Genau deshalb taugen sie als Anker: sie sagen, was ein
+     Auto in Vorzeigezustand bei dieser Laufleistung kostet. Alles ohne Stern
+     muss darunter liegen — sonst zahlst du Vorzeigepreis für weniger Auto. */
+  const sternAnker = useMemo(() => {
+    const basis = filtered
+      .map((v) => ({
+        v, id: v.id, title: v.title || v.id, preis: lastPrice(v), km: v.mileage,
+        stern: v.showcase === "Vorzeigefahrzeug", url: v.url, rep: v.repairScope,
+        fotos: v.photoDamage, ez: erstzulassung(v), marke: [v.make, v.model].filter(Boolean).join(" "),
+        ort: v.location, anbieter: v.dealerName || v.sellerType, stand: v.listingStatus || "Aktiv",
+      }))
+      .filter((p) => p.preis != null && p.km != null);
+    const sterne = basis.filter((p) => p.stern);
+    const andere = basis.filter((p) => !p.stern);
+    if (!sterne.length) return { keineSterne: true, anzahl: basis.length };
+
+    // Steigung je Kilometer. Ab vier Sternen aus ihnen selbst — darunter wäre
+    // das reines Rauschen, dann wird die Steigung aller Fahrzeuge geliehen und
+    // die Linie nur in der Höhe auf das Sternniveau gelegt.
+    const steigung = (punkte) => {
+      if (punkte.length < 2) return null;
+      const mx = mittel(punkte.map((p) => p.km)), my = mittel(punkte.map((p) => p.preis));
+      let sxx = 0, sxy = 0;
+      punkte.forEach((p) => { const a = p.km - mx; sxx += a * a; sxy += a * (p.preis - my); });
+      return sxx > 0 ? sxy / sxx : null;
+    };
+    const eigene = sterne.length >= 4 ? steigung(sterne) : null;
+    const b1 = eigene != null ? eigene : (steigung(basis) ?? 0);
+    const b0 = mittel(sterne.map((p) => p.preis - b1 * p.km));
+    const anker = (km) => b0 + b1 * km;
+
+    const bewertet = andere.map((p) => {
+      const soll = anker(p.km);
+      return { ...p, anker: Math.round(soll), abstand: Math.round(p.preis - soll) };
+    }).sort((a, b) => a.abstand - b.abstand);
+
+    const kmWerte = basis.map((p) => p.km);
+    const kmMin = Math.min(...kmWerte), kmMax = Math.max(...kmWerte);
+    const linie = [kmMin, kmMax].map((km) => ({ km, niveau: Math.round(anker(km)) }));
+
+    // Ein C 180 Benziner ist keine Messlatte für einen C 250 Diesel. Wenn die
+    // Sternfahrzeuge dieser Auswahl in einem tragenden Merkmal auseinanderlaufen,
+    // wird die Linie stumpf — dann muss der Filter enger.
+    const mischung = [["model", "Modell"], ["fuel", "Kraftstoff"], ["gearbox", "Getriebe"],
+      ["series", "Baureihe"], ["category", "Kategorie"]]
+      .map(([feld, label]) => {
+        const werte = [...new Set(sterne.map((p) => p.v[feld]).filter(Boolean))];
+        return werte.length > 1 ? { label, werte } : null;
+      }).filter(Boolean);
+
+    return {
+      keineSterne: false, anzahl: basis.length, mischung,
+      sterne: sterne.map((p) => ({ ...p, anker: Math.round(anker(p.km)), abstand: Math.round(p.preis - anker(p.km)) })),
+      andere: bewertet,
+      jeZehntausend: Math.round(b1 * 10000),
+      eigeneSteigung: eigene != null,
+      anker, linie, kmMin, kmMax,
+      ueberNiveau: bewertet.filter((p) => p.abstand >= 0),
+      guenstigstes: bewertet[0],
+    };
+  }, [filtered]);
+
   /* ---- Erwarteter Preis: Regression über Kilometer und Alter ---- */
   const fairValue = useMemo(() => {
     const basis = filtered
@@ -1264,7 +1329,7 @@ export default function App() {
         marke: [v.make, v.model].filter(Boolean).join(" "),
         ez: erstzulassung(v), km: v.mileage, ort: v.location,
         rep: v.repairScope, fotos: v.photoDamage, anbieter: v.dealerName || v.sellerType,
-        stand: v.listingStatus || "Aktiv", url: v.url, stern: v.showcase === "Vorzeigefahrzeug",
+        stand: v.listingStatus || "Aktiv", url: v.url,
       }))
       .filter((p) => p.preis != null);
     if (!punkte.length) return null;
@@ -2180,6 +2245,145 @@ export default function App() {
         )}
       </section>
 
+      {/* Sternniveau */}
+      <section style={S.panel}>
+        <div style={S.panelTitle}><Star size={15} /> Sternniveau — was ein Vorzeigefahrzeug kosten darf</div>
+        <p style={S.hint}>
+          Deine Sternfahrzeuge sind die Messlatte: gute Erscheinung, egal bei welcher Laufleistung.
+          Daraus wird eine Linie gelegt, die sagt, was ein Auto <b style={{ color: T.text }}>in
+          Vorzeigezustand</b> bei einem bestimmten Kilometerstand kostet. Alles ohne Stern gehört
+          darunter — und zwar umso deutlicher, je schlechter es dagegen aussieht.
+          Gerechnet wird <b style={{ color: T.text }}>ausschließlich mit den Fahrzeugen dieser
+          Auswahl</b>: Filter enger stellen heißt schärfere Messlatte.
+        </p>
+
+        {sternAnker.keineSterne ? (
+          <div style={S.emptySmall}>
+            Noch kein Fahrzeug mit dem Stern markiert. Setz ihn beim Import oder im Verzeichnis
+            bei den Inseraten, die optisch den Ton angeben — dann entsteht hier die Messlatte.
+          </div>
+        ) : (
+          <>
+            <div style={S.kennzahlen}>
+              <Kennzahl label="Sternfahrzeuge" wert={`${sternAnker.sterne.length}`}
+                zusatz={`von ${sternAnker.anzahl} in der Auswahl`} accent />
+              <Kennzahl label="je 10.000 km" wert={`${sternAnker.jeZehntausend > 0 ? "+" : ""}${fmtEUR(sternAnker.jeZehntausend)}`}
+                zusatz={sternAnker.eigeneSteigung ? "aus den Sternfahrzeugen selbst" : "aus allen Fahrzeugen geliehen"} />
+              <Kennzahl label="unter Sternniveau" wert={`${sternAnker.andere.length - sternAnker.ueberNiveau.length}`}
+                zusatz={`von ${sternAnker.andere.length} ohne Stern`} />
+              <Kennzahl label="auf oder über Niveau" wert={`${sternAnker.ueberNiveau.length}`}
+                zusatz="ohne Stern zum Sternpreis" />
+            </div>
+
+            {sternAnker.mischung.length > 0 && (
+              <div style={S.mischBox}>
+                <div style={S.mischTitel}><AlertTriangle size={13} /> Die Messlatte mischt zu viel</div>
+                <div style={S.mischText}>
+                  Deine Sternfahrzeuge in dieser Auswahl unterscheiden sich in{" "}
+                  {sternAnker.mischung.map((m, i) => (
+                    <span key={m.label}>
+                      {i > 0 ? (i === sternAnker.mischung.length - 1 ? " und " : ", ") : ""}
+                      <b style={{ color: T.text }}>{m.label}</b> ({m.werte.join(", ")})
+                    </span>
+                  ))}. Ein Fahrzeug kann nur an seinesgleichen gemessen werden — stell den Filter oben
+                  enger, sonst steht hier eine Linie durch zwei verschiedene Märkte.
+                </div>
+              </div>
+            )}
+
+            <div style={S.rechnerBox}>
+              <span style={S.rechnerLabel}>Ein Vorzeigefahrzeug mit</span>
+              <input value={ankerKm} onChange={(e) => setAnkerKm(e.target.value)} inputMode="decimal"
+                placeholder="140000" style={S.rechnerInput} />
+              <span style={S.rechnerLabel}>km liegt bei</span>
+              <span style={S.rechnerWert}>
+                {coerceNum(ankerKm) != null ? fmtEUR(Math.round(sternAnker.anker(coerceNum(ankerKm)))) : "—"}
+              </span>
+            </div>
+            <div style={S.hinweisKlein}>
+              Jede 10.000 km mehr sind nach dieser Rechnung {fmtEUR(Math.abs(sternAnker.jeZehntausend))}{" "}
+              {sternAnker.jeZehntausend < 0 ? "weniger" : "mehr"} wert. Von 90.000 auf 140.000 km sind das{" "}
+              <b style={{ color: T.text }}>{fmtEUR(Math.abs(sternAnker.jeZehntausend * 5))}</b> Unterschied — und
+              das gilt für zwei Autos in <i>gleichem</i> Zustand. Sieht das zweite schlechter aus, muss noch mehr runter.
+            </div>
+
+            <div style={{ width: "100%", height: 300, marginTop: 10 }}>
+              <ResponsiveContainer>
+                <ComposedChart margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
+                  <XAxis dataKey="km" type="number" domain={["dataMin - 5000", "dataMax + 5000"]}
+                    tickFormatter={(k) => `${Math.round(k / 1000)}k`}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
+                  <YAxis dataKey="preis" type="number" domain={["dataMin - 500", "dataMax + 500"]}
+                    tickFormatter={(w) => fmtNum(Math.round(w))}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
+                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
+                    const p = active && payload?.find((x) => x.dataKey === "preis")?.payload;
+                    return p ? <Ankerkarte p={p} /> : null;
+                  }} />
+                  <Line data={sternAnker.linie} dataKey="niveau" type="linear" stroke={T.accent}
+                    strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false} />
+                  <Scatter data={sternAnker.andere} dataKey="preis" isAnimationActive={false} cursor="pointer"
+                    onClick={oeffneInserat}>
+                    {sternAnker.andere.map((p) => (
+                      <Cell key={p.id} fill={p.abstand < 0 ? T.good : T.bad} fillOpacity={0.85} />
+                    ))}
+                  </Scatter>
+                  <Scatter data={sternAnker.sterne} dataKey="preis" isAnimationActive={false} cursor="pointer"
+                    shape="star" fill={T.accent} onClick={oeffneInserat} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={S.legendHint}>
+              Waagerecht Kilometer, senkrecht Preis · <span style={{ color: T.accent }}>Sterne die Messlatte</span> ·
+              <span style={{ color: T.good }}> grün darunter</span> ·
+              <span style={{ color: T.bad }}> rot auf oder über Niveau</span>
+            </div>
+
+            {sternAnker.andere.length > 0 && (
+              <>
+                <div style={{ ...S.compareHead, marginTop: 16 }}>
+                  <span style={S.compareTitle}>Abstand zum Sternniveau</span>
+                  <span style={S.resultCount}>größter Abschlag zuerst</span>
+                </div>
+                <div style={S.ankerListe}>
+                  {sternAnker.andere.map((p) => (
+                    <a key={p.id} className="pw-anker" href={p.url ? normalizeUrl(p.url) : undefined}
+                      target="_blank" rel="noreferrer"
+                      style={{ ...S.ankerZeile, borderLeftColor: p.abstand < 0 ? T.good : T.bad }}>
+                      <span style={S.ankerTitel} title={p.title}>{p.title}</span>
+                      <span style={S.ankerKm}>{fmtNum(p.km)} km</span>
+                      <span style={S.ankerPreis}>{fmtEUR(p.preis)}</span>
+                      <span style={S.ankerSoll}>Sternniveau {fmtEUR(p.anker)}</span>
+                      <span style={{ ...S.ankerDelta, color: p.abstand < 0 ? T.good : T.bad }}>
+                        {p.abstand < 0 ? `${fmtEUR(Math.abs(p.abstand))} darunter` : `${fmtEUR(p.abstand)} darüber`}
+                      </span>
+                    </a>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {sternAnker.ueberNiveau.length > 0 && (
+              <div style={S.schluss}>
+                <b style={{ color: T.bad }}>Ohne Stern zum Sternpreis:</b>{" "}
+                {sternAnker.ueberNiveau.length === 1
+                  ? <><b style={{ color: T.text }}>{sternAnker.ueberNiveau[0].title}</b> liegt bei {fmtNum(sternAnker.ueberNiveau[0].km)} km auf {fmtEUR(sternAnker.ueberNiveau[0].preis)} — ein Vorzeigefahrzeug mit dieser Laufleistung käme auf {fmtEUR(sternAnker.ueberNiveau[0].anker)}.</>
+                  : <>{sternAnker.ueberNiveau.length} Fahrzeuge kosten so viel wie ein Vorzeigefahrzeug ihrer Laufleistung, sehen aber nicht so aus. Für diese Preise gibt es in deiner eigenen Auswahl Besseres.</>}
+              </div>
+            )}
+            {sternAnker.sterne.length < 4 && (
+              <div style={S.hinweisKlein}>
+                Mit {sternAnker.sterne.length === 1 ? "einem einzigen Sternfahrzeug" : `${sternAnker.sterne.length} Sternfahrzeugen`} lässt
+                sich keine eigene Steigung berechnen — die Linie übernimmt den Kilometer-Verlauf aller Fahrzeuge
+                und wird nur in der Höhe auf dein Sternniveau gelegt. Ab vier Sternen rechnet sie eigenständig.
+              </div>
+            )}
+          </>
+        )}
+      </section>
+
+
       </>)}
 
       {tab === "erfassen" && (<>
@@ -2707,7 +2911,6 @@ function Karteikarte({ p }) {
     <div style={S.karte}>
       <div style={S.karteKopf}>
         <span style={S.karteNr}>#{p.nr}</span>
-        {p.stern && <Star size={11} fill={T.accent} color={T.accent} />}
         <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparatur unbekannt"}</span>
       </div>
       <div style={S.karteTitel}>{p.title}</div>
@@ -2724,6 +2927,40 @@ function Karteikarte({ p }) {
       {p.stand && p.stand !== "Aktiv" && (
         <div style={{ ...S.karteHinweis, color: tagColor("listingStatus", p.stand) }}>{p.stand}</div>
       )}
+      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
+    </div>
+  );
+}
+
+// Karte im Sternchart: was das Auto kostet und was ein Vorzeigefahrzeug
+// derselben Laufleistung kosten würde.
+function Ankerkarte({ p }) {
+  const S = styles;
+  const drunter = p.abstand < 0;
+  const farbe = p.stern ? T.accent : drunter ? T.good : T.bad;
+  return (
+    <div style={S.karte}>
+      <div style={S.karteKopf}>
+        {p.stern && <Star size={11} fill={T.accent} color={T.accent} />}
+        <span style={{ ...S.karteRep, color: p.stern ? T.accent : repFarbe(p.rep) }}>
+          {p.stern ? "Vorzeigefahrzeug" : p.rep || "Reparatur unbekannt"}
+        </span>
+      </div>
+      <div style={S.karteTitel}>{p.title}</div>
+      {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
+      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
+      <div style={S.karteListe}>
+        <div style={S.karteZeile}><span style={S.karteLabel}>Kilometer</span><span style={S.karteWert}>{fmtNum(p.km)} km</span></div>
+        <div style={S.karteZeile}><span style={S.karteLabel}>Sternniveau</span><span style={S.karteWert}>{fmtEUR(p.anker)}</span></div>
+        <div style={S.karteZeile}>
+          <span style={S.karteLabel}>Abstand</span>
+          <span style={{ ...S.karteWert, color: farbe }}>
+            {p.abstand === 0 ? "genau auf Niveau" : `${fmtEUR(Math.abs(p.abstand))} ${drunter ? "darunter" : "darüber"}`}
+          </span>
+        </div>
+        {p.ez && <div style={S.karteZeile}><span style={S.karteLabel}>Erstzulassung</span><span style={S.karteWert}>{p.ez}</span></div>}
+        {p.fotos && <div style={S.karteZeile}><span style={S.karteLabel}>Fotos</span><span style={S.karteWert}>{p.fotos}</span></div>}
+      </div>
       {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
     </div>
   );
@@ -2819,6 +3056,10 @@ const globalCss = `
     .pw-dirrow > button:last-of-type { grid-column: 2; grid-row: 1; justify-self: end; }
     .pw-metrics { grid-column: 1 / -1; grid-row: 2; display: flex; flex-wrap: wrap; gap: 8px 18px; }
     .pw-mlabel { display: block; }
+    /* Sternniveau-Zeilen: Titel oben, Zahlen darunter nebeneinander */
+    .pw-anker { grid-template-columns: 1fr auto !important; row-gap: 4px; }
+    .pw-anker > span:first-child { grid-column: 1 / -1; }
+    .pw-anker > span:nth-child(4) { text-align: right; }
   }
 `;
 
@@ -2861,6 +3102,23 @@ const styles = {
   askHilfe: { fontSize: 11, color: T.muted, marginTop: 6, fontStyle: "italic" },
   askInput: { width: "100%", background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace" },
   askHint: { fontSize: 11.5, color: T.accent },
+
+  mischBox: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.bad}`, borderRadius: 9, padding: "10px 13px", marginTop: 4, marginBottom: 8 },
+  mischTitel: { display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: T.bad, marginBottom: 5 },
+  mischText: { fontSize: 11.5, color: T.muted, lineHeight: 1.6 },
+
+  rechnerBox: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "10px 13px", marginTop: 4 },
+  rechnerLabel: { fontSize: 12.5, color: T.muted },
+  rechnerInput: { width: 100, background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 7, padding: "6px 9px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace" },
+  rechnerWert: { fontSize: 17, fontWeight: 800, color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
+
+  ankerListe: { display: "flex", flexDirection: "column", gap: 4 },
+  ankerZeile: { display: "grid", gridTemplateColumns: "minmax(120px, 2fr) 92px 92px 148px 140px", gap: 8, alignItems: "center", background: T.bg, border: `1px solid ${T.line}`, borderLeft: "3px solid", borderRadius: 8, padding: "8px 11px", textDecoration: "none", color: T.text },
+  ankerTitel: { fontSize: 12.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  ankerKm: { fontSize: 11, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
+  ankerPreis: { fontSize: 12.5, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace" },
+  ankerSoll: { fontSize: 11, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
+  ankerDelta: { fontSize: 11.5, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
 
   sternIconAn: { background: "transparent", color: T.accent, border: "none", padding: 4, borderRadius: 6, display: "inline-flex" },
   sternAus: { display: "inline-flex", alignItems: "center", gap: 7, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "6px 13px", fontSize: 12, fontWeight: 600 },
