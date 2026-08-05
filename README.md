@@ -52,6 +52,17 @@ Gemeldet wird, nie automatisch zusammengeführt. Ist der Vorgänger abgeschlosse
 weist die App auf eine mutmaßliche Neueinstellung hin und nennt die echte
 Standzeit; läuft er noch, warnt sie vor einer doppelten Eingabe.
 
+### Inserate über Zeit
+
+Ein Punkt je Inserat: waagerecht das Datum der Erfassung, senkrecht der Preis, zu
+dem es damals stand. Eine Ausgleichsgerade nach kleinsten Quadraten zeigt, ob das
+**Niveau neuer Angebote** steigt oder fällt, ausgewiesen als Euro je Monat.
+
+Das beantwortet eine andere Frage als der Abschnitt darunter: Hier geht es um den
+Markt insgesamt — lohnt sich Warten? —, dort um das Verhalten einzelner Verkäufer
+nach der Schaltung. Die Trendangabe erscheint erst ab einem beobachteten Zeitraum
+von einer Woche, darunter wäre sie beliebig.
+
 ### Preisentwicklung ab Inserat
 
 Der Abschnitt beantwortet die Frage, **wann Verkäufer üblicherweise nachgeben**.
