@@ -168,6 +168,54 @@ function normalizeUrl(s) {
   return /^https?:\/\//i.test(t) ? t : `https://${t.replace(/^\/+/, "")}`;
 }
 
+// Alter in Jahren seit der Erstzulassung. Fehlt der Monat, wird Jahresmitte
+// angenommen — genauer als Januar und im Schnitt richtig.
+function alterJahre(v) {
+  if (!v.year) return null;
+  const d = parseISO(`${v.year}-${(v.month || "06")}-15`);
+  if (!d || isNaN(d.getTime())) return null;
+  const jahre = (Date.now() - d.getTime()) / (365.25 * TAG_MS);
+  return jahre >= 0 ? jahre : null;
+}
+
+/* --- Erwarteter Preis aus Kilometerstand und Alter ---
+   Kleinste Quadrate mit zwei Einflussgrößen:
+       preis ≈ b0 + b1·km + b2·alter
+   Über die zentrierten Größen wird daraus ein 2x2-Gleichungssystem. */
+function regression(punkte) {
+  const n = punkte.length;
+  const mx1 = mittel(punkte.map((p) => p.km));
+  const mx2 = mittel(punkte.map((p) => p.alter));
+  const my = mittel(punkte.map((p) => p.preis));
+  let S11 = 0, S22 = 0, S12 = 0, S1y = 0, S2y = 0;
+  punkte.forEach((p) => {
+    const a = p.km - mx1, b = p.alter - mx2, y = p.preis - my;
+    S11 += a * a; S22 += b * b; S12 += a * b; S1y += a * y; S2y += b * y;
+  });
+  const det = S11 * S22 - S12 * S12;
+  let b1, b2;
+  if (Math.abs(det) < 1e-6) {
+    // Kilometer und Alter laufen gleich — dann nur über die Kilometer rechnen.
+    b1 = S11 ? S1y / S11 : 0;
+    b2 = 0;
+  } else {
+    b1 = (S22 * S1y - S12 * S2y) / det;
+    b2 = (S11 * S2y - S12 * S1y) / det;
+  }
+  const b0 = my - b1 * mx1 - b2 * mx2;
+  const erwartet = (km, alter) => b0 + b1 * km + b2 * alter;
+  let ssRes = 0, ssTot = 0;
+  punkte.forEach((p) => {
+    ssRes += (p.preis - erwartet(p.km, p.alter)) ** 2;
+    ssTot += (p.preis - my) ** 2;
+  });
+  // Wie stark laufen Kilometer und Alter miteinander? Bei alten Autos mit
+  // vielen Kilometern ist das fast immer so — dann lässt sich der Preis nicht
+  // sauber auf die beiden Größen aufteilen, und die Einzelwerte täuschen.
+  const kopplung = S11 && S22 ? Math.abs(S12 / Math.sqrt(S11 * S22)) : 0;
+  return { b0, b1, b2, erwartet, mx2, kopplung, r2: ssTot ? 1 - ssRes / ssTot : 0, n };
+}
+
 // Erstzulassung als "MM/JJJJ", sonst nur das Jahr.
 const erstzulassung = (v) => (v.month && v.year ? `${v.month}/${v.year}` : v.year || "");
 
@@ -1048,6 +1096,42 @@ export default function App() {
     });
   }, [primaer, sekundaer, glaettung, einheit, zeitfenster]);
 
+  /* ---- Erwarteter Preis: Regression über Kilometer und Alter ---- */
+  const fairValue = useMemo(() => {
+    const basis = filtered
+      .map((v) => ({ v, id: v.id, title: v.title || v.id, preis: lastPrice(v), km: v.mileage, alter: alterJahre(v), url: v.url, rep: v.repairScope }))
+      .filter((p) => p.preis != null && p.km != null && p.alter != null);
+    if (basis.length < 5) return { zuWenig: true, anzahl: basis.length };
+
+    const m = regression(basis);
+    const mitAbweichung = basis.map((p) => {
+      const erwartet = m.erwartet(p.km, p.alter);
+      return { ...p, erwartet: Math.round(erwartet), abweichung: Math.round(p.preis - erwartet) };
+    });
+
+    // Rangfolge: je weiter unter Erwartung, desto günstiger
+    const sortiert = mitAbweichung.slice().sort((a, b) => a.abweichung - b.abweichung);
+    const mitRang = sortiert.map((p, i) => ({
+      ...p, nr: i + 1,
+      guenstigerAls: Math.round(((sortiert.length - 1 - i) / Math.max(1, sortiert.length - 1)) * 100),
+    }));
+    const nachId = Object.fromEntries(mitRang.map((p) => [p.id, p]));
+
+    // Linie fürs Streudiagramm: Modell bei durchschnittlichem Alter ausgewertet
+    const kmWerte = basis.map((p) => p.km);
+    const kmMin = Math.min(...kmWerte), kmMax = Math.max(...kmWerte);
+    const linie = [kmMin, kmMax].map((km) => ({ km, erwartet: Math.round(m.erwartet(km, m.mx2)) }));
+    const streu = basis.map((p) => ({ ...p, ...nachId[p.id] }));
+
+    return {
+      zuWenig: false, anzahl: basis.length, r2: m.r2, kopplung: m.kopplung,
+      jeZehntausendKm: Math.round(m.b1 * 10000),
+      jeJahr: Math.round(m.b2),
+      streu, linie, balken: mitRang,
+      bestes: mitRang[0], teuerstes: mitRang[mitRang.length - 1],
+    };
+  }, [filtered]);
+
   /* ---- Preisleiter: ein Punkt je Fahrzeug, nebeneinander ---- */
   const preisReihe = useMemo(() => {
     const punkte = filtered
@@ -1673,6 +1757,118 @@ export default function App() {
         )}
       </section>
 
+      {/* Erwarteter Preis */}
+      <section style={S.panel}>
+        <div style={S.panelTitle}><Gauge size={15} /> Preis gegen Kilometer und Alter</div>
+        <p style={S.hint}>
+          Aus allen Fahrzeugen dieser Auswahl wird berechnet, was ein Auto mit diesem Kilometerstand
+          und diesem Alter üblicherweise kostet. Wer darunter liegt, ist gemessen an den eigenen Daten
+          zu günstig — das ist die interessante Frage, nicht der absolute Preis.
+        </p>
+
+        {fairValue.zuWenig ? (
+          <div style={S.emptySmall}>
+            Dafür braucht es mindestens fünf Fahrzeuge mit Preis, Kilometerstand und Erstzulassung —
+            in dieser Auswahl {fairValue.anzahl === 0 ? "ist keines" : `sind es erst ${fairValue.anzahl}`}.
+          </div>
+        ) : (
+          <>
+            <div style={S.kennzahlen}>
+              <Kennzahl label="je 10.000 km" wert={`${fairValue.jeZehntausendKm > 0 ? "+" : ""}${fmtEUR(fairValue.jeZehntausendKm)}`}
+                zusatz="bei gleichem Baujahr" accent />
+              <Kennzahl label="je Jahr Alter" wert={`${fairValue.jeJahr > 0 ? "+" : ""}${fmtEUR(fairValue.jeJahr)}`}
+                zusatz="bei gleichem Kilometerstand" />
+              <Kennzahl label="Erklärungskraft" wert={`${Math.round(fairValue.r2 * 100)} %`}
+                zusatz={fairValue.r2 >= 0.5 ? "Kilometer und Alter erklären den Preis gut"
+                  : fairValue.r2 >= 0.25 ? "andere Merkmale spielen stark mit"
+                    : "Preis kommt überwiegend woanders her"} />
+              <Kennzahl label="ausgewertet" wert={`${fairValue.anzahl}`} zusatz={`von ${filtered.length} in der Auswahl`} />
+            </div>
+
+            {fairValue.kopplung > 0.8 && (
+              <div style={S.hinweisKlein}>
+                In dieser Auswahl haben die alten Fahrzeuge fast durchweg auch die meisten Kilometer.
+                Dann lässt sich nicht sauber trennen, wie viel davon an den Kilometern und wie viel am
+                Alter liegt — <b style={{ color: T.text }}>die beiden Einzelwerte oben bitte nicht wörtlich nehmen</b>.
+                Der erwartete Preis und die Abweichung darunter stimmen trotzdem.
+              </div>
+            )}
+
+            <div style={{ width: "100%", height: 300, marginTop: 6 }}>
+              <ResponsiveContainer>
+                <ComposedChart data={fairValue.streu} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
+                  <XAxis dataKey="km" type="number" domain={["dataMin - 5000", "dataMax + 5000"]}
+                    tickFormatter={(k) => `${Math.round(k / 1000)}k`}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
+                  <YAxis dataKey="preis" domain={["dataMin - 500", "dataMax + 500"]}
+                    tickFormatter={(w) => fmtNum(Math.round(w))}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
+                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
+                    const p = active && payload?.find((x) => x.dataKey === "preis")?.payload;
+                    return p ? <Erwartungskarte p={p} /> : null;
+                  }} />
+                  <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
+                    onClick={oeffneInserat}>
+                    {fairValue.streu.map((p) => (
+                      <Cell key={p.id} fill={p.abweichung < 0 ? T.good : T.bad} fillOpacity={0.85} />
+                    ))}
+                  </Scatter>
+                  <Line data={fairValue.linie} dataKey="erwartet" type="linear" stroke={T.text}
+                    strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={S.legendHint}>
+              Waagerecht Kilometer, senkrecht Preis · gestrichelt der erwartete Preis ·
+              <span style={{ color: T.good }}> grün darunter</span> ·
+              <span style={{ color: T.bad }}> rot darüber</span>
+            </div>
+
+            <div style={{ ...S.compareHead, marginTop: 16 }}>
+              <span style={S.compareTitle}>Abweichung vom erwarteten Preis</span>
+              <span style={S.resultCount}>günstigste zuerst</span>
+            </div>
+            <div style={{ width: "100%", height: Math.max(180, Math.min(420, fairValue.balken.length * 15 + 40)) }}>
+              <ResponsiveContainer>
+                <BarChart data={fairValue.balken} margin={{ top: 4, right: 14, left: 4, bottom: 4 }}>
+                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" vertical={false} />
+                  <XAxis dataKey="nr" tick={false} stroke={T.muted} height={8} />
+                  <YAxis tickFormatter={(w) => fmtNum(Math.round(w))} stroke={T.muted}
+                    tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
+                  <Tooltip cursor={{ fill: T.line + "55" }} content={({ active, payload }) => {
+                    const p = active && payload?.[0]?.payload;
+                    return p ? <Erwartungskarte p={p} /> : null;
+                  }} />
+                  <ReferenceLine y={0} stroke={T.muted} />
+                  <Bar dataKey="abweichung" radius={[3, 3, 0, 0]} isAnimationActive={false} cursor="pointer"
+                    onClick={oeffneInserat}>
+                    {fairValue.balken.map((p) => (
+                      <Cell key={p.id} fill={p.abweichung < 0 ? T.good : T.bad} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+
+            {fairValue.bestes && fairValue.bestes.abweichung < 0 && (
+              <div style={S.schluss}>
+                <b style={{ color: T.accent }}>Größter Abstand nach unten:</b>{" "}
+                <b style={{ color: T.text }}>{fairValue.bestes.title}</b> — {fmtEUR(fairValue.bestes.preis)} statt
+                erwarteter {fmtEUR(fairValue.bestes.erwartet)}, also <b style={{ color: T.good }}>{fmtEUR(Math.abs(fairValue.bestes.abweichung))} darunter</b>.
+                {fairValue.r2 < 0.25 && <> Vorsicht: Kilometer und Alter erklären hier nur einen kleinen Teil der Preise — der Abstand kann auch am Zustand liegen.</>}
+              </div>
+            )}
+            <div style={S.hinweisKlein}>
+              Der erwartete Preis stammt aus deinen eigenen Fahrzeugen, nicht aus einer Tabelle — er beschreibt
+              also, was <b style={{ color: T.text }}>in dieser Auswahl</b> üblich ist. Je enger du filterst, desto
+              schärfer wird er. Ausstattung, Zustand und Wartung stecken nicht in der Rechnung; ein Auto weit
+              unter Erwartung kann ein Fund sein oder einen Grund haben.
+            </div>
+          </>
+        )}
+      </section>
+
       {/* Preisleiter */}
       <section style={S.panel}>
         <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
@@ -1709,7 +1905,7 @@ export default function App() {
                       label={{ value: `Median ${fmtEUR(preisReihe.mittelwert)}`, position: "insideTopLeft", fill: T.muted, fontSize: 10 }} />
                   )}
                   <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
-                    onClick={(d) => { if (d?.url) window.open(d.url, "_blank", "noreferrer"); }}>
+                    onClick={oeffneInserat}>
                     {preisReihe.rows.map((r) => <Cell key={r.id} fill={repFarbe(r.rep)} />)}
                   </Scatter>
                 </ComposedChart>
@@ -2180,6 +2376,14 @@ function repFarbe(rep) {
   return T.muted;
 }
 
+// Klick auf einen Punkt oder Balken öffnet das Inserat. Recharts reicht dem
+// Klick nicht den Datensatz selbst, sondern die gezeichnete Form — der
+// Datensatz hängt darin unter "payload".
+function oeffneInserat(d) {
+  const daten = d && (d.payload || d);
+  if (daten && daten.url) window.open(daten.url, "_blank", "noreferrer");
+}
+
 // Die Karteikarte, die beim Zeigen auf einen Punkt erscheint.
 function Karteikarte({ p }) {
   const S = styles;
@@ -2210,6 +2414,49 @@ function Karteikarte({ p }) {
       {p.stand && p.stand !== "Aktiv" && (
         <div style={{ ...S.karteHinweis, color: tagColor("listingStatus", p.stand) }}>{p.stand}</div>
       )}
+      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
+    </div>
+  );
+}
+
+// Karte für die beiden Charts zum erwarteten Preis: was das Auto kostet,
+// was es nach Kilometern und Alter kosten müsste — und der Abstand dazwischen.
+function Erwartungskarte({ p }) {
+  const S = styles;
+  const guenstiger = p.abweichung < 0;
+  const farbe = p.abweichung === 0 ? T.muted : guenstiger ? T.good : T.bad;
+  const abstand = p.abweichung === 0
+    ? "genau wie erwartet"
+    : `${fmtEUR(Math.abs(p.abweichung))} ${guenstiger ? "darunter" : "darüber"}`;
+  return (
+    <div style={S.karte}>
+      <div style={S.karteKopf}>
+        <span style={S.karteNr}>#{p.nr}</span>
+        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparatur unbekannt"}</span>
+      </div>
+      <div style={S.karteTitel}>{p.title}</div>
+      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
+      <div style={S.karteListe}>
+        <div style={S.karteZeile}>
+          <span style={S.karteLabel}>erwartet</span>
+          <span style={S.karteWert}>{fmtEUR(p.erwartet)}</span>
+        </div>
+        <div style={S.karteZeile}>
+          <span style={S.karteLabel}>Abstand</span>
+          <span style={{ ...S.karteWert, color: farbe }}>{abstand}</span>
+        </div>
+        <div style={S.karteZeile}>
+          <span style={S.karteLabel}>Kilometer</span>
+          <span style={S.karteWert}>{p.km != null ? `${fmtNum(p.km)} km` : ""}</span>
+        </div>
+        <div style={S.karteZeile}>
+          <span style={S.karteLabel}>Alter</span>
+          <span style={S.karteWert}>{p.alter != null ? `${p.alter.toFixed(1).replace(".", ",")} Jahre` : ""}</span>
+        </div>
+      </div>
+      <div style={{ ...S.karteHinweis, color: farbe }}>
+        günstiger als {p.guenstigerAls} % der Fahrzeuge in dieser Auswahl
+      </div>
       {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
     </div>
   );
