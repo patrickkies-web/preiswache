@@ -52,6 +52,18 @@ Gemeldet wird, nie automatisch zusammengeführt. Ist der Vorgänger abgeschlosse
 weist die App auf eine mutmaßliche Neueinstellung hin und nennt die echte
 Standzeit; läuft er noch, warnt sie vor einer doppelten Eingabe.
 
+### Einzelpreise im Vergleich
+
+Eine Preisleiter: jedes Fahrzeug ein Punkt, der Reihe nach nebeneinander,
+waagerecht die laufende Nummer, senkrecht der Preis. Wahlweise nach Preis
+sortiert — dann entsteht eine Treppe, in der Ausreißer sofort auffallen — oder in
+der Reihenfolge der Erfassung. Eine gestrichelte Linie markiert den Median.
+
+Die Farbe der Punkte steht für den Reparatur-Umfang, sodass sichtbar wird, ob ein
+günstiges Angebot günstig ist oder nur billig. Beim Zeigen auf einen Punkt
+erscheint die Karteikarte des Fahrzeugs mit Erstzulassung, Kilometerstand, Ort,
+Anbieter und Fotobeurteilung; ein Klick öffnet das Inserat.
+
 ### Inserate über Zeit
 
 Ein Punkt je Inserat: waagerecht das Datum der Erfassung, senkrecht der Preis, zu

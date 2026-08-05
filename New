@@ -636,6 +636,7 @@ export default function App() {
   const [glaettung, setGlaettung] = useState(0);   // Fenster in Tagen, 0 = aus
   const [einheit, setEinheit] = useState("euro");  // "euro" oder "prozent"
   const [zeitfenster, setZeitfenster] = useState(0); // Tage, 0 = alles
+  const [reiheSort, setReiheSort] = useState("preis"); // Reihenfolge der Preisleiter
 
   const A = auswahlen[aktiv];
   const { q, filters, priceMax, kmMax } = A;
@@ -1046,6 +1047,25 @@ export default function App() {
       return out;
     });
   }, [primaer, sekundaer, glaettung, einheit, zeitfenster]);
+
+  /* ---- Preisleiter: ein Punkt je Fahrzeug, nebeneinander ---- */
+  const preisReihe = useMemo(() => {
+    const punkte = filtered
+      .map((v) => ({
+        id: v.id, title: v.title || v.id, preis: lastPrice(v),
+        marke: [v.make, v.model].filter(Boolean).join(" "),
+        ez: erstzulassung(v), km: v.mileage, ort: v.location,
+        rep: v.repairScope, fotos: v.photoDamage, anbieter: v.dealerName || v.sellerType,
+        stand: v.listingStatus || "Aktiv", url: v.url,
+      }))
+      .filter((p) => p.preis != null);
+    if (!punkte.length) return null;
+    const sortiert = reiheSort === "preis"
+      ? punkte.slice().sort((a, b) => a.preis - b.preis)
+      : punkte;
+    const rows = sortiert.map((p, i) => ({ ...p, nr: i + 1 }));
+    return { rows, mittelwert: median(rows.map((r) => r.preis)) };
+  }, [filtered, reiheSort]);
 
   /* ---- Inserate über Zeit: ein Punkt je Inserat am Tag der Erfassung ---- */
   const inserateUeberZeit = useMemo(() => {
@@ -1653,6 +1673,59 @@ export default function App() {
         )}
       </section>
 
+      {/* Preisleiter */}
+      <section style={S.panel}>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Filter size={15} /> Einzelpreise im Vergleich</span>
+          <span style={S.toggleGroup}>
+            <button onClick={() => setReiheSort("preis")} style={reiheSort === "preis" ? S.toggleOn : S.toggleOff}>nach Preis</button>
+            <button onClick={() => setReiheSort("erfassung")} style={reiheSort === "erfassung" ? S.toggleOn : S.toggleOff}>nach Erfassung</button>
+          </span>
+        </div>
+        <p style={S.hint}>
+          Jedes Fahrzeug ein Punkt, der Reihe nach nebeneinander — so siehst du jeden Einzelpreis
+          und erkennst Ausreißer sofort. Zeig auf einen Punkt, dann erscheint die Karteikarte;
+          ein Klick öffnet das Inserat. Die Farbe zeigt den Reparatur-Umfang.
+        </p>
+        {!preisReihe ? (
+          <div style={S.emptySmall}>Für die aktuelle Auswahl gibt es keine Preise.</div>
+        ) : (
+          <>
+            <div style={{ width: "100%", height: 320 }}>
+              <ResponsiveContainer>
+                <ComposedChart data={preisReihe.rows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
+                  <XAxis dataKey="nr" type="number" domain={[0, preisReihe.rows.length + 1]} allowDecimals={false}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
+                  <YAxis dataKey="preis" domain={["dataMin - 500", "dataMax + 500"]}
+                    tickFormatter={(w) => fmtNum(Math.round(w))}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
+                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
+                    const p = active && payload?.find((x) => x.dataKey === "preis")?.payload;
+                    return p ? <Karteikarte p={p} /> : null;
+                  }} />
+                  {preisReihe.mittelwert != null && (
+                    <ReferenceLine y={preisReihe.mittelwert} stroke={T.muted} strokeDasharray="4 4"
+                      label={{ value: `Median ${fmtEUR(preisReihe.mittelwert)}`, position: "insideTopLeft", fill: T.muted, fontSize: 10 }} />
+                  )}
+                  <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
+                    onClick={(d) => { if (d?.url) window.open(d.url, "_blank", "noreferrer"); }}>
+                    {preisReihe.rows.map((r) => <Cell key={r.id} fill={repFarbe(r.rep)} />)}
+                  </Scatter>
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={S.repLegende}>
+              {SCOPE_OPTS.map((s) => (
+                <span key={s} style={S.repLegendeEintrag}>
+                  <span style={{ ...S.repPunkt, background: repFarbe(s) }} />{s}
+                </span>
+              ))}
+            </div>
+          </>
+        )}
+      </section>
+
       {/* Inserate über Zeit */}
       <section style={S.panel}>
         <div style={S.panelTitle}><CalendarClock size={15} /> Inserate über Zeit</div>
@@ -2097,6 +2170,51 @@ function SelectFilter({ label, value, onChange, options }) {
     </div>
   );
 }
+// Farbe der Punkte nach Reparatur-Umfang — bewusst deutlicher als die
+// zurückhaltenden Kennzeichnungen auf der Fahrzeugkarte.
+function repFarbe(rep) {
+  if (rep === "Keine") return T.good;
+  if (rep === "Gering") return "#A3E635";
+  if (rep === "Mittel") return T.accent;
+  if (rep === "Umfangreich") return T.bad;
+  return T.muted;
+}
+
+// Die Karteikarte, die beim Zeigen auf einen Punkt erscheint.
+function Karteikarte({ p }) {
+  const S = styles;
+  const zeilen = [
+    ["Erstzulassung", p.ez],
+    ["Kilometer", p.km != null ? `${fmtNum(p.km)} km` : ""],
+    ["Ort", p.ort],
+    ["Anbieter", p.anbieter],
+    ["Fotos", p.fotos],
+  ].filter(([, w]) => w);
+  return (
+    <div style={S.karte}>
+      <div style={S.karteKopf}>
+        <span style={S.karteNr}>#{p.nr}</span>
+        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparatur unbekannt"}</span>
+      </div>
+      <div style={S.karteTitel}>{p.title}</div>
+      {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
+      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
+      <div style={S.karteListe}>
+        {zeilen.map(([label, wert]) => (
+          <div key={label} style={S.karteZeile}>
+            <span style={S.karteLabel}>{label}</span>
+            <span style={S.karteWert}>{wert}</span>
+          </div>
+        ))}
+      </div>
+      {p.stand && p.stand !== "Aktiv" && (
+        <div style={{ ...S.karteHinweis, color: tagColor("listingStatus", p.stand) }}>{p.stand}</div>
+      )}
+      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
+    </div>
+  );
+}
+
 function Kennzahl({ label, wert, zusatz, accent }) {
   return (
     <div style={styles.kennzahl}>
@@ -2228,6 +2346,22 @@ const styles = {
   resultCount: { marginLeft: "auto", fontSize: 11.5, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
   emptySmall: { color: T.muted, fontSize: 12, padding: "16px 4px" },
   legendHint: { fontSize: 11, color: T.muted, textAlign: "center", marginTop: 4 },
+  karte: { background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 12, maxWidth: 260, boxShadow: "0 8px 24px rgba(0,0,0,.45)" },
+  karteKopf: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 5 },
+  karteNr: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 10.5, color: T.muted },
+  karteRep: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" },
+  karteTitel: { fontWeight: 700, fontSize: 12.5, lineHeight: 1.35 },
+  karteMarke: { fontSize: 10.5, color: T.accent, fontWeight: 600, marginTop: 2 },
+  kartePreis: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 17, fontWeight: 700, margin: "7px 0" },
+  karteListe: { display: "flex", flexDirection: "column", gap: 2, borderTop: `1px solid ${T.line}`, paddingTop: 6 },
+  karteZeile: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11 },
+  karteLabel: { color: T.muted },
+  karteWert: { fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
+  karteHinweis: { fontSize: 10, color: T.muted, marginTop: 6, fontStyle: "italic" },
+  repLegende: { display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", marginTop: 8, fontSize: 10.5, color: T.muted },
+  repLegendeEintrag: { display: "inline-flex", alignItems: "center", gap: 5 },
+  repPunkt: { width: 8, height: 8, borderRadius: "50%", display: "inline-block" },
+
   zeitTooltip: { background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 11px", fontSize: 12, maxWidth: 240 },
   zeitTooltipDatum: { color: T.muted, fontSize: 10.5, fontFamily: "ui-monospace, Menlo, monospace" },
   zeitTooltipTitel: { fontWeight: 600, margin: "3px 0", lineHeight: 1.3 },
