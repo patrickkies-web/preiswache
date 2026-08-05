@@ -220,8 +220,9 @@ SO FÜLLST DU JEDES FELD AUS:
     Nenne hier auch Einschränkungen wie "Verkauf nur an Gewerbe oder Export".
 
 34. "url"
-    Immer "" lassen. Die Links trage ich selbst in der App ein — schick mir
-    also keine mit und versuche nicht, welche zuzuordnen.
+    Der Link zum Inserat, falls er im Dokument steht. Sonst "".
+    (Findest du keinen, ist das nicht schlimm — die App fragt mich beim
+    Import ohnehin selbst danach.)
 
 35. "price"
     Der geforderte Preis in Euro als reine Zahl, ohne Punkt und ohne "€".
@@ -249,16 +250,7 @@ statt einen zweiten Eintrag anzulegen.
 
 ```
 Mehrere Inserate: gib ein JSON-Array aus, also [ {...}, {...} ].
-Behalte dabei die Reihenfolge der Anhänge bei.
 ```
-
-Das spart Anfragen und ist der schnellste Weg: Sammle tagsüber Screenshots oder
-PDFs, schicke abends fünf bis zehn auf einmal.
-
-**Links gehören nicht in den Chat.** Die KI kann fünf Anhänge und fünf Adressen
-nicht zuverlässig einander zuordnen. Kopiere die Adressen stattdessen untereinander
-in eine Notiz und füge sie beim Import in das Feld „Alle Links auf einmal einfügen"
-ein — die App verteilt sie der Reihe nach auf die Fahrzeuge.
 
 ---
 
