@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
   LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Legend, Cell, ReferenceLine, ComposedChart, Area,
+  ResponsiveContainer, Cell, ReferenceLine, ComposedChart, Area, Scatter,
 } from "recharts";
 import {
   Gauge, Plus, Trash2, Check, X, TrendingDown, TrendingUp, Minus, Car,
@@ -1032,6 +1032,34 @@ export default function App() {
     });
   }, [primaer, sekundaer, glaettung, einheit, zeitfenster]);
 
+  /* ---- Inserate über Zeit: ein Punkt je Inserat am Tag der Erfassung ---- */
+  const inserateUeberZeit = useMemo(() => {
+    const punkte = filtered.map((v) => {
+      const datum = inseriertSeit(v);
+      const preis = v.priceHistory?.[0]?.price;
+      if (!datum || preis == null) return null;
+      const d = parseISO(datum);
+      return d ? { t: d.getTime(), datum, preis, id: v.id, title: v.title || v.id } : null;
+    }).filter(Boolean).sort((a, b) => a.t - b.t);
+    if (!punkte.length) return null;
+
+    // Ausgleichsgerade nach kleinsten Quadraten über die Tage
+    const tage = punkte.map((p) => p.t / TAG_MS);
+    const mx = mittel(tage), my = mittel(punkte.map((p) => p.preis));
+    let zaehler = 0, nenner = 0;
+    tage.forEach((x, i) => { zaehler += (x - mx) * (punkte[i].preis - my); nenner += (x - mx) ** 2; });
+    const steigung = nenner ? zaehler / nenner : 0;   // Euro je Tag
+
+    const rows = punkte.map((p, i) => ({ ...p, trend: nenner ? Math.round(my + steigung * (tage[i] - mx)) : Math.round(my) }));
+    const spanne = tage[tage.length - 1] - tage[0];
+    return {
+      rows, anzahl: punkte.length, spanne: Math.round(spanne),
+      von: punkte[0].datum, bis: punkte[punkte.length - 1].datum,
+      proMonat: nenner && spanne >= 7 ? Math.round(steigung * 30) : null,
+      schnitt: Math.round(my),
+    };
+  }, [filtered]);
+
   /* ---- Doppelte / neu eingestellte Inserate ---- */
   // Beim Import: gegen den gesamten Bestand prüfen, ausdrücklich auch
   // gegen abgeschlossene Inserate — genau dort steckt die Neueinstellung.
@@ -1300,7 +1328,6 @@ export default function App() {
                   stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} />
                 <YAxis tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} width={44} />
                 <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }} labelFormatter={(d) => (chartMode === "tage" ? `Tag ${d}` : fmtDate(d))} formatter={(val, key) => [fmtEUR(val), vehicles[key]?.title?.slice(0, 28) || key]} />
-                <Legend wrapperStyle={{ fontSize: 11 }} formatter={(id) => (vehicles[id]?.title?.slice(0, 24) || id)} />
                 {chart.series.map((v) => (<Line key={v.id} type="monotone" dataKey={v.id} name={v.id} stroke={colorFor(v.id)} strokeWidth={2} connectNulls dot={{ r: 3 }} activeDot={{ r: 5 }} />))}
               </LineChart>
             </ResponsiveContainer>
@@ -1606,6 +1633,84 @@ export default function App() {
                   Für den reinen Verlaufsvergleich ist die Ansicht <b style={{ color: T.text }}>Prozent</b> geeigneter,
                   weil dort jedes Auto bei 100 % startet.</>
               )}
+            </div>
+          </>
+        )}
+      </section>
+
+      {/* Inserate über Zeit */}
+      <section style={S.panel}>
+        <div style={S.panelTitle}><CalendarClock size={15} /> Inserate über Zeit</div>
+        <p style={S.hint}>
+          Ein Punkt je Inserat: waagerecht das Datum, an dem du es erfasst hast, senkrecht der Preis,
+          zu dem es damals stand. So siehst du über die Monate, ob die Angebote für deine Auswahl
+          teurer oder günstiger werden.
+        </p>
+        {!inserateUeberZeit ? (
+          <div style={S.emptySmall}>Für die aktuelle Auswahl gibt es keine Inserate mit Datum und Preis.</div>
+        ) : (
+          <>
+            <div style={{ width: "100%", height: 300 }}>
+              <ResponsiveContainer>
+                <ComposedChart data={inserateUeberZeit.rows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
+                  <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} scale="time"
+                    tickFormatter={(t) => { const d = new Date(t); return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getFullYear()).slice(2)}`; }}
+                    minTickGap={44} tickCount={6}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
+                  <YAxis dataKey="preis" domain={["dataMin - 500", "dataMax + 500"]}
+                    tickFormatter={(w) => fmtNum(Math.round(w))}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
+                  {/* Eigener Tooltip: die Standardausgabe zeigte den Zeitstempel
+                      der X-Achse als Geldbetrag mit an. */}
+                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
+                    if (!active || !payload?.length) return null;
+                    const punkt = payload.find((x) => x.dataKey === "preis")?.payload;
+                    if (!punkt) return null;
+                    const trend = payload.find((x) => x.dataKey === "trend")?.value;
+                    return (
+                      <div style={S.zeitTooltip}>
+                        <div style={S.zeitTooltipDatum}>{fmtDate(punkt.datum)}</div>
+                        <div style={S.zeitTooltipTitel}>{punkt.title}</div>
+                        <div style={S.zeitTooltipPreis}>{fmtEUR(punkt.preis)}</div>
+                        {trend != null && <div style={S.zeitTooltipTrend}>Trend an diesem Tag: {fmtEUR(trend)}</div>}
+                      </div>
+                    );
+                  }} />
+                  <Scatter dataKey="preis" fill={AUSWAHL_FARBE[aktiv]} isAnimationActive={false} />
+                  {inserateUeberZeit.proMonat != null && (
+                    <Line type="linear" dataKey="trend" stroke={T.text} strokeWidth={2} strokeDasharray="6 4"
+                      dot={false} isAnimationActive={false} />
+                  )}
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={S.legendHint}>
+              {inserateUeberZeit.anzahl} Inserate von {fmtDate(inserateUeberZeit.von)} bis {fmtDate(inserateUeberZeit.bis)}
+              {inserateUeberZeit.proMonat != null && <> · gestrichelt die Trendgerade</>}
+            </div>
+            <div style={S.kennzahlen}>
+              <Kennzahl label="Inserate" wert={`${inserateUeberZeit.anzahl}`} zusatz={`über ${laufzeitText(inserateUeberZeit.spanne)}`} />
+              <Kennzahl label="Ø Angebotspreis" wert={fmtEUR(inserateUeberZeit.schnitt)} />
+              <Kennzahl label="Trend je Monat"
+                wert={inserateUeberZeit.proMonat == null ? "—" : `${inserateUeberZeit.proMonat > 0 ? "+" : ""}${fmtEUR(inserateUeberZeit.proMonat)}`}
+                zusatz={inserateUeberZeit.proMonat == null ? "zu kurzer Zeitraum" : inserateUeberZeit.proMonat > 0 ? "Angebote werden teurer" : inserateUeberZeit.proMonat < 0 ? "Angebote werden günstiger" : "unverändert"}
+                accent />
+            </div>
+            {inserateUeberZeit.proMonat != null && (
+              <div style={S.schluss}>
+                <b style={{ color: T.accent }}>Was das für dich heißt:</b>{" "}
+                {inserateUeberZeit.proMonat < 0
+                  ? <>Neue Angebote in dieser Auswahl kommen im Schnitt <b style={{ color: T.text }}>{fmtEUR(Math.abs(inserateUeberZeit.proMonat))} je Monat günstiger</b> auf den Markt. Warten kostet dich also nichts — im Gegenteil.</>
+                  : inserateUeberZeit.proMonat > 0
+                    ? <>Neue Angebote werden im Schnitt <b style={{ color: T.text }}>{fmtEUR(inserateUeberZeit.proMonat)} je Monat teurer</b>. Wer wartet, zahlt tendenziell mehr — ein Grund, bei einem guten Fund zügig zu handeln.</>
+                    : <>Das Preisniveau der neuen Angebote bleibt über den beobachteten Zeitraum stabil.</>}
+              </div>
+            )}
+            <div style={S.hinweisKlein}>
+              Gezeigt wird der Preis beim ersten Erfassen, nicht der heutige. Der Trend beschreibt also,
+              wie sich das <b style={{ color: T.text }}>Niveau neuer Angebote</b> entwickelt — nicht, wie
+              einzelne Verkäufer ihre Preise senken. Dafür ist der Abschnitt darüber zuständig.
             </div>
           </>
         )}
@@ -2108,6 +2213,11 @@ const styles = {
   resultCount: { marginLeft: "auto", fontSize: 11.5, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
   emptySmall: { color: T.muted, fontSize: 12, padding: "16px 4px" },
   legendHint: { fontSize: 11, color: T.muted, textAlign: "center", marginTop: 4 },
+  zeitTooltip: { background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 11px", fontSize: 12, maxWidth: 240 },
+  zeitTooltipDatum: { color: T.muted, fontSize: 10.5, fontFamily: "ui-monospace, Menlo, monospace" },
+  zeitTooltipTitel: { fontWeight: 600, margin: "3px 0", lineHeight: 1.3 },
+  zeitTooltipPreis: { fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 700, fontSize: 13 },
+  zeitTooltipTrend: { color: T.muted, fontSize: 10.5, marginTop: 3 },
   steuerung: { display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end", margin: "4px 0 14px" },
   steuerBlock: { display: "flex", flexDirection: "column", gap: 5 },
   kennzahlen: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, margin: "16px 0 4px" },
