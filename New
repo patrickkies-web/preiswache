@@ -491,8 +491,23 @@ function extractJson(text) {
 // Typische Schludrigkeiten schwacher Modelle: Komma vor der schließenden
 // Klammer und typografische Anführungszeichen.
 function repairJson(t) {
-  return t
-    .replace(/[“”„‟]/g, '"')
+  // Typografische Anführungszeichen geradebiegen. Heikel ist ein echtes
+  // Anführungszeichen im Text — etwa das Zoll-Zeichen in »18" AMG«: Es würde
+  // den Wert mittendrin beenden. Deshalb wird es innerhalb eines Wertes
+  // geschützt, bevor die Klammern selbst zu geraden Zeichen werden.
+  let out = "";
+  let imText = false;
+  for (const c of t) {
+    if (c === "“" || c === "”" || c === "„" || c === "‟") {
+      out += '"';
+      imText = !imText;
+    } else if (c === '"' && imText) {
+      out += '\\"';
+    } else {
+      out += c;
+    }
+  }
+  return out
     .replace(/[‘’‚]/g, "'")
     .replace(/,\s*([}\]])/g, "$1");
 }
