@@ -2071,7 +2071,7 @@ export default function App() {
             ["interieur", "Interieur", INTERIEUR_OPTS],
             ["repairKind", "Reparaturen", REPAIR_KIND_OPTS],
             ["accidentRepaired", "Unfallschaden", ACCIDENT_OPTS],
-            ["make", "Marke", distinct("make")],
+            ["model", "Modell", distinct("model")],
             ["year", "Baujahr", distinct("year")]].map(([f, label, opts]) => (
               opts.length ? (
                 <MehrfachFilter key={f} label={label} options={opts} werte={gewaehlt(f)} zahlen={zaehleFuer(f)}
@@ -2089,7 +2089,7 @@ export default function App() {
         </button>
         {moreFilters && (
           <div style={S.mfListe}>
-            {FILTER_FIELDS.filter(([f]) => !["showcase", "trimline", "ausstattung", "exterieur", "interieur", "repairKind", "accidentRepaired", "year"].includes(f)).map(([f, label]) => {
+            {FILTER_FIELDS.filter(([f]) => !["showcase", "trimline", "ausstattung", "exterieur", "interieur", "repairKind", "accidentRepaired", "model", "year"].includes(f)).map(([f, label]) => {
               const vorhanden = distinct(f);
               const opts = FIXED_OPTS[f] ? FIXED_OPTS[f].filter((o) => vorhanden.includes(o)) : vorhanden;
               if (!opts.length) return null;
@@ -3246,7 +3246,9 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
   const isDealer = /h(ä|ae)ndl|dealer|autohaus|gewerb/i.test(`${v.sellerType} ${v.dealerName}`);
   const geschlossen = v.listingStatus && v.listingStatus !== "Aktiv";
 
-  const chips = [erstzulassung(v), v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.power, v.displacement, v.fuel, v.gearbox, v.drivetrain, v.category, v.condition, v.owners ? `${v.owners} Vorbesitzer` : null, v.color].filter(Boolean);
+  const chips = [erstzulassung(v), v.mileage != null ? `${fmtNum(v.mileage)} km` : null,
+    v.fuel, v.gearbox, v.owners ? `${v.owners} Fahrzeughalter` : null, v.color,
+    inseriertSeit(v) ? `inseriert seit ${fmtDate(inseriertSeit(v))}` : null].filter(Boolean);
   const idChips = [v.model, v.series, v.trimline].filter(Boolean);
 
   return (
