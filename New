@@ -815,6 +815,8 @@ function migrate(vehicles) {
     v.showcase = normalizeChoice(v.showcase, "showcase", SHOWCASE_OPTS) || "Normal";
     v.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS) || "Aktiv";
     v.listedSince = v.listedSince || v.priceHistory?.[0]?.date || "";
+    // Ohne "https://" deutet der Browser den Link als Pfad auf dieser Seite.
+    v.url = normalizeUrl(v.url);
   });
   return vehicles || {};
 }
@@ -918,6 +920,7 @@ export default function App() {
   useEffect(() => {
     const lokal = migrate(localRead()?.vehicles || {});
     setVehicles(lokal);
+    localWrite(lokal);          // geradegezogene Werte gleich festhalten
     setLoaded(true);
     const key = keyRef.current;
     if (!key) { setSync({ state: "lokal", savedAt: null, msg: "" }); return; }
@@ -3046,7 +3049,7 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
           )}
         </div>
 
-        {v.url && <a href={v.url} target="_blank" rel="noreferrer" style={S.link}>Inserat öffnen ↗</a>}
+        {v.url && <a href={normalizeUrl(v.url)} target="_blank" rel="noreferrer" style={S.link}>Inserat öffnen ↗</a>}
       </div>
       )}
     </div>
@@ -3202,7 +3205,7 @@ function repFarbe(rep) {
 // Datensatz hängt darin unter "payload".
 function oeffneInserat(d) {
   const daten = d && (d.payload || d);
-  if (daten && daten.url) window.open(daten.url, "_blank", "noreferrer");
+  if (daten && daten.url) window.open(normalizeUrl(daten.url), "_blank", "noreferrer");
 }
 
 // Die Karteikarte, die beim Zeigen auf einen Punkt erscheint.
