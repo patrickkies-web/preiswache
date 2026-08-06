@@ -1,264 +1,227 @@
-# Prompt für die Preiswache-App
+# Prompt für die Preiswache-App · Mercedes C-Klasse T-Modell (S204)
 
-Diesen Text zusammen mit dem Inserat (PDF oder Screenshots, Fotos inklusive) an eine KI schicken.
-Die Antwort komplett kopieren und in der App oben ins Import-Feld einfügen → „Prüfen" → „Importieren".
+Diesen Text zusammen mit dem Inserat (PDF, Screenshots oder kopierter Text, Fotos inklusive)
+an eine KI schicken. Die Antwort komplett kopieren und in der App ins Import-Feld einfügen
+→ „Prüfen" → Fragen beantworten → „Importieren".
 
-Codeblock-Zeichen oder Text drumherum stören nicht — die App schneidet sich das JSON selbst heraus
-und bügelt abweichende Schreibweisen glatt.
+Codeblock-Zeichen oder Text drumherum stören nicht — die App schneidet sich das JSON selbst
+heraus und bügelt abweichende Schreibweisen glatt.
 
-**Drei Angaben macht die KI nicht:** Nach „Prüfen" fragt die App dich selbst,
-ob auf den Fotos Beschädigungen zu erkennen sind, wie das Fahrzeug im Inserat
-dargestellt ist, und nach dem Link zum Inserat. Die ersten beiden sind
-Analyse-Kategorien wie alle anderen — du kannst danach filtern und
-Durchschnittspreise vergleichen. Alle drei sind Pflicht.
+**Vier Angaben macht die KI nicht.** Nach „Prüfen" fragt die App dich selbst:
 
-**Den Link kannst du dir sparen:** Schickst du der KI den Link zusammen mit
-den Fahrzeugdaten mit, steht er im Feld `url` und die App füllt das
-Link-Feld damit schon aus. Prüfen und weiter.
+| Frage | Wann |
+|---|---|
+| Ausstattungslinie | nur, wenn die KI sie nicht sicher benennen konnte |
+| Exterieur — was zeigen die Fotos außen | immer |
+| Interieur — was zeigen die Fotos innen | immer |
+| Was wurde repariert | immer, mit dem Wortlaut aus dem Inserat darüber |
 
-**Hinweis vor der Fotofrage:** Nennt das JSON Schäden, Vorschäden oder
-Reparaturbedarf, zeigt die App das über der Frage nach den Fotos an —
-damit du weißt, wonach du auf den Bildern suchen sollst.
+Dazu der Link zum Inserat als Pflichtfeld und optional der Stern für Vorzeigefahrzeuge.
+Alle vier Antworten sind Analyse-Kategorien: du kannst danach filtern, gruppieren und
+Durchschnittspreise vergleichen.
+
+**Den Link kannst du dir sparen:** Schickst du der KI den Link zusammen mit den
+Fahrzeugdaten mit, steht er im Feld `url` und die App füllt das Link-Feld schon aus.
 
 ---
 
 ```
-Du bekommst ein Fahrzeug-Inserat von mobile.de (Text, Tabelle und Fotos).
-Erstelle daraus einen JSON-Block. Antworte NUR mit dem JSON, ohne Kommentar.
+Du bekommst ein Fahrzeug-Inserat für eine Mercedes C-Klasse T-Modell der Baureihe S204
+(Kombi, Baujahre 2007 bis 2014). Erstelle daraus einen JSON-Block.
+Antworte NUR mit dem JSON, ohne Kommentar davor oder danach.
 
 WICHTIG VORAB:
 - Nutze ALLE Quellen: die Datentabelle, den Beschreibungstext UND die Fotos.
-  Manches steht nur im Fließtext und nicht in der Tabelle.
+  Vieles steht nur im Fließtext und nicht in der Tabelle.
 - Wo ich unten eine Liste erlaubter Wörter vorgebe, darfst du AUSSCHLIESSLICH
   diese Wörter verwenden. Keine eigenen Formulierungen, keine Zusätze.
 - Wo keine Liste steht, schreibst du ab, was im Inserat steht.
-- Was du nicht findest: "" (leerer Text). Niemals raten oder erfinden.
-- Zwei Ausnahmen davon: "accidentStatus" und "currentIssueStatus" bleiben
-  niemals leer. Dort gilt: kein Hinweis im Inserat = "Unfallfrei"
-  beziehungsweise = "Keine". Siehe Punkt 25 und 26.
+- Was du nicht findest: "" (leerer Text). Niemals raten, niemals erfinden.
+- Du bewertest nichts. Du schreibst ab und ordnest nur dort ein, wo ich es
+  ausdrücklich verlange. Den Zustand beurteile ich selbst anhand der Fotos.
+- Mehrere Inserate auf einmal: gib ein JSON-Array aus, also [ {...}, {...} ].
 
 {
-  "id": "03/2014188373",
-  "title": "Mercedes-Benz C 220 T CDI BlueEfficiency Automatik",
+  "id": "05/2011142500",
+  "title": "Mercedes-Benz C 220 CDI T Avantgarde BlueEfficiency",
   "make": "Mercedes-Benz",
   "model": "C 220",
   "series": "C-Klasse",
   "trimline": "Avantgarde",
-  "category": "Kombi",
-  "year": "2014",
-  "month": "03",
-  "mileage": 188373,
-  "power": "125 kW (170 PS)",
-  "displacement": "2143 cm³",
+  "year": "2011",
+  "month": "05",
+  "mileage": 142500,
   "fuel": "Diesel",
   "gearbox": "Automatik",
-  "drivetrain": "Heckantrieb",
-  "owners": "3",
-  "hu": "03/2026",
-  "color": "Grau",
-  "condition": "Gebraucht",
-  "location": "09116 Chemnitz",
+  "owners": "2",
+  "hu": "04/2027",
+  "color": "Silber",
+  "location": "50667 Köln",
   "sellerType": "Händler",
-  "dealerName": "AutoKaramba",
-  "stars": "4.2",
-  "address": "Musterstraße 1, 09116 Chemnitz",
-  "accidentStatus": "Unfallfrei",
-  "currentIssueStatus": "Keine",
-  "previousDamageStatus": "Keine",
-  "repairScope": "Keine",
-  "repairCount": 0,
-  "damageCurrent": "",
-  "damagePrevious": "",
-  "damageRepaired": "",
+  "dealerName": "Autohaus Muster",
+  "listedSince": "2026-07-02",
+  "repairNote": "Steuerkette und Spanner 2023 erneuert, Bremsscheiben vorne neu.",
+  "accidentRepaired": "Nein",
+  "equipment": ["AMG Sport-Paket", "Panorama-Schiebedach", "Standheizung", "KEYLESS-GO"],
   "note": "",
   "url": "",
-  "price": 5390,
-  "date": "2026-08-03"
+  "price": 8900,
+  "date": "2026-08-06"
 }
 
 SO FÜLLST DU JEDES FELD AUS:
 
 1. "id"
    Zwei Angaben direkt hintereinander, ohne Leerzeichen und ohne Bindestrich:
-   erst der Monat und das Jahr der Erstzulassung als MM/JJJJ,
+   erst Monat und Jahr der Erstzulassung als MM/JJJJ,
    danach sofort der Kilometerstand als reine Zahl.
-   Beispiel: Erstzulassung 03/2014 und 188.373 km  ->  "03/2014188373"
+   Beispiel: Erstzulassung 05/2011 und 142.500 km  ->  "05/2011142500"
 
 2. "title"
    Die Überschrift des Inserats, genau so abgeschrieben wie sie dasteht.
 
 3. "make"
-   Die Automarke. Beispiel: "Mercedes-Benz", "BMW", "Volkswagen".
+   Immer "Mercedes-Benz".
 
 4. "model"
    Die Handelsbezeichnung, so wie mobile.de sie im Feld "Modell" führt.
-   Beispiel: "C 220", "320d", "Golf". Ohne Zusätze wie Ausstattung oder Motor.
+   Beim S204 sind das zum Beispiel: "C 180", "C 200", "C 220", "C 250",
+   "C 300", "C 350", "C 63 AMG". Ohne Zusätze wie CDI, Kompressor,
+   BlueEfficiency, T-Modell oder Ausstattungslinie.
 
 5. "series"
-   Die Baureihe, zu der das Modell gehört.
-   Beispiel: C 220 -> "C-Klasse", 320d -> "3er", A4 -> "A4".
+   Immer "C-Klasse".
 
-6. "trimline"
-   Die Ausstattungslinie, falls genannt. Beispiel: "AMG Line", "M Sport",
-   "Avantgarde", "Elegance". Steht keine da: "".
+6. "trimline"  --  NUR EINES DIESER DREI WÖRTER, ODER LEER:
+       Classic  |  Elegance  |  Avantgarde
+   Mehr Ausstattungslinien gab es beim S204 nicht. "Unbekannt" gibt es
+   deshalb nicht und darfst du auch nicht schreiben.
+   So erkennst du sie:
+     Avantgarde = Sportgrill mit großem Zentralstern in der Kühlermaske,
+                  kein Stern auf der Motorhaube, dunkle oder Aluminium-Zierteile
+     Elegance   = Chrom-Lamellengrill, Stern steht aufrecht auf der Motorhaube,
+                  Holzzierteile im Innenraum
+     Classic    = Basislinie, schlichte Zierteile, Stoffsitze, wenig Chrom
+   Reihenfolge beim Suchen:
+     a) steht die Linie im Titel oder in der Ausstattungsliste? -> übernehmen
+     b) sonst: ist sie auf den Fotos eindeutig zu erkennen? -> übernehmen
+     c) sonst: "" (leer). Dann frage die App mich, und ich sehe selbst nach.
+   Rate NICHT. Lieber leer als falsch.
 
-7. "category"  --  NUR EINES DIESER FÜNF WÖRTER:
-      Limousine  |  Coupé  |  Kombi  |  Kleinwagen  |  SUV
-   So entscheidest du:
-     Coupé      = genau ZWEI Türen (auch Cabrio und Roadster zählen hierzu)
-     Kombi      = langes Dach bis zum Heck, große Heckklappe
-                  (T-Modell, Touring, Avant, Variant, Turnier heißen alle Kombi)
-     Limousine  = vier Türen mit abgesetztem Kofferraum (Stufenheck)
-     Kleinwagen = vier Türen mit Schrägheck, kurzes Auto
-     SUV        = hoch gebaut, Geländewagen-Form
-   Schau dir dazu die FOTOS an und zähle die Türen und die Dachform.
-   Wenn Foto und Text sich widersprechen, gilt das FOTO.
+7. "year"
+   Das Jahr der Erstzulassung, vierstellig. Beispiel: "2011".
 
-8. "year"
-   Das Jahr der Erstzulassung, vierstellig. Beispiel: "2014".
-
-9. "month"
+8. "month"
    Der Monat der Erstzulassung, zweistellig mit führender Null.
-   Beispiel: März -> "03", November -> "11".
+   Beispiel: Mai -> "05", November -> "11".
 
-10. "mileage"
-    Der Kilometerstand aus dem Inserat als reine Zahl,
-    ohne Punkt, ohne Komma, ohne "km". Beispiel: 188373
+9. "mileage"
+   Der Kilometerstand als reine Zahl, ohne Punkt, ohne Komma, ohne "km".
+   Beispiel: 142500
 
-11. "fuel"  --  NUR EINES DIESER ZWEI WÖRTER:
-       Benzin  |  Diesel
-    Alles was Benzin braucht (Super, Super Plus, E10, TSI, TFSI) -> "Benzin".
-    Alles Dieselartige (TDI, CDI, HDI, BlueTEC) -> "Diesel".
-    Andere Antriebsarten interessieren mich nicht.
+10. "fuel"  --  NUR EINES DIESER ZWEI WÖRTER:
+        Benzin  |  Diesel
+    Alles Dieselartige (CDI, BlueTEC) -> "Diesel".
+    Alles andere beim S204 (Kompressor, CGI, BlueEfficiency-Benziner) -> "Benzin".
 
-12. "gearbox"  --  NUR EINES DIESER ZWEI WÖRTER:
-       Automatik  |  Manuell
-    Automatik = jede Art von Automatik (DSG, Tiptronic, S-tronic, 7G-TRONIC,
-    Doppelkupplung, Wandler). Manuell = Schaltgetriebe von Hand.
+11. "gearbox"  --  NUR EINES DIESER ZWEI WÖRTER:
+        Automatik  |  Manuell
+    Automatik = jede Art von Automatik (7G-TRONIC, 5G-TRONIC, Wandler).
+    Manuell = Schaltgetriebe von Hand.
     Die Anzahl der Gänge interessiert mich nicht.
 
-13. "owners"
-    Die genaue Anzahl der Vorbesitzer als Zahl in Anführungszeichen,
-    zum Beispiel "3". Suche danach in der Tabelle UND im Beschreibungstext,
-    dort steht sie oft nur nebenbei. Findest du nichts: "".
+12. "owners"
+    Die genaue Anzahl der Fahrzeughalter als Zahl in Anführungszeichen,
+    zum Beispiel "2". Suche in der Datentabelle UND im Beschreibungstext —
+    dort steht sie oft nur nebenbei ("aus zweiter Hand", "Erstbesitz").
+    Findest du nichts: "".
 
-14. "power"
-    Die Motorleistung im Format "kW (PS)". Beispiel: "125 kW (170 PS)".
+13. "hu"
+    Wie lange die Hauptuntersuchung noch gültig ist, als MM/JJJJ.
+    Beispiel: "04/2027". Steht "Neu bei Übergabe" oder gar nichts: "".
 
-15. "displacement"
-    Der Hubraum mit Einheit. Beispiel: "2143 cm³".
-
-16. "drivetrain"  --  NUR EINES DIESER DREI WÖRTER:
-       Heckantrieb  |  Frontantrieb  |  Allrad
-    Allrad heißt bei den Marken auch 4MATIC, quattro, xDrive, 4motion, 4x4.
-    Steht nichts dazu im Inserat: "".
-
-17. "hu"
-    Wie lange die Hauptuntersuchung (TÜV) noch gültig ist, als MM/JJJJ.
-    Beispiel: "03/2026". Steht "Neu bei Übergabe" oder nichts: "".
-
-18. "color"  --  NUR EINES DIESER WÖRTER:
-       Schwarz | Weiß | Grau | Silber | Blau | Rot | Grün
-       Gelb | Orange | Braun | Beige | Gold | Violett
+14. "color"  --  NUR EINES DIESER WÖRTER:
+        Schwarz | Weiß | Grau | Silber | Blau | Rot | Grün
+        Gelb | Orange | Braun | Beige | Gold | Violett
     Zusätze wie "Metallic", "Perleffekt" oder Fantasienamen lässt du weg.
-    Aus "Obsidianschwarz Metallic" wird also "Schwarz".
+    Aus "Iridiumsilber Metallic" wird also "Silber".
 
-19. "condition"  --  NUR EINES DIESER VIER WÖRTER:
-       Gebraucht  |  Neu  |  Vorführwagen  |  Jahreswagen
+15. "location"
+    Postleitzahl und Ort des Fahrzeugs. Beispiel: "50667 Köln".
 
-20. "location"
-    Postleitzahl und Ort des Fahrzeugs. Beispiel: "09116 Chemnitz".
+16. "sellerType"  --  NUR EINES DIESER ZWEI WÖRTER:
+        Händler  |  Privat
 
-21. "sellerType"  --  NUR EINES DIESER ZWEI WÖRTER:
-       Händler  |  Privat
-
-22. "dealerName"
+17. "dealerName"
     Der Name des Händlers. Bei Privatverkauf: "".
 
-23. "stars"
-    Die Sternebewertung des Händlers als Zahl, zum Beispiel "4.2".
-    Keine Bewertung vorhanden: "".
+18. "listedSince"
+    Seit wann das Inserat online ist, als JJJJ-MM-TT.
+    Steht auf mobile.de oft als "Online seit" oder "Inseriert am".
+    Findest du kein Datum: "".
 
-24. "address"
-    Die Straßenanschrift des Händlers, falls angegeben. Sonst "".
+19. "repairNote"
+    Was das Inserat über BEREITS ERFOLGTE Reparaturen und Erneuerungen sagt --
+    im Wortlaut, gekürzt auf das Wesentliche. Zum Beispiel:
+    "Steuerkette und Spanner 2023 erneuert, Bremsscheiben vorne neu."
+    Nimm alles auf, was ausgetauscht, erneuert, überholt oder gemacht wurde,
+    mit Jahreszahl und Kilometerstand, falls genannt.
+    Bewerte es NICHT und ordne es NICHT ein -- das mache ich in der App.
+    Steht nichts über erfolgte Reparaturen: "".
 
-25. "accidentStatus"  --  NUR EINES DIESER ZWEI WÖRTER:
-       Unfallfrei  |  Unfallwagen
-    Es gibt hier kein "Unbekannt". Entweder das Inserat gibt dir einen
-    konkreten Anhaltspunkt für einen Unfall -- oder eben nicht.
-    Unfallwagen = im Text oder auf den Fotos gibt es einen konkreten
-      Hinweis auf einen Unfall oder einen reparierten Unfallschaden.
-      Zum Beispiel: "Unfallwagen", "Unfallschaden", "Vorschaden",
-      "instandgesetzt", "nachlackiert", ein verzogenes Spaltmaß,
-      ein erneuertes Blechteil, ein Gutachten über einen Unfallschaden.
-    Unfallfrei = ALLES ANDERE. Auch dann, wenn zum Thema Unfall gar nichts
-      dasteht. Steht nichts, gehe ich von unfallfrei aus.
-    KEIN Unfall sind Kleinigkeiten aus dem Alltag: ein Kratzer, eine Delle,
-    eine Beule vom Anstoßen an einer Garagenwand, Parkschrammen,
-    Steinschlag. So etwas gehört nach "damageCurrent", nicht hierher.
+20. "accidentRepaired"  --  NUR EINES DIESER ZWEI WÖRTER:
+        Ja  |  Nein
+    Ja = das Inserat gibt AUSDRÜCKLICH einen Unfall oder einen reparierten
+      Unfallschaden an. Also Formulierungen wie "Unfallwagen", "Unfallschaden",
+      "Unfallfahrzeug", "reparierter Unfallschaden", "Vorschaden durch Unfall",
+      "Unfall: ja" in der Datentabelle.
+    Nein = ALLES ANDERE.
+    WICHTIG: Du sollst NICHT vermuten. Kratzer, Dellen, Parkschrammen,
+    nachlackierte Teile, ein erneuerter Kotflügel oder ein Bericht über eine
+    Reparatur sind KEIN Unfall, solange das Inserat keinen nennt. Auch wenn
+    es naheliegt: ohne ausdrückliche Angabe schreibst du "Nein".
 
-26. "currentIssueStatus"  --  NUR EINES DIESER ZWEI WÖRTER:
-       Keine  |  Vorhanden
-    Es gibt hier kein "Unbekannt". Gemeint sind Mängel, die das Auto JETZT hat.
-    Vorhanden = im Text gibt es Anzeichen dafür, dass gerade etwas nicht
-      stimmt. Zum Beispiel: Teile müssen gewechselt werden, der Motor macht
-      Geräusche, etwas ist defekt, klappert, verliert Öl, die Klimaanlage
-      kühlt nicht, eine Warnleuchte brennt, "läuft unrund", "braucht noch",
-      "muss noch gemacht werden", "Bastlerfahrzeug", "als Ersatzteilspender".
-      Das ist keine abschließende Aufzählung -- entscheidend ist, ob der Text
-      auf einen bestehenden Mangel hindeutet.
-    Keine = ALLES ANDERE. Auch dann, wenn zum Zustand gar nichts dasteht.
-      Steht nichts, gehe ich davon aus, dass nichts anliegt.
+21. "equipment"
+    Eine Liste. Prüfe die folgenden VIERZEHN Punkte einzeln und nimm jeden
+    auf, den das Inserat nennt -- exakt in dieser Schreibweise:
+       "AMG Sport-Paket"            (auch AMG Sport-Paket Plus, AMG-Line, AMG-Styling)
+       "Panorama-Schiebedach"       (Panoramadach)
+       "Lederausstattung"           (Leder, Volllederausstattung)
+       "designo-Lederausstattung"   (designo Leder, designo-Ausstattung)
+       "Standheizung"               (auch Zusatzheizung mit Fernbedienung)
+       "Sitzklimatisierung"         (Sitzbelüftung, aktive Sitzbelüftung)
+       "Memory-Paket"               (elektrische Sitze mit Memory, Memory-Funktion)
+       "Fahrassistenz-Paket Plus"   (Distronic Plus, Totwinkel-Assistent im Paket)
+       "Intelligent Light System"   (ILS, Bi-Xenon, Kurvenlicht)
+       "Anhängerkupplung"           (AHK, abnehmbar oder schwenkbar)
+       "KEYLESS-GO"                 (schlüsselloser Zugang, Start-Stopp-Knopf)
+       "Harman Kardon Logic 7"      (Harman Kardon Soundsystem)
+       "Glasschiebedach"            (NUR wenn es KEIN Panoramadach ist)
+       "Spur-Paket"                 (Spurhalte-Assistent, Spurwechsel-Assistent)
+    Nichts davon gefunden: [] (leere Liste).
+    Zähle nichts doppelt: Panorama-Schiebedach und Glasschiebedach schließen
+    sich gegenseitig aus. Nimm nur auf, was tatsächlich dasteht -- nicht, was
+    du beim Modell vermutest.
 
-27. "previousDamageStatus"  --  NUR EINES DIESER DREI WÖRTER:
-       Keine  |  Vorhanden  |  Unbekannt
-    Gemeint sind FRÜHERE Schäden, egal ob repariert oder nicht.
-
-28. "repairScope"  --  NUR EINES DIESER FÜNF WÖRTER:
-       Keine  |  Gering  |  Mittel  |  Umfangreich  |  Unbekannt
-    Wie viel muss am Auto gemacht werden?
-      Keine       = nichts zu tun
-      Gering      = Kleinkram: Kratzer, Verschleißteile, Bremsbeläge
-      Mittel      = spürbare Arbeiten: Kupplung, Bremsanlage, Steuerkette
-      Umfangreich = Motor, Getriebe oder Unfallschaden
-      Unbekannt   = niemand weiß es
-    WICHTIG: Steht im Inserat "nicht geprüft", "ohne Gewährleistung",
-    "Bastlerfahrzeug", "nur an Gewerbe" oder "nur Export",
-    dann schreibst du "Unbekannt" -- niemals "Keine".
-
-29. "repairCount"
-    Anzahl der einzeln genannten nötigen Reparaturen als Zahl.
-    Werden keine genannt: 0
-
-30. "damageCurrent"
-    Die aktuellen Mängel in ein bis zwei Sätzen, mit deinen Worten
-    zusammengefasst. Keine Mängel genannt: "".
-
-31. "damagePrevious"
-    Frühere Schäden in ein bis zwei Sätzen. Nichts genannt: "".
-
-32. "damageRepaired"
-    Bereits reparierte Schäden in ein bis zwei Sätzen. Nichts genannt: "".
-
-33. "note"
+22. "note"
     Deine eigene kurze Einschätzung als Käufer in ein bis zwei Sätzen:
     Was fällt auf, wo ist Vorsicht geboten, passt der Preis?
-    Nenne hier auch Einschränkungen wie "Verkauf nur an Gewerbe oder Export".
+    Nenne hier auch Einschränkungen wie "Verkauf nur an Gewerbe oder Export",
+    "Bastlerfahrzeug", "ohne Gewährleistung", "nicht fahrbereit".
 
-34. "url"
-    Der Link zum Inserat. Nimm ihn aus jeder Quelle, die du hast:
-    aus dem Dokument selbst, aus der Fußzeile eines PDFs -- und vor allem
-    dann, wenn ich dir den Link zusammen mit den Fahrzeugdaten in meiner
-    Nachricht mitgeschickt habe. Schicke ich mehrere Fahrzeuge auf einmal,
-    ordne jedem Fahrzeug den Link zu, der zu ihm gehört.
-    Schreibe ihn vollständig ab, ohne ihn zu kürzen oder zu verändern.
-    Findest du keinen: "" -- die App fragt mich dann beim Import danach.
+23. "url"
+    Der Link zum Inserat. Nimm ihn aus jeder Quelle, die du hast: aus dem
+    Dokument selbst, aus der Fußzeile eines PDFs -- und vor allem dann, wenn
+    ich dir den Link zusammen mit den Fahrzeugdaten mitgeschickt habe.
+    Schicke ich mehrere Fahrzeuge auf einmal, ordne jedem Fahrzeug den Link
+    zu, der zu ihm gehört. Schreibe ihn vollständig ab, ohne zu kürzen.
+    Findest du keinen: "".
 
-35. "price"
+24. "price"
     Der geforderte Preis in Euro als reine Zahl, ohne Punkt und ohne "€".
-    Beispiel: 5390
+    Beispiel: 8900
 
-36. "date"
+25. "date"
     Das heutige Datum im Format JJJJ-MM-TT.
 ```
 
@@ -269,29 +232,47 @@ SO FÜLLST DU JEDES FELD AUS:
 Hänge an den Prompt an:
 
 ```
-Das Auto kenne ich schon, seine id lautet "03/2014188373".
+Das Auto kenne ich schon, seine id lautet "05/2011142500".
 Nimm exakt diese id und trage nur den neuen Preis mit dem heutigen Datum ein.
 ```
 
 Die App erkennt das Auto an der `id` wieder und hängt den Preis an den Verlauf an,
-statt einen zweiten Eintrag anzulegen.
+statt einen zweiten Eintrag anzulegen. Deine Antworten zu Exterieur, Interieur,
+Reparaturen und Ausstattungslinie bleiben dabei erhalten.
 
-## Mehrere Inserate auf einmal
+---
 
-```
-Mehrere Inserate: gib ein JSON-Array aus, also [ {...}, {...} ].
-```
+## Was aus den Angaben in der App wird
+
+**Sonderausstattung** entsteht automatisch aus der Länge von `equipment`:
+
+| gefundene Punkte | Eintrag |
+|---|---|
+| 0 | Serienausstattung |
+| 1–2 | Besondere Ausstattung |
+| 3 oder mehr | Exzellente Ausstattung |
+
+**Deine vier Antworten** sind vollwertige Analyse-Kategorien — Filter mit
+Mehrfachauswahl, Gruppierung bei „Ø Preis nach", und sie fließen in die
+Zustandspunkte des Masterchart ein:
+
+| Merkmal | Abzug von 100 Punkten |
+|---|---|
+| Exterieur | 0 / −6 / −14 / −24 |
+| Interieur | 0 / −5 / −12 / −20 |
+| Reparaturen | 0 / −3 (Verschleiß) / −14 (Kernteile) / −26 (Prozessteile) |
+| Unfallschaden angegeben | −18 |
+| Sonderausstattung | +5 (besondere) / +10 (exzellente) |
+| Vorzeigefahrzeug (Stern) | +8 |
 
 ---
 
 ## Warum die id so aufgebaut ist
 
-`MM/JJJJ` plus Kilometerstand ist die Kombination, die zwei sonst gleiche
-Fahrzeuge zuverlässig auseinanderhält — zwei C 220 Kombis von 2014 haben
-praktisch nie denselben Kilometerstand. Vorher bestand die `id` nur aus
-Marke, Modell und Baujahr; dabei wären solche Fahrzeuge zu einem einzigen
-Eintrag verschmolzen und ihre Preise als Preisverlauf eines Autos erschienen.
+`MM/JJJJ` plus Kilometerstand ist die Kombination, die zwei sonst gleiche Fahrzeuge
+zuverlässig auseinanderhält — zwei C 220 T von 05/2011 haben praktisch nie denselben
+Kilometerstand.
 
-Ändert der Händler den angezeigten Kilometerstand, ändert sich die `id` mit.
-Dann entsteht ein neuer Eintrag statt eines Preis-Updates. In dem Fall die
-alte `id` von Hand in den Prompt schreiben.
+Ändert der Händler den angezeigten Kilometerstand, ändert sich die `id` mit. Dann
+entsteht ein neuer Eintrag statt eines Preis-Updates. In dem Fall die alte `id`
+von Hand in den Prompt schreiben.

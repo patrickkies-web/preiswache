@@ -20,32 +20,63 @@ import {
 
 const STORE_KEY = "garage-v3";
 
-// Alle Textfelder (mileage/repairCount/priceHistory separat)
+// Alle Textfelder (mileage/priceHistory/equipment separat)
 const TEXT_FIELDS = [
-  "title", "subtitle", "make", "model", "series", "trimline", "condition", "category",
-  "year", "month", "displacement", "power", "drivetrain", "fuel", "gearbox", "owners", "hu",
-  "color", "location", "sellerType", "dealerName", "stars", "address",
-  "damageCurrent", "damagePrevious", "damageRepaired",
-  "accidentStatus", "currentIssueStatus", "previousDamageStatus", "repairScope",
+  "title", "subtitle", "make", "model", "series", "trimline",
+  "year", "month", "fuel", "gearbox", "owners", "hu",
+  "color", "location", "sellerType", "dealerName",
+  // Was das Inserat über bereits erfolgte Reparaturen sagt, im Wortlaut:
+  "repairNote",
+  // Nur bei ausdrücklicher Angabe eines Unfalls: "Ja", sonst "Nein"
+  "accidentRepaired",
   "note", "url",
-  // Von dir selbst beantwortet, nicht von der KI:
-  "photoDamage", "listingPrep", "showcase",
+  // Von dir selbst beurteilt, nicht von der KI:
+  "exterieur", "interieur", "repairKind", "showcase",
   // Lebenslauf des Inserats:
   "listingStatus", "listedSince", "closedDate",
   // Datum, an dem du den Eintrag durchgesehen hast (leer = noch offen):
   "geprueft",
 ];
 
-// Definierte Begriffe (kontrolliertes Vokabular)
-// "Unbekannt" heißt überall dasselbe — es gibt es aber nicht mehr überall:
-// Beurteilt wird nur, was im Inserat steht. Sagt das Inserat nichts zu einem
-// Unfall, gilt das Fahrzeug als unfallfrei; sagt es nichts zu Mängeln, hat es
-// keine. Nur wo eine Aussage fehlen kann, ohne dass sich daraus etwas
-// schließen lässt, bleibt "Unbekannt" erhalten.
-const ACCIDENT_OPTS = ["Unfallfrei", "Unfallwagen"];
-const ISSUE_OPTS = ["Keine", "Vorhanden"];
-const PREV_OPTS = ["Keine", "Vorhanden", "Unbekannt"];
-const SCOPE_OPTS = ["Keine", "Gering", "Mittel", "Umfangreich", "Unbekannt"];
+/* Definierte Begriffe (kontrolliertes Vokabular)
+   Beurteilt wird nur, was im Inserat steht. Ein Unfall zählt ausschließlich
+   dann, wenn das Inserat einen nennt — nicht, wenn sich einer vermuten ließe.
+   Steht nichts dazu, ist die Antwort "Nein". */
+const ACCIDENT_OPTS = ["Nein", "Ja"];
+
+// Was am Auto schon gemacht wurde, von dir eingeordnet — die KI schreibt nur
+// ab, was im Text steht.
+const REPAIR_KIND_OPTS = ["Keine genannt", "Verschleißteile", "Kernfahrzeugteile", "Gesamte Prozessteile"];
+const REPAIR_KIND_FRAGE = "Was wurde repariert?";
+const REPAIR_KIND_HILFE = {
+  "Keine genannt": "Das Inserat sagt nichts über erfolgte Reparaturen",
+  "Verschleißteile": "Bremsen, Reifen, Batterie, Auspuff, Zündkerzen — was ohnehin fällig wird",
+  "Kernfahrzeugteile": "Kupplung, Steuerkette, Turbolader, Injektoren, Klimakompressor",
+  "Gesamte Prozessteile": "Motor, Getriebe, Antriebsstrang — komplette Baugruppen",
+};
+
+// Ausstattungslinie des S204. Mehr als diese drei gab es nicht, deshalb
+// auch kein "Unbekannt": findet die KI nichts, wirst du beim Import gefragt.
+const TRIMLINE_OPTS = ["Classic", "Elegance", "Avantgarde"];
+const TRIMLINE_FRAGE = "Welche Ausstattungslinie?";
+const TRIMLINE_HILFE = {
+  "Classic": "Basislinie — schlichte Zierteile, Stoffsitze",
+  "Elegance": "Chrom-Kühlergrill mit Stern auf der Haube, Holzzierteile",
+  "Avantgarde": "Sportgrill mit großem Zentralstern, dunkle Zierteile",
+};
+
+/* Die vierzehn Ausstattungsmerkmale, die den S204 aufwerten. Was die KI davon
+   im Inserat findet, wird gezählt: eins oder zwei ergeben eine besondere,
+   drei oder mehr eine exzellente Ausstattung. */
+const AUSSTATTUNG_LISTE = [
+  "AMG Sport-Paket", "Panorama-Schiebedach", "Lederausstattung", "designo-Lederausstattung",
+  "Standheizung", "Sitzklimatisierung", "Memory-Paket", "Fahrassistenz-Paket Plus",
+  "Intelligent Light System", "Anhängerkupplung", "KEYLESS-GO", "Harman Kardon Logic 7",
+  "Glasschiebedach", "Spur-Paket",
+];
+const AUSSTATTUNG_OPTS = ["Serienausstattung", "Besondere Ausstattung", "Exzellente Ausstattung"];
+const ausstattungsStufe = (anzahl) =>
+  anzahl >= 3 ? "Exzellente Ausstattung" : anzahl >= 1 ? "Besondere Ausstattung" : "Serienausstattung";
 
 // Was Modelle sonst noch schreiben, wird auf das Vokabular abgebildet.
 // Enthält auch die früheren Begriffe, damit alte Einträge gültig bleiben.
@@ -79,12 +110,9 @@ function normalizeStatus(value, options, standard = "Unbekannt") {
 /* --- Weitere abschließende Listen: die App erzwingt sie, damit sich
        Gruppierung und Filter nicht durch Schreibweisen zersplittern. --- */
 
-const CATEGORY_OPTS = ["Limousine", "Coupé", "Kombi", "Kleinwagen", "SUV"];
 const FUEL_OPTS = ["Benzin", "Diesel"];
 const GEARBOX_OPTS = ["Automatik", "Manuell"];
-const DRIVE_OPTS = ["Heckantrieb", "Frontantrieb", "Allrad"];
 const SELLER_OPTS = ["Händler", "Privat"];
-const CONDITION_OPTS = ["Gebraucht", "Neu", "Vorführwagen", "Jahreswagen"];
 const COLOR_OPTS = ["Schwarz", "Weiß", "Grau", "Silber", "Blau", "Rot", "Grün",
   "Gelb", "Orange", "Braun", "Beige", "Gold", "Violett"];
 
@@ -231,41 +259,33 @@ const erstzulassung = (v) => (v.month && v.year ? `${v.month}/${v.year}` : v.yea
 
 /* --- Deine eigene Beurteilung beim Import (keine KI-Felder) --- */
 
-const PHOTO_DAMAGE_OPTS = ["Keine", "Deutlich erkennbar", "Bei genauem Hinsehen", "Leicht zu übersehen"];
-const PHOTO_DAMAGE_FRAGE = "Sind auf den Fotos Beschädigungen zu erkennen?";
-const PHOTO_DAMAGE_HILFE = {
-  "Keine": "Nichts zu sehen",
-  "Deutlich erkennbar": "Springt sofort ins Auge",
-  "Bei genauem Hinsehen": "Fällt erst beim zweiten Blick auf",
-  "Leicht zu übersehen": "Nur zu finden, wenn man gezielt danach sucht",
+const EXTERIEUR_OPTS = [
+  "Keine sichtbaren Schäden",
+  "Leichte Gebrauchsspuren",
+  "Leichte Schäden",
+  "Leichte Schäden an mehreren Stellen",
+];
+const EXTERIEUR_FRAGE = "Exterieur — was zeigen die Fotos außen?";
+const EXTERIEUR_HILFE = {
+  "Keine sichtbaren Schäden": "Optisch unauffälliger Zustand",
+  "Leichte Gebrauchsspuren": "Kleine Kratzer, Mikrokratzer, übliche Spuren — fallen beim genauen Hinsehen auf",
+  "Leichte Schäden": "Punktuelle Beschädigungen kleiner Art, an höchstens zwei Stellen",
+  "Leichte Schäden an mehreren Stellen": "Zum Beispiel Kratzer am Kotflügel und Touchierspuren am Heck",
 };
 
-// Wörter, die auf etwas hindeuten, das auf einem Foto zu sehen sein müsste.
-// Damit wird die eigene Notiz der KI nur dann herangezogen, wenn sie
-// tatsächlich von etwas Sichtbarem spricht — sonst stünde bei jedem
-// Fahrzeug ein Hinweis und niemand würde ihn noch lesen.
-const SICHTBAR_RE = /kratz|schramm|dell(e|en)|beule|lack|rost|steinschlag|riss|bruch|gebrochen|beschädig|schaden|schäden|unfall|polster|sitz|verschleiß|abgenutzt|verblasst|vergilbt|matt|folie|felge|scheibe|spiegel|stoßstange|kotflügel|motorhaube|heckklappe|schweller|spaltmaß|verzogen|nachlackier|smart ?repair/i;
-
-// Alles, was aus dem Inserat auf sichtbare Mängel hindeutet — als
-// Gedächtnisstütze, bevor man die Fotos beurteilt.
-function fotoHinweise(v) {
-  const texte = [
-    ["Aktuelle Mängel", v.damageCurrent],
-    ["Frühere Schäden", v.damagePrevious],
-    ["Bereits repariert", v.damageRepaired],
-  ].filter(([, t]) => String(t || "").trim());
-  const notiz = String(v.note || "").trim();
-  if (notiz && SICHTBAR_RE.test(notiz)) texte.push(["Notiz der KI", notiz]);
-
-  const flaggen = [];
-  if (v.accidentStatus === "Unfallwagen") flaggen.push("als Unfallwagen eingetragen");
-  if (v.currentIssueStatus === "Vorhanden") flaggen.push("aktuelle Mängel vermerkt");
-  if (v.previousDamageStatus === "Vorhanden") flaggen.push("frühere Schäden vermerkt");
-  if (v.repairScope && !["Keine", "Unbekannt"].includes(v.repairScope)) {
-    flaggen.push(`Reparaturbedarf ${v.repairScope.toLowerCase()}`);
-  }
-  return { texte, flaggen, hat: texte.length > 0 || flaggen.length > 0 };
-}
+const INTERIEUR_OPTS = [
+  "Wie neu",
+  "Leichte Spuren vereinzelt",
+  "Durchgehend leicht abgenutzt",
+  "Deutliche Verbrauchsspuren",
+];
+const INTERIEUR_FRAGE = "Interieur — was zeigen die Fotos innen?";
+const INTERIEUR_HILFE = {
+  "Wie neu": "Knöpfe und Bezüge hauptsächlich in gutem Zustand, wirkt beinahe neu",
+  "Leichte Spuren vereinzelt": "An wenigen Stellen, aber schon so, dass man es erkennt",
+  "Durchgehend leicht abgenutzt": "Überall ein wenig abgenutzt, aber noch in Maßen",
+  "Deutliche Verbrauchsspuren": "Merkbar, nicht wirklich behebbar, in der Gesamtheit auffallend",
+};
 
 /* Vorzeigefahrzeug: das Inserat macht optisch den Eindruck, dass sein Preis
    die obere Kante markiert — ein Bezugspunkt, an dem sich die anderen messen
@@ -274,29 +294,18 @@ const SHOWCASE_OPTS = ["Vorzeigefahrzeug", "Normal"];
 const SHOWCASE_FRAGE = "Vorzeigefahrzeug?";
 const SHOWCASE_HILFE = "Makelloser Auftritt auf den Fotos — der Preis taugt als oberer Bezugspunkt.";
 
-const LISTING_PREP_OPTS = ["Aufbereitet", "Normale Gebrauchsspuren", "Nicht vorbereitet"];
-const LISTING_PREP_FRAGE = "Wie ist das Fahrzeug im Inserat dargestellt?";
-const LISTING_PREP_HILFE = {
-  "Aufbereitet": "Gereinigter Innenraum, sauberes Erscheinungsbild",
-  "Normale Gebrauchsspuren": "Ordentlich, aber sichtbar benutzt",
-  "Nicht vorbereitet": "Weder gereinigt noch für das Inserat hergerichtet",
-};
-
 /* --- Qualitätssicherung ---
-   "Unbekannt" gibt es beim Unfall- und beim Mängelstatus nicht mehr. Alte
-   Einträge wurden beim Laden auf "Unfallfrei" und "Keine" gesetzt, weil das
-   damals genau dasselbe bedeutete: im Inserat stand nichts dazu. Das ist
-   aber eine Annahme und keine Prüfung. Ein Eintrag gilt deshalb erst als
-   geprüft, wenn er hier einmal bestätigt wurde. */
+   Ein Eintrag gilt erst als geprüft, wenn er einmal bestätigt wurde. Alte
+   Einträge aus der Zeit vor dem Merkmalswechsel wurden beim Laden umgesetzt —
+   das ist eine Übertragung und keine Prüfung. */
 
 // Die Felder, die sich im Prüfbereich direkt ändern lassen.
 const PRUEF_FELDER = [
-  { feld: "accidentStatus", label: "Unfallstatus", opts: ACCIDENT_OPTS },
-  { feld: "currentIssueStatus", label: "Aktuelle Mängel", opts: ISSUE_OPTS },
-  { feld: "previousDamageStatus", label: "Frühere Schäden", opts: PREV_OPTS },
-  { feld: "repairScope", label: "Reparaturumfang", opts: SCOPE_OPTS },
-  { feld: "photoDamage", label: PHOTO_DAMAGE_FRAGE, opts: PHOTO_DAMAGE_OPTS },
-  { feld: "listingPrep", label: LISTING_PREP_FRAGE, opts: LISTING_PREP_OPTS },
+  { feld: "trimline", label: TRIMLINE_FRAGE, opts: TRIMLINE_OPTS },
+  { feld: "exterieur", label: EXTERIEUR_FRAGE, opts: EXTERIEUR_OPTS },
+  { feld: "interieur", label: INTERIEUR_FRAGE, opts: INTERIEUR_OPTS },
+  { feld: "repairKind", label: REPAIR_KIND_FRAGE, opts: REPAIR_KIND_OPTS },
+  { feld: "accidentRepaired", label: "Reparierter Unfallschaden angegeben?", opts: ACCIDENT_OPTS },
   { feld: "showcase", label: SHOWCASE_FRAGE, opts: SHOWCASE_OPTS },
 ];
 
@@ -304,14 +313,12 @@ function offenePunkte(v) {
   const p = [];
   // Beurteilungen: einmal bestätigt, ist die Sache erledigt — auch ein
   // stehengelassenes "Unbekannt" ist dann eine Entscheidung.
-  if (!v.geprueft) {
-    p.push("Unfall- und Mängelstatus noch nicht bestätigt");
-    if (v.previousDamageStatus === "Unbekannt") p.push("Frühere Schäden unbekannt");
-    if (v.repairScope === "Unbekannt") p.push("Reparaturumfang unbekannt");
-  }
+  if (!v.geprueft) p.push("Noch nicht bestätigt");
   // Fehlende Angaben bleiben offen, bis sie da sind. Ein Haken hilft hier nicht.
-  if (!v.photoDamage) p.push("Frage zu den Fotos offen");
-  if (!v.listingPrep) p.push("Frage zur Aufbereitung offen");
+  if (!v.trimline) p.push("Ausstattungslinie offen");
+  if (!v.exterieur) p.push("Exterieur offen");
+  if (!v.interieur) p.push("Interieur offen");
+  if (v.repairNote && !v.repairKind) p.push("Reparaturen noch nicht eingeordnet");
   if (!istLink(v.url)) p.push("Kein Link zum Inserat");
   if (v.mileage == null) p.push("Kilometerstand fehlt — fällt aus der Preisrechnung");
   if (!v.year) p.push("Erstzulassung fehlt — fällt aus der Preisrechnung");
@@ -325,18 +332,28 @@ function offenePunkte(v) {
    kleinen Bonus. Kilometerstand und Alter stecken bewusst NICHT drin — die
    gehören auf die Preisseite, nicht in den Zustand. */
 const ZUSTAND_ABZUG = {
-  photoDamage: { "Keine": 0, "Leicht zu übersehen": 6, "Bei genauem Hinsehen": 12, "Deutlich erkennbar": 25 },
-  listingPrep: { "Aufbereitet": 0, "Normale Gebrauchsspuren": 5, "Nicht vorbereitet": 12 },
-  accidentStatus: { "Unfallfrei": 0, "Unfallwagen": 20 },
-  currentIssueStatus: { "Keine": 0, "Vorhanden": 18 },
-  previousDamageStatus: { "Keine": 0, "Unbekannt": 4, "Vorhanden": 10 },
-  repairScope: { "Keine": 0, "Gering": 5, "Mittel": 14, "Umfangreich": 28, "Unbekannt": 8 },
+  exterieur: {
+    "Keine sichtbaren Schäden": 0, "Leichte Gebrauchsspuren": 6,
+    "Leichte Schäden": 14, "Leichte Schäden an mehreren Stellen": 24,
+  },
+  interieur: {
+    "Wie neu": 0, "Leichte Spuren vereinzelt": 5,
+    "Durchgehend leicht abgenutzt": 12, "Deutliche Verbrauchsspuren": 20,
+  },
+  repairKind: {
+    "Keine genannt": 0, "Verschleißteile": 3,
+    "Kernfahrzeugteile": 14, "Gesamte Prozessteile": 26,
+  },
+  accidentRepaired: { "Nein": 0, "Ja": 18 },
 };
 const ZUSTAND_LABEL = {
-  photoDamage: "Fotos", listingPrep: "Aufbereitung", accidentStatus: "Unfall",
-  currentIssueStatus: "Mängel", previousDamageStatus: "Vorschäden", repairScope: "Reparatur",
+  exterieur: "Exterieur", interieur: "Interieur",
+  repairKind: "Reparaturen", accidentRepaired: "Unfallschaden",
 };
 const STERN_BONUS = 8;
+// Sonderausstattung hebt den Zustand nicht, aber den Wert — deshalb ein
+// Zuschlag statt eines Abzugs.
+const AUSSTATTUNG_BONUS = { "Serienausstattung": 0, "Besondere Ausstattung": 5, "Exzellente Ausstattung": 10 };
 
 function zustandsPunkte(v) {
   const abzuege = [];
@@ -348,7 +365,8 @@ function zustandsPunkte(v) {
     punkte -= ab;
     abzuege.push({ label: ZUSTAND_LABEL[feld], wert, ab });
   });
-  const bonus = v.showcase === "Vorzeigefahrzeug" ? STERN_BONUS : 0;
+  const bonus = (v.showcase === "Vorzeigefahrzeug" ? STERN_BONUS : 0)
+    + (AUSSTATTUNG_BONUS[v.ausstattung] || 0);
   return { punkte: Math.max(0, Math.min(100, punkte + bonus)), abzuege, bonus };
 }
 
@@ -583,8 +601,8 @@ const SORT_FELDER = {
   mileage:     { label: "Kilometer", typ: "zahl", wert: (v) => v.mileage },
   ez:          { label: "Erstzulassung", typ: "text", wert: (v) => (v.year ? `${v.year}${v.month || "00"}` : "") },
   location:    { label: "Ort", typ: "text", wert: (v) => (v.location || "").trim().toLowerCase() },
-  repairScope: { label: "Reparatur", typ: "zahl", wert: (v) => {
-    const i = SCOPE_OPTS.indexOf(v.repairScope);
+  repairKind: { label: "Reparaturen", typ: "zahl", wert: (v) => {
+    const i = REPAIR_KIND_OPTS.indexOf(v.repairKind);
     return i < 0 ? null : i;
   } },
 };
@@ -656,34 +674,30 @@ function dublettenIndizien(neu, alt) {
 
 // Feste Auswahllisten je Feld, sofern vorhanden
 const FIXED_OPTS = {
-  accidentStatus: ACCIDENT_OPTS, currentIssueStatus: ISSUE_OPTS,
-  previousDamageStatus: PREV_OPTS, repairScope: SCOPE_OPTS,
-  category: CATEGORY_OPTS, fuel: FUEL_OPTS, gearbox: GEARBOX_OPTS,
-  drivetrain: DRIVE_OPTS, sellerType: SELLER_OPTS, condition: CONDITION_OPTS,
-  color: COLOR_OPTS, photoDamage: PHOTO_DAMAGE_OPTS, listingPrep: LISTING_PREP_OPTS,
-  showcase: SHOWCASE_OPTS,
-  listingStatus: STATUS_OPTS,
+  accidentRepaired: ACCIDENT_OPTS, repairKind: REPAIR_KIND_OPTS,
+  trimline: TRIMLINE_OPTS, ausstattung: AUSSTATTUNG_OPTS,
+  fuel: FUEL_OPTS, gearbox: GEARBOX_OPTS, sellerType: SELLER_OPTS,
+  color: COLOR_OPTS, exterieur: EXTERIEUR_OPTS, interieur: INTERIEUR_OPTS,
+  showcase: SHOWCASE_OPTS, listingStatus: STATUS_OPTS,
 };
 
 // Kategorien, die als Filter-Dropdown auswählbar sind
 const FILTER_FIELDS = [
-  ["year", "Baujahr"],
-  ["make", "Marke"], ["model", "Modell"], ["series", "Baureihe"], ["category", "Kategorie"],
-  ["fuel", "Kraftstoff"], ["gearbox", "Getriebe"], ["drivetrain", "Antrieb"],
-  ["condition", "Zustand"], ["color", "Farbe"], ["sellerType", "Anbieter"],
-  ["accidentStatus", "Unfallstatus"], ["currentIssueStatus", "Aktuelle Mängel"],
-  ["repairScope", "Reparatur-Umfang"], ["previousDamageStatus", "Vorschäden"],
-  ["photoDamage", "Schäden auf Fotos"], ["listingPrep", "Aufbereitung"],
+  ["trimline", "Ausstattungslinie"], ["ausstattung", "Sonderausstattung"],
+  ["exterieur", "Exterieur"], ["interieur", "Interieur"],
+  ["repairKind", "Reparaturen"], ["accidentRepaired", "Unfallschaden"],
+  ["year", "Baujahr"], ["model", "Modell"],
+  ["fuel", "Kraftstoff"], ["gearbox", "Getriebe"],
+  ["color", "Farbe"], ["sellerType", "Anbieter"],
   ["showcase", "Vorzeigefahrzeug"], ["listingStatus", "Inserat"],
 ];
 // Dimensionen zum Gruppieren/Vergleichen
 const GROUP_FIELDS = [
-  ["repairScope", "Reparatur-Umfang"], ["currentIssueStatus", "Aktuelle Mängel"],
-  ["photoDamage", "Schäden auf Fotos"], ["listingPrep", "Aufbereitung"],
-  ["showcase", "Vorzeigefahrzeug"],
-  ["accidentStatus", "Unfallstatus"], ["previousDamageStatus", "Vorschäden"],
-  ["listingStatus", "Inserat"],
-  ["make", "Marke"], ["model", "Modell"], ["category", "Kategorie"], ["fuel", "Kraftstoff"],
+  ["trimline", "Ausstattungslinie"], ["ausstattung", "Sonderausstattung"],
+  ["exterieur", "Exterieur"], ["interieur", "Interieur"],
+  ["repairKind", "Reparaturen"], ["accidentRepaired", "Unfallschaden"],
+  ["showcase", "Vorzeigefahrzeug"], ["listingStatus", "Inserat"],
+  ["model", "Modell"], ["fuel", "Kraftstoff"], ["gearbox", "Getriebe"], ["sellerType", "Anbieter"],
 ];
 
 const COLORS = [
@@ -744,14 +758,19 @@ function slugId(v) {
 // Farbe je Begriff
 function tagColor(field, value) {
   if (!value) return T.muted;
-  if (value === "Unbekannt") return T.accent;
-  if (field === "accidentStatus") return value === "Unfallfrei" ? T.good : T.bad;
-  if (field === "currentIssueStatus") return value === "Vorhanden" ? T.bad : T.good;
-  if (field === "previousDamageStatus") return value === "Vorhanden" ? T.accent : T.good;
-  if (field === "repairScope") return value === "Umfangreich" ? T.accent : value === "Keine" ? T.muted : T.text;
-  if (field === "photoDamage") return value === "Keine" ? T.good : value === "Deutlich erkennbar" || value === "Leicht zu übersehen" ? T.bad : T.accent;
+  // Die vierstufigen Skalen laufen von gut nach schlecht — die Farbe folgt
+  // ihrer Position in der Liste, damit sich nichts widerspricht.
+  const stufe = (opts) => {
+    const i = opts.indexOf(value);
+    return i <= 0 ? T.good : i === 1 ? T.text : i === 2 ? T.accent : T.bad;
+  };
+  if (field === "exterieur") return stufe(EXTERIEUR_OPTS);
+  if (field === "interieur") return stufe(INTERIEUR_OPTS);
+  if (field === "repairKind") return stufe(REPAIR_KIND_OPTS);
+  if (field === "accidentRepaired") return value === "Ja" ? T.bad : T.good;
+  if (field === "ausstattung") return value === "Exzellente Ausstattung" ? T.accent : value === "Besondere Ausstattung" ? T.text : T.muted;
+  if (field === "trimline") return value === "Avantgarde" ? T.accent : T.text;
   if (field === "showcase") return value === "Vorzeigefahrzeug" ? T.accent : T.muted;
-  if (field === "listingPrep") return value === "Aufbereitet" ? T.good : value === "Nicht vorbereitet" ? T.bad : T.text;
   if (field === "listingStatus") return value === "Aktiv" ? T.good : value === "Verkauft" ? T.muted : T.accent;
   return T.text;
 }
@@ -772,28 +791,27 @@ function normalizeHistory(h) {
 function normalizeVehicle(v) {
   const out = {};
   TEXT_FIELDS.forEach((k) => { out[k] = v[k] != null ? String(v[k]).trim() : ""; });
-  out.accidentStatus = normalizeStatus(v.accidentStatus, ACCIDENT_OPTS, "Unfallfrei");
-  out.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS, "Keine");
-  out.previousDamageStatus = normalizeStatus(v.previousDamageStatus, PREV_OPTS);
-  out.repairScope = normalizeStatus(v.repairScope, SCOPE_OPTS);
-  out.category = normalizeChoice(v.category, "category", CATEGORY_OPTS);
+  out.accidentRepaired = normalizeStatus(v.accidentRepaired ?? v.accidentStatus, ACCIDENT_OPTS, "Nein");
+  out.trimline = normalizeChoice(v.trimline, "trimline", TRIMLINE_OPTS);
+  out.repairKind = normalizeChoice(v.repairKind, "repairKind", REPAIR_KIND_OPTS);
+  out.exterieur = normalizeChoice(v.exterieur, "exterieur", EXTERIEUR_OPTS);
+  out.interieur = normalizeChoice(v.interieur, "interieur", INTERIEUR_OPTS);
   out.fuel = normalizeChoice(v.fuel, "fuel", FUEL_OPTS);
   out.gearbox = normalizeChoice(v.gearbox, "gearbox", GEARBOX_OPTS);
-  out.drivetrain = normalizeChoice(v.drivetrain, "drivetrain", DRIVE_OPTS);
   out.sellerType = normalizeChoice(v.sellerType, "sellerType", SELLER_OPTS);
-  out.condition = normalizeChoice(v.condition, "condition", CONDITION_OPTS);
   out.color = normalizeChoice(v.color, "color", COLOR_OPTS);
   out.month = normalizeMonth(v.month);
   out.year = (String(v.year || "").match(/\d{4}/) || [""])[0];
   out.mileage = coerceNum(v.mileage);
-  out.repairCount = coerceNum(v.repairCount);
+  // Aus den vierzehn Aufwertungen wird gezählt, nicht bewertet.
+  out.equipment = Array.isArray(v.equipment)
+    ? [...new Set(v.equipment.map((e) => String(e).trim()).filter(Boolean))] : [];
+  out.ausstattung = ausstattungsStufe(out.equipment.length);
   out.priceHistory = normalizeHistory(v.priceHistory);
   if (!out.priceHistory.length && v.price != null) {
     const p = coerceNum(v.price);
     if (p != null) out.priceHistory = [{ date: v.date ? String(v.date).slice(0, 10) : todayISO(), price: p }];
   }
-  out.photoDamage = normalizeChoice(v.photoDamage, "photoDamage", PHOTO_DAMAGE_OPTS);
-  out.listingPrep = normalizeChoice(v.listingPrep, "listingPrep", LISTING_PREP_OPTS);
   out.showcase = normalizeChoice(v.showcase, "showcase", SHOWCASE_OPTS) || "Normal";
   // Bleibt leer, wenn nichts mitgeliefert wurde — daran erkennt der Import,
   // ob ein Abschluss gemeint ist oder nur ein Preis-Update.
@@ -912,23 +930,52 @@ async function serverWrite(key, vehicles, base) {
 
 // Gespeicherte Einträge auf das heutige Vokabular heben, egal woher sie stammen.
 function migrate(vehicles) {
+  // Übertragung der alten Merkmale auf die neuen. Die Zuordnung folgt der
+  // Bedeutung, nicht der Reihenfolge, und ist eine Annahme — die Einträge
+  // landen deshalb ungeprüft im Bereich "Offene Punkte".
+  const ALT_EXTERIEUR = {
+    "Keine": "Keine sichtbaren Schäden",
+    "Leicht zu übersehen": "Leichte Gebrauchsspuren",
+    "Bei genauem Hinsehen": "Leichte Schäden",
+    "Deutlich erkennbar": "Leichte Schäden an mehreren Stellen",
+  };
+  const ALT_INTERIEUR = {
+    "Aufbereitet": "Wie neu",
+    "Normale Gebrauchsspuren": "Durchgehend leicht abgenutzt",
+    "Nicht vorbereitet": "Deutliche Verbrauchsspuren",
+  };
+  const ALT_REPARATUR = {
+    "Keine": "Keine genannt", "Unbekannt": "Keine genannt",
+    "Gering": "Verschleißteile", "Mittel": "Kernfahrzeugteile", "Umfangreich": "Gesamte Prozessteile",
+  };
+
   Object.values(vehicles || {}).forEach((v) => {
-    // Früher stand hier "Unbekannt", wenn das Inserat nichts dazu sagte.
-    // Genau das heißt heute "Unfallfrei" beziehungsweise "Keine".
-    v.accidentStatus = normalizeStatus(v.accidentStatus, ACCIDENT_OPTS, "Unfallfrei");
-    v.currentIssueStatus = normalizeStatus(v.currentIssueStatus, ISSUE_OPTS, "Keine");
-    v.previousDamageStatus = normalizeStatus(v.previousDamageStatus, PREV_OPTS);
-    v.repairScope = normalizeStatus(v.repairScope, SCOPE_OPTS);
-    v.category = normalizeChoice(v.category, "category", CATEGORY_OPTS);
+    if (!v.exterieur && v.photoDamage) v.exterieur = ALT_EXTERIEUR[v.photoDamage] || "";
+    if (!v.interieur && v.listingPrep) v.interieur = ALT_INTERIEUR[v.listingPrep] || "";
+    if (!v.repairKind && v.repairScope) v.repairKind = ALT_REPARATUR[v.repairScope] || "";
+    if (!v.accidentRepaired) v.accidentRepaired = v.accidentStatus === "Unfallwagen" ? "Ja" : "Nein";
+    if (!v.repairNote) {
+      v.repairNote = [v.damageRepaired, v.damagePrevious, v.damageCurrent]
+        .map((t) => String(t || "").trim()).filter(Boolean).join(" · ");
+    }
+    delete v.photoDamage; delete v.listingPrep; delete v.repairScope;
+    delete v.accidentStatus; delete v.currentIssueStatus; delete v.previousDamageStatus;
+    delete v.damageCurrent; delete v.damagePrevious; delete v.damageRepaired;
+    delete v.category; delete v.condition; delete v.drivetrain;
+    delete v.power; delete v.displacement; delete v.stars; delete v.address; delete v.repairCount;
+
+    v.accidentRepaired = normalizeStatus(v.accidentRepaired, ACCIDENT_OPTS, "Nein");
+    v.trimline = normalizeChoice(v.trimline, "trimline", TRIMLINE_OPTS);
+    v.repairKind = normalizeChoice(v.repairKind, "repairKind", REPAIR_KIND_OPTS);
+    v.exterieur = normalizeChoice(v.exterieur, "exterieur", EXTERIEUR_OPTS);
+    v.interieur = normalizeChoice(v.interieur, "interieur", INTERIEUR_OPTS);
     v.fuel = normalizeChoice(v.fuel, "fuel", FUEL_OPTS);
     v.gearbox = normalizeChoice(v.gearbox, "gearbox", GEARBOX_OPTS);
-    v.drivetrain = normalizeChoice(v.drivetrain, "drivetrain", DRIVE_OPTS);
     v.sellerType = normalizeChoice(v.sellerType, "sellerType", SELLER_OPTS);
-    v.condition = normalizeChoice(v.condition, "condition", CONDITION_OPTS);
     v.color = normalizeChoice(v.color, "color", COLOR_OPTS);
     v.month = normalizeMonth(v.month);
-    v.photoDamage = normalizeChoice(v.photoDamage, "photoDamage", PHOTO_DAMAGE_OPTS);
-    v.listingPrep = normalizeChoice(v.listingPrep, "listingPrep", LISTING_PREP_OPTS);
+    v.equipment = Array.isArray(v.equipment) ? v.equipment : [];
+    v.ausstattung = ausstattungsStufe(v.equipment.length);
     v.showcase = normalizeChoice(v.showcase, "showcase", SHOWCASE_OPTS) || "Normal";
     v.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS) || "Aktiv";
     v.listedSince = v.listedSince || v.priceHistory?.[0]?.date || "";
@@ -999,7 +1046,7 @@ export default function App() {
   const setPriceMax = (v) => aendere("priceMax", v);
   const setKmMax = (v) => aendere("kmMax", v);
   const [moreFilters, setMoreFilters] = useState(false);
-  const [groupBy, setGroupBy] = useState("repairScope");
+  const [groupBy, setGroupBy] = useState("exterieur");
 
   /* ---- Speichern: lokal sofort, auf dem Server sobald möglich ---- */
   const baseRef = useRef(null);        // Stand, auf dem unsere Änderungen aufsetzen
@@ -1113,8 +1160,10 @@ export default function App() {
       // Aus einer Sicherung mitgelieferte Antworten zählen zuerst,
       // danach die des bereits erfassten Fahrzeugs.
       vorbelegt[v.id] = {
-        photoDamage: v.photoDamage || alt?.photoDamage || "",
-        listingPrep: v.listingPrep || alt?.listingPrep || "",
+        trimline: v.trimline || alt?.trimline || "",
+        exterieur: v.exterieur || alt?.exterieur || "",
+        interieur: v.interieur || alt?.interieur || "",
+        repairKind: v.repairKind || alt?.repairKind || (v.repairNote ? "" : "Keine genannt"),
         showcase: v.showcase === "Vorzeigefahrzeug" || alt?.showcase === "Vorzeigefahrzeug"
           ? "Vorzeigefahrzeug" : "Normal",
         url: v.url || alt?.url || "",
@@ -1141,7 +1190,7 @@ export default function App() {
     setAnswers((prev) => ({ ...prev, [id]: { ...prev[id], [feld]: wert } }));
   const alleBeantwortet = !preview || preview.every((v) => {
     const a = answers[v.id] || {};
-    return a.photoDamage && a.listingPrep && istLink(a.url);
+    return a.trimline && a.exterieur && a.interieur && a.repairKind && istLink(a.url);
   });
 
   function confirmImport() {
@@ -1156,7 +1205,7 @@ export default function App() {
         const merged = { ...existing };
         TEXT_FIELDS.forEach((k) => { if (incoming[k]) merged[k] = incoming[k]; });
         if (incoming.mileage != null) merged.mileage = incoming.mileage;
-        if (incoming.repairCount != null) merged.repairCount = incoming.repairCount;
+        if (incoming.equipment?.length) { merged.equipment = incoming.equipment; merged.ausstattung = incoming.ausstattung; }
         const byDate = {};
         existing.priceHistory.forEach((p) => { byDate[p.date] = p.price; });
         incoming.priceHistory.forEach((p) => { byDate[p.date] = p.price; });
@@ -1275,7 +1324,7 @@ export default function App() {
   const colorFor = (id) => { const i = chart.series.findIndex((s) => s.id === id); return COLORS[(i < 0 ? Object.keys(vehicles).indexOf(id) : i) % COLORS.length]; };
 
   /* ---- Analyse: Filter + Vergleich ---- */
-  const searchable = (v) => [v.title, v.subtitle, v.make, v.model, v.series, v.trimline, v.category, v.year, erstzulassung(v), v.fuel, v.gearbox, v.drivetrain, v.condition, v.color, v.location, v.sellerType, v.dealerName, v.note, v.damageCurrent, v.damagePrevious, v.damageRepaired].join(" ").toLowerCase();
+  const searchable = (v) => [v.title, v.subtitle, v.make, v.model, v.series, v.trimline, v.year, erstzulassung(v), v.fuel, v.gearbox, v.color, v.location, v.sellerType, v.dealerName, v.note, v.repairNote, ...(v.equipment || [])].join(" ").toLowerCase();
 
   const filtereMit = (a) => list.filter((v) => {
     if (a.q.trim() && !searchable(v).includes(a.q.trim().toLowerCase())) return false;
@@ -1452,7 +1501,7 @@ export default function App() {
         preis: lastPrice(v), km: v.mileage, alter: alterJahre(v),
         zustand: z.punkte, abzuege: z.abzuege, bonus: z.bonus,
         stern: v.showcase === "Vorzeigefahrzeug", url: v.url,
-        ez: erstzulassung(v), ort: v.location, rep: v.repairScope, fotos: v.photoDamage,
+        ez: erstzulassung(v), ort: v.location, rep: v.repairKind, fotos: v.exterieur,
       };
     }).filter((p) => p.preis != null && p.km != null);
     if (roh.length < 6) return { zuWenig: true, anzahl: roh.length };
@@ -1514,7 +1563,7 @@ export default function App() {
     filtered.map((v) => ({
       preis: lastPrice(v), km: v.mileage, id: v.id, title: v.title || v.id,
       marke: [v.make, v.model].filter(Boolean).join(" "), url: v.url,
-      ez: erstzulassung(v), rep: v.repairScope, fotos: v.photoDamage,
+      ez: erstzulassung(v), rep: v.repairKind, fotos: v.exterieur,
       stern: v.showcase === "Vorzeigefahrzeug",
     })).filter((p) => p.preis != null && p.km != null)
   ), [filtered]);
@@ -1528,8 +1577,8 @@ export default function App() {
     const basis = filtered
       .map((v) => ({
         v, id: v.id, title: v.title || v.id, preis: lastPrice(v), km: v.mileage,
-        stern: v.showcase === "Vorzeigefahrzeug", url: v.url, rep: v.repairScope,
-        fotos: v.photoDamage, ez: erstzulassung(v), marke: [v.make, v.model].filter(Boolean).join(" "),
+        stern: v.showcase === "Vorzeigefahrzeug", url: v.url, rep: v.repairKind,
+        fotos: v.exterieur, ez: erstzulassung(v), marke: [v.make, v.model].filter(Boolean).join(" "),
         ort: v.location, anbieter: v.dealerName || v.sellerType, stand: v.listingStatus || "Aktiv",
       }))
       .filter((p) => p.preis != null && p.km != null);
@@ -1586,7 +1635,7 @@ export default function App() {
   /* ---- Erwarteter Preis: Regression über Kilometer und Alter ---- */
   const fairValue = useMemo(() => {
     const basis = filtered
-      .map((v) => ({ v, id: v.id, title: v.title || v.id, preis: lastPrice(v), km: v.mileage, alter: alterJahre(v), url: v.url, rep: v.repairScope }))
+      .map((v) => ({ v, id: v.id, title: v.title || v.id, preis: lastPrice(v), km: v.mileage, alter: alterJahre(v), url: v.url, rep: v.repairKind }))
       .filter((p) => p.preis != null && p.km != null && p.alter != null);
     if (basis.length < 5) return { zuWenig: true, anzahl: basis.length };
 
@@ -1626,7 +1675,7 @@ export default function App() {
         id: v.id, title: v.title || v.id, preis: lastPrice(v),
         marke: [v.make, v.model].filter(Boolean).join(" "),
         ez: erstzulassung(v), km: v.mileage, ort: v.location,
-        rep: v.repairScope, fotos: v.photoDamage, anbieter: v.dealerName || v.sellerType,
+        rep: v.repairKind, fotos: v.exterieur, anbieter: v.dealerName || v.sellerType,
         stand: v.listingStatus || "Aktiv", url: v.url,
       }))
       .filter((p) => p.preis != null);
@@ -1867,7 +1916,7 @@ export default function App() {
                 <div style={S.previewRow}>
                   <span style={S.previewTitle}>{v.title || "(ohne Titel)"}</span>
                   <span style={S.previewMeta}>
-                    {[erstzulassung(v), v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.repairScope ? `Rep. ${v.repairScope}` : null,
+                    {[erstzulassung(v), v.mileage != null ? `${fmtNum(v.mileage)} km` : null, v.trimline || null,
                       v.priceHistory.length ? fmtEUR(v.priceHistory[v.priceHistory.length - 1].price) : "kein Preis"].filter(Boolean).join(" · ")}
                     {vehicles[v.id] && <span style={S.updTag}> aktualisiert</span>}
                   </span>
@@ -1886,10 +1935,14 @@ export default function App() {
                     </button>
                     <div style={S.askHilfe}>{SHOWCASE_HILFE}</div>
                   </div>
-                  <ChoiceQuestion frage={PHOTO_DAMAGE_FRAGE} options={PHOTO_DAMAGE_OPTS} hilfe={PHOTO_DAMAGE_HILFE}
-                    value={answers[v.id]?.photoDamage || ""} onChange={(w) => setAnswer(v.id, "photoDamage", w)} />
-                  <ChoiceQuestion frage={LISTING_PREP_FRAGE} options={LISTING_PREP_OPTS} hilfe={LISTING_PREP_HILFE}
-                    value={answers[v.id]?.listingPrep || ""} onChange={(w) => setAnswer(v.id, "listingPrep", w)} />
+                  <ChoiceQuestion frage={TRIMLINE_FRAGE} options={TRIMLINE_OPTS} hilfe={TRIMLINE_HILFE}
+                    value={answers[v.id]?.trimline || ""} onChange={(w) => setAnswer(v.id, "trimline", w)} />
+                  <ChoiceQuestion frage={EXTERIEUR_FRAGE} options={EXTERIEUR_OPTS} hilfe={EXTERIEUR_HILFE}
+                    value={answers[v.id]?.exterieur || ""} onChange={(w) => setAnswer(v.id, "exterieur", w)} />
+                  <ChoiceQuestion frage={INTERIEUR_FRAGE} options={INTERIEUR_OPTS} hilfe={INTERIEUR_HILFE}
+                    value={answers[v.id]?.interieur || ""} onChange={(w) => setAnswer(v.id, "interieur", w)} />
+                  <ChoiceQuestion frage={REPAIR_KIND_FRAGE} options={REPAIR_KIND_OPTS} hilfe={REPAIR_KIND_HILFE}
+                    value={answers[v.id]?.repairKind || ""} onChange={(w) => setAnswer(v.id, "repairKind", w)} />
                   <div style={S.askItem}>
                     <div style={S.askFrage}>Link zum Inserat</div>
                     <input value={answers[v.id]?.url || ""} onChange={(e) => setAnswer(v.id, "url", e.target.value)}
@@ -1908,7 +1961,7 @@ export default function App() {
             <div style={S.row}>
               <button style={S.primaryBtn} onClick={confirmImport} disabled={!alleBeantwortet}><Check size={16} /> Importieren</button>
               <button style={S.ghostBtn} onClick={() => setPreview(null)}><X size={15} /> Abbrechen</button>
-              {!alleBeantwortet && <span style={S.askHint}>Beide Fragen beantworten und den Link einfügen, dann geht es weiter.</span>}
+              {!alleBeantwortet && <span style={S.askHint}>Alle vier Fragen beantworten und den Link einfügen, dann geht es weiter.</span>}
             </div>
           </div>
         )}
@@ -2012,10 +2065,12 @@ export default function App() {
 
         <div style={S.mfListe}>
           {[["showcase", "Vorzeigefahrzeug", SHOWCASE_OPTS],
-            ["photoDamage", "Schäden auf Fotos", PHOTO_DAMAGE_OPTS],
-            ["repairScope", "Reparatur-Umfang", SCOPE_OPTS],
-            ["currentIssueStatus", "Aktuelle Mängel", ISSUE_OPTS],
-            ["accidentStatus", "Unfallstatus", ACCIDENT_OPTS],
+            ["trimline", "Ausstattungslinie", TRIMLINE_OPTS],
+            ["ausstattung", "Sonderausstattung", AUSSTATTUNG_OPTS],
+            ["exterieur", "Exterieur", EXTERIEUR_OPTS],
+            ["interieur", "Interieur", INTERIEUR_OPTS],
+            ["repairKind", "Reparaturen", REPAIR_KIND_OPTS],
+            ["accidentRepaired", "Unfallschaden", ACCIDENT_OPTS],
             ["make", "Marke", distinct("make")],
             ["year", "Baujahr", distinct("year")]].map(([f, label, opts]) => (
               opts.length ? (
@@ -2034,7 +2089,7 @@ export default function App() {
         </button>
         {moreFilters && (
           <div style={S.mfListe}>
-            {FILTER_FIELDS.filter(([f]) => !["showcase", "photoDamage", "repairScope", "currentIssueStatus", "accidentStatus", "make", "year"].includes(f)).map(([f, label]) => {
+            {FILTER_FIELDS.filter(([f]) => !["showcase", "trimline", "ausstattung", "exterieur", "interieur", "repairKind", "accidentRepaired", "year"].includes(f)).map(([f, label]) => {
               const vorhanden = distinct(f);
               const opts = FIXED_OPTS[f] ? FIXED_OPTS[f].filter((o) => vorhanden.includes(o)) : vorhanden;
               if (!opts.length) return null;
@@ -2092,8 +2147,8 @@ export default function App() {
               <div key={v.id} style={S.resultRow}>
                 <span style={S.resultTitle}>{v.title}</span>
                 <span style={S.resultTags}>
-                  {v.repairScope && <em style={{ ...S.miniTag, color: tagColor("repairScope", v.repairScope) }}>Rep. {v.repairScope}</em>}
-                  {v.currentIssueStatus && <em style={{ ...S.miniTag, color: tagColor("currentIssueStatus", v.currentIssueStatus) }}>Mängel {v.currentIssueStatus}</em>}
+                  {v.trimline && <em style={{ ...S.miniTag, color: tagColor("trimline", v.trimline) }}>{v.trimline}</em>}
+                  {v.exterieur && <em style={{ ...S.miniTag, color: tagColor("exterieur", v.exterieur) }}>{v.exterieur}</em>}
                   <em style={S.resultPrice}>{fmtEUR(lastPrice(v))}</em>
                 </span>
               </div>
@@ -2458,7 +2513,7 @@ export default function App() {
               </ResponsiveContainer>
             </div>
             <div style={S.repLegende}>
-              {SCOPE_OPTS.map((s) => (
+              {REPAIR_KIND_OPTS.map((s) => (
                 <span key={s} style={S.repLegendeEintrag}>
                   <span style={{ ...S.repPunkt, background: repFarbe(s) }} />{s}
                 </span>
@@ -3141,7 +3196,7 @@ export default function App() {
                 </div>
                 <div className="pw-dirhead" style={S.listHeadLabels}>
                   {[["title", "Fahrzeug"], ["preis", "Preis"], ["delta", "Veränderung"], ["mileage", "Kilometer"],
-                    ["ez", "Erstzul."], ["location", "Ort"], ["repairScope", "Reparatur"]].map(([f, label]) => (
+                    ["ez", "Erstzul."], ["location", "Ort"], ["repairKind", "Reparaturen"]].map(([f, label]) => (
                     <button key={f} onClick={() => sortiereNach(f)}
                       style={{ ...S.sortKopf, color: sortFeld === f ? T.accent : T.muted }}
                       title={`Nach ${SORT_FELDER[f].label} sortieren`}>
@@ -3169,7 +3224,7 @@ export default function App() {
       )}
 
       <footer style={S.footer}>
-        Die Daten aus dem Inserat liefert die KI, die Beurteilung der Fotos machst du selbst.
+        Die Daten aus dem Inserat liefert die KI, die Beurteilung von Exterieur, Interieur und Reparaturen machst du selbst.
         Alles bleibt lokal in diesem Browser. Mit „Exportieren" im Verzeichnis sicherst du den Bestand
         als JSON-Datei — zum Wiederherstellen den Dateiinhalt einfach ins Import-Feld einfügen.
       </footer>
@@ -3211,7 +3266,7 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
           <Metric label="Kilometer" value={v.mileage != null ? `${fmtNum(v.mileage)} km` : "—"} />
           <Metric label="Erstzul." value={erstzulassung(v) || "—"} />
           <Metric label="Ort" value={v.location || "—"} />
-          <Metric label="Reparatur" value={v.repairScope || "—"} color={tagColor("repairScope", v.repairScope)} />
+          <Metric label="Reparaturen" value={v.repairKind || "—"} color={tagColor("repairKind", v.repairKind)} />
         </span>
         <button style={v.showcase === "Vorzeigefahrzeug" ? S.sternIconAn : S.iconBtn}
           title={v.showcase === "Vorzeigefahrzeug" ? "Vorzeigefahrzeug — zum Aufheben klicken" : "Als Vorzeigefahrzeug markieren"}
@@ -3234,12 +3289,12 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
         {/* Analyse-Begriffe */}
         <div style={S.tagRow}>
           {v.showcase === "Vorzeigefahrzeug" && <StatusTag field="showcase" value="Vorzeigefahrzeug" icon={<Star size={11} />} />}
-          {v.photoDamage && <StatusTag field="photoDamage" value={`Fotos: ${v.photoDamage}`} raw={v.photoDamage} icon={<Camera size={11} />} />}
-          {v.listingPrep && <StatusTag field="listingPrep" value={v.listingPrep} raw={v.listingPrep} />}
-          {v.accidentStatus && <StatusTag field="accidentStatus" value={v.accidentStatus} icon={<ShieldCheck size={11} />} />}
-          {v.currentIssueStatus && <StatusTag field="currentIssueStatus" value={`Mängel: ${v.currentIssueStatus}`} raw={v.currentIssueStatus} />}
-          {v.repairScope && <StatusTag field="repairScope" value={`Rep.: ${v.repairScope}${v.repairCount != null ? ` (${v.repairCount})` : ""}`} raw={v.repairScope} icon={<Wrench size={11} />} />}
-          {v.previousDamageStatus && <StatusTag field="previousDamageStatus" value={`Vorschäden: ${v.previousDamageStatus}`} raw={v.previousDamageStatus} />}
+          {v.trimline && <StatusTag field="trimline" value={v.trimline} raw={v.trimline} />}
+          {v.ausstattung && <StatusTag field="ausstattung" value={v.ausstattung} raw={v.ausstattung} />}
+          {v.exterieur && <StatusTag field="exterieur" value={`Außen: ${v.exterieur}`} raw={v.exterieur} icon={<Camera size={11} />} />}
+          {v.interieur && <StatusTag field="interieur" value={`Innen: ${v.interieur}`} raw={v.interieur} />}
+          {v.repairKind && <StatusTag field="repairKind" value={`Rep.: ${v.repairKind}`} raw={v.repairKind} icon={<Wrench size={11} />} />}
+          {v.accidentRepaired === "Ja" && <StatusTag field="accidentRepaired" value="Unfallschaden repariert" raw="Ja" icon={<ShieldCheck size={11} />} />}
         </div>
 
         {chips.length > 0 && <div style={S.metaRow}>{chips.map((c, i) => <span key={i} style={S.chip}>{c}</span>)}</div>}
@@ -3259,9 +3314,7 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
         </div>
 
         <div style={S.damageBox}>
-          <DamageLine label="Aktuell" value={v.damageCurrent} bad />
-          <DamageLine label="Früher" value={v.damagePrevious} />
-          <DamageLine label="Repariert" value={v.damageRepaired} good icon />
+          <DamageLine label="Reparaturen laut Inserat" value={v.repairNote} good icon />
         </div>
 
         {v.note && <div style={S.note}>{v.note}</div>}
@@ -3412,22 +3465,31 @@ function DublettenWarnung({ neu, treffer }) {
   );
 }
 
-// Steht im Inserat etwas über Schäden, wird es hier vor der Fotofrage
-// wiederholt — damit man weiß, wonach man auf den Bildern suchen soll.
+// Was das Inserat über bereits erfolgte Reparaturen und über die
+// Ausstattung sagt, im Wortlaut vor den Fragen — damit du einordnen kannst,
+// ohne zurück ins Inserat zu springen.
 function FotoHinweis({ v }) {
   const S = styles;
-  const { texte, flaggen, hat } = fotoHinweise(v);
-  if (!hat) return null;
+  const rep = String(v.repairNote || "").trim();
+  const teile = Array.isArray(v.equipment) ? v.equipment : [];
+  const unfall = v.accidentRepaired === "Ja";
+  if (!rep && !teile.length && !unfall) return null;
   return (
     <div style={S.fotoBox}>
-      <div style={S.fotoTitel}><Camera size={13} /> Das Inserat spricht von Schäden — gezielt hinschauen</div>
-      {flaggen.length > 0 && <div style={S.fotoFlaggen}>{flaggen.join(" · ")}</div>}
-      {texte.map(([label, wert]) => (
-        <div key={label} style={S.fotoZeile}>
-          <span style={S.fotoLabel}>{label}</span>
-          <span style={S.fotoText}>{wert}</span>
+      <div style={S.fotoTitel}><Wrench size={13} /> Was im Inserat steht</div>
+      {unfall && <div style={{ ...S.fotoFlaggen, color: T.bad }}>Reparierter Unfallschaden ausdrücklich angegeben</div>}
+      {rep && (
+        <div style={S.fotoZeile}>
+          <span style={S.fotoLabel}>Bereits erfolgte Reparaturen</span>
+          <span style={S.fotoText}>{rep}</span>
         </div>
-      ))}
+      )}
+      {teile.length > 0 && (
+        <div style={S.fotoZeile}>
+          <span style={S.fotoLabel}>Aufwertende Ausstattung · {teile.length}</span>
+          <span style={S.fotoText}>{teile.join(" · ")}</span>
+        </div>
+      )}
     </div>
   );
 }
@@ -3479,10 +3541,10 @@ function MehrfachFilter({ label, options, werte, zahlen, farbe, onToggle, onClea
 // Farbe der Punkte nach Reparatur-Umfang — bewusst deutlicher als die
 // zurückhaltenden Kennzeichnungen auf der Fahrzeugkarte.
 function repFarbe(rep) {
-  if (rep === "Keine") return T.good;
-  if (rep === "Gering") return "#A3E635";
-  if (rep === "Mittel") return T.accent;
-  if (rep === "Umfangreich") return T.bad;
+  if (rep === "Keine genannt") return T.good;
+  if (rep === "Verschleißteile") return "#A3E635";
+  if (rep === "Kernfahrzeugteile") return T.accent;
+  if (rep === "Gesamte Prozessteile") return T.bad;
   return T.muted;
 }
 
