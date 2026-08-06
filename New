@@ -1032,6 +1032,7 @@ export default function App() {
   const [glaettung, setGlaettung] = useState(0);   // Fenster in Tagen, 0 = aus
   const [einheit, setEinheit] = useState("euro");  // "euro" oder "prozent"
   const [zeitfenster, setZeitfenster] = useState(0); // Tage, 0 = alles
+  const [nullpunkt, setNullpunkt] = useState("inserat"); // "inserat" oder "erfassung"
   const [reiheSort, setReiheSort] = useState("preis"); // Reihenfolge der Preisleiter
   const [ankerKm, setAnkerKm] = useState("");          // Kilometerstand für den Sternrechner
   const [formelKm, setFormelKm] = useState("");        // Kilometerstand für den Preisrechner
@@ -1365,15 +1366,21 @@ export default function App() {
     fahrzeuge.forEach((v) => {
       const h = (v.priceHistory || []).slice().sort((a, b) => a.date.localeCompare(b.date));
       if (!h.length) return;
-      const start = inseriertSeit(v) || h[0].date;
+      // Tag 0 ist entweder der Tag, an dem der Verkäufer inseriert hat, oder
+      // der Tag, an dem du das Fahrzeug erstmals erfasst hast. Ersteres zeigt
+      // die echte Standzeit, letzteres vergleicht die Verläufe unabhängig
+      // davon, wie lange ein Inserat vor deiner Erfassung schon lief.
+      const start = (nullpunkt === "inserat" ? inseriertSeit(v) : "") || h[0].date;
       const startPreis = h[0].price;
       if (!startPreis) return;
       const punkte = h.map((p) => ({ tag: Math.max(0, tageZwischen(start, p.date) ?? 0), price: p.price }));
+      // Ab welchem Tag der Standzeit liegt überhaupt eine Beobachtung vor?
+      const abTag = punkte[0].tag;
       // Bis wann ist das Inserat beobachtet? Danach endet die Linie.
       const geschlossen = v.listingStatus && v.listingStatus !== "Aktiv" && v.closedDate;
       const ende = Math.max(tageZwischen(start, geschlossen ? v.closedDate : todayISO()) ?? 0,
         punkte[punkte.length - 1].tag);
-      reihen.push({ id: v.id, title: v.title || v.id, punkte, startPreis, ende });
+      reihen.push({ id: v.id, title: v.title || v.id, punkte, startPreis, ende, abTag });
     });
     if (!reihen.length) return null;
 
@@ -1406,9 +1413,13 @@ export default function App() {
       return { label: f.label, anzahl: bisSenkung.filter((t) => t >= von && t <= f.bis).length };
     });
 
+    const abTage = reihen.map((r) => r.abTag);
     return {
       reihen, maxTag, wertBei,
       anzahl: reihen.length,
+      medianAbTag: median(abTage),
+      maxAbTag: Math.max(...abTage),
+      blindAnzahl: abTage.filter((t) => t > 0).length,
       beobachtet: reihen.filter((r) => r.punkte.length > 1).length,
       mitSenkung,
       medianTage: median(bisSenkung),
@@ -1419,8 +1430,8 @@ export default function App() {
     };
   };
 
-  const verlauf0 = useMemo(() => bauVerlauf(trefferA), [trefferA]);
-  const verlauf1 = useMemo(() => bauVerlauf(trefferB), [trefferB]);
+  const verlauf0 = useMemo(() => bauVerlauf(trefferA), [trefferA, nullpunkt]);
+  const verlauf1 = useMemo(() => bauVerlauf(trefferB), [trefferB, nullpunkt]);
   const primaer = aktiv === 1 ? verlauf1 : verlauf0;
   const sekundaer = vergleich ? (aktiv === 1 ? verlauf0 : verlauf1) : null;
   const abInserat = primaer;
@@ -1449,6 +1460,14 @@ export default function App() {
       saetze.forEach(([name, v]) => {
         const werte = v.reihen.map((r) => zeige(r, v.wertBei(r, tag))).filter((w) => w != null);
         if (!werte.length) return;
+        // Beim Inseratsanker treten die Fahrzeuge zu verschiedenen Tagen in die
+        // Beobachtung ein. Ein Durchschnitt über eine wechselnde Teilmenge
+        // steigt und fällt ohne jede Preisänderung — deshalb nur zeichnen,
+        // solange noch keines herausgefallen ist.
+        if (nullpunkt === "inserat") {
+          const moeglich = v.reihen.filter((r) => tag >= r.abTag && tag <= r.ende).length;
+          if (werte.length < moeglich || werte.length < 2) return;
+        }
         const m = mittel(werte);
         // Streuung über die Inserate: wie weit liegen sie an diesem Tag auseinander
         const sd = werte.length > 1 ? Math.sqrt(mittel(werte.map((w) => (w - m) ** 2))) : 0;
@@ -1486,7 +1505,7 @@ export default function App() {
       Object.keys(out).forEach((k) => { if (!/^(tag|schnitt|band|sd|n)[PS]?$/.test(k)) out[k] = r1(out[k]); });
       return out;
     });
-  }, [primaer, sekundaer, glaettung, einheit, zeitfenster]);
+  }, [primaer, sekundaer, glaettung, einheit, zeitfenster, nullpunkt]);
 
   /* ---- Masterchart: Zustand gegen Preisvorteil ----
      Zwei Fragen in einem Bild. Erstens: wie gut ist das Auto gemessen an
@@ -1675,7 +1694,8 @@ export default function App() {
         id: v.id, title: v.title || v.id, preis: lastPrice(v),
         marke: [v.make, v.model].filter(Boolean).join(" "),
         ez: erstzulassung(v), km: v.mileage, ort: v.location,
-        rep: v.repairKind, fotos: v.exterieur, anbieter: v.dealerName || v.sellerType,
+        rep: v.repairKind, fotos: v.exterieur, innen: v.interieur, linie: v.trimline,
+        extras: v.ausstattung, anbieter: v.dealerName || v.sellerType,
         stand: v.listingStatus || "Aktiv", url: v.url,
       }))
       .filter((p) => p.preis != null);
@@ -2161,16 +2181,30 @@ export default function App() {
       <section style={S.panel}>
         <div style={S.panelTitle}><TrendingDown size={15} /> Preisentwicklung ab Inserat</div>
         <p style={S.hint}>
-          Senkrecht der Fahrzeugpreis, waagerecht die Tage seit dem Inserat. <b style={{ color: T.text }}>Jedes Auto beginnt
-          links bei Tag 0</b> — unabhängig davon, wann es tatsächlich online ging. Ein zwei Tage altes Inserat ergibt
-          eine kurze Linie, ein drei Monate altes eine lange; alle liegen übereinander und lassen sich so vergleichen.
+          Senkrecht der Fahrzeugpreis, waagerecht die Tage seit Tag 0.
+          {nullpunkt === "inserat"
+            ? <> <b style={{ color: T.text }}>Tag 0 ist der Tag, an dem der Verkäufer inseriert hat</b> — die Linie
+              beginnt dort, wo deine erste Erfassung liegt. Ein Inserat, das schon vier Wochen lief, als du es
+              aufgenommen hast, startet also bei Tag 28. So siehst du die echte Standzeit.</>
+            : <> <b style={{ color: T.text }}>Tag 0 ist deine erste Erfassung</b> — jedes Auto beginnt links bei null,
+              unabhängig davon, wie lange das Inserat vorher schon lief. So lassen sich die Verläufe direkt
+              übereinanderlegen.</>}
           {sekundaer
             ? <> Eingeblendet ist zusätzlich <b style={{ color: AUSWAHL_FARBE[andere] }}>{AUSWAHL_NAME[andere]}</b> mit {(andere === 0 ? trefferA : trefferB).length} Fahrzeugen.</>
             : <> Diese Auswahl umfasst <b style={{ color: AUSWAHL_FARBE[aktiv] }}>{filtered.length}</b> von {list.length} Fahrzeugen.</>}
         </p>
         <div style={S.steuerung}>
           <span style={S.steuerBlock}>
-            <span style={S.fieldLabel}>Zeitraum ab Inserat</span>
+            <span style={S.fieldLabel}>Tag 0 ist</span>
+            <span style={S.toggleGroup}>
+              <button onClick={() => setNullpunkt("inserat")} style={nullpunkt === "inserat" ? S.toggleOn : S.toggleOff}
+                title="Der Tag, an dem der Verkäufer inseriert hat — zeigt die echte Standzeit">das Inserat</button>
+              <button onClick={() => setNullpunkt("erfassung")} style={nullpunkt === "erfassung" ? S.toggleOn : S.toggleOff}
+                title="Der Tag deiner ersten Erfassung — legt alle Verläufe übereinander">meine Erfassung</button>
+            </span>
+          </span>
+          <span style={S.steuerBlock}>
+            <span style={S.fieldLabel}>Zeitraum</span>
             <span style={S.toggleGroup}>
               {[[14, "14 Tage"], [30, "30 Tage"], [60, "60 Tage"], [90, "90 Tage"], [0, "alles"]].map(([t, label]) => (
                 <button key={t} onClick={() => setZeitfenster(t)} style={zeitfenster === t ? S.toggleOn : S.toggleOff}
@@ -2260,10 +2294,25 @@ export default function App() {
             <div style={S.legendHint}>
               {sekundaer
                 ? <>Durchgezogen: {AUSWAHL_NAME[aktiv]} · gestrichelt: {AUSWAHL_NAME[andere]} · getönte Flächen: Streuung</>
-                : <>Je Inserat eine Linie von Tag 0 bis heute · dicke Linie: Durchschnitt · getönte Fläche: Streuung</>}
+                : nullpunkt === "inserat"
+                  ? <>Je Inserat eine Linie ab dem Tag, an dem du es erstmals erfasst hast · Durchschnitt und Streuung
+                    nur für Tage mit vollständiger Beobachtung</>
+                  : <>Je Inserat eine Linie von Tag 0 bis heute · dicke Linie: Durchschnitt · getönte Fläche: Streuung</>}
               {glaettung > 0 && <> · geglättet über {glaettung} Tage</>}
               {zeitfenster > 0 && <> · Ausschnitt bis Tag {zeitfenster}</>}
             </div>
+
+            {nullpunkt === "inserat" && abInserat.blindAnzahl > 0 && (
+              <div style={S.hinweisKlein}>
+                <b style={{ color: T.accent }}>Was du vor deiner Erfassung nicht sehen kannst:</b>{" "}
+                {abInserat.blindAnzahl} von {abInserat.anzahl} Inseraten liefen schon, bevor du sie aufgenommen hast —
+                im Mittel <b style={{ color: T.text }}>{abInserat.medianAbTag} Tage</b>, im Höchstfall {abInserat.maxAbTag}.
+                Ob der Verkäufer in dieser Zeit schon gesenkt hat, weißt du nicht; die Linie beginnt deshalb erst bei
+                deiner ersten Beobachtung. Die Kennzahlen unten sind dadurch <b style={{ color: T.text }}>eher zu
+                spät als zu früh</b> — sie messen die erste Senkung, <i>die du gesehen hast</i>.
+                Für den reinen Verlaufsvergleich stell Tag 0 oben auf „meine Erfassung".
+              </div>
+            )}
 
             {sekundaer && (
               <div style={S.abTable}>
@@ -2343,8 +2392,15 @@ export default function App() {
               </>
             )}
             <div style={S.hinweisKlein}>
-              Tag 0 ist der erste Preis, den du erfasst hast — nicht zwingend der echte Inseratsbeginn.
-              Und die Kurve ist nur so genau wie deine Preis-Updates: Trägst du wöchentlich nach, liegt die
+              {nullpunkt === "inserat"
+                ? <>Tag 0 kommt aus dem Feld „inseriert seit". Liefert das Inserat kein Datum, nimmt die App
+                  ersatzweise deine erste Erfassung — dieses Fahrzeug startet dann bei Tag 0, obwohl es
+                  vielleicht länger lief. Durchschnitt und Streuung werden nur für Tage gezeichnet, an denen
+                  alle Fahrzeuge der Auswahl gleichzeitig beobachtet sind; sonst würde eine wechselnde
+                  Teilmenge den Schnitt bewegen, ohne dass ein Verkäufer etwas geändert hat.</>
+                : <>Tag 0 ist der erste Preis, den du erfasst hast — nicht der Inseratsbeginn.
+                  Für die echte Standzeit stell oben auf „das Inserat".</>}
+              {" "}Die Kurve ist nur so genau wie deine Preis-Updates: Trägst du wöchentlich nach, liegt die
               Auflösung bei einer Woche.
               {einheit === "euro" && (
                 <> Zur Durchschnittslinie in Euro: Sie kann steigen, ohne dass ein Verkäufer den Preis erhöht hat —
@@ -2482,7 +2538,7 @@ export default function App() {
         <p style={S.hint}>
           Jedes Fahrzeug ein Punkt, der Reihe nach nebeneinander — so siehst du jeden Einzelpreis
           und erkennst Ausreißer sofort. Zeig auf einen Punkt, dann erscheint die Karteikarte;
-          ein Klick öffnet das Inserat. Die Farbe zeigt den Reparatur-Umfang.
+          ein Klick öffnet das Inserat. Die Farbe zeigt, was schon repariert wurde.
         </p>
         {!preisReihe ? (
           <div style={S.emptySmall}>Für die aktuelle Auswahl gibt es keine Preise.</div>
@@ -2959,7 +3015,8 @@ export default function App() {
         </div>
         <p style={S.hint}>
           Zwei Fragen in einem Bild. <b style={{ color: T.text }}>Waagerecht der Zustand</b> — aus allem,
-          was du erfasst hast: Fotos, Aufbereitung, Unfall, Mängel, Vorschäden, Reparaturbedarf, Stern.
+          was du erfasst hast: Exterieur, Interieur, erfolgte Reparaturen, Unfallschaden,
+          Sonderausstattung und der Stern.
           <b style={{ color: T.text }}> Senkrecht der Preisvorteil</b> — wie weit das Auto unter dem liegt,
           was es bei diesem Zustand, dieser Laufleistung und diesem Alter kosten müsste.
           Interessant ist nur, wer <b style={{ color: T.accent }}>rechts oben</b> steht: gut und trotzdem billig.
@@ -3069,9 +3126,9 @@ export default function App() {
             </div>
 
             <div style={S.hinweisKlein}>
-              Die Zustandspunkte starten bei 100 und werden abgezogen: Fotos bis −25, Reparaturbedarf bis −28,
-              Unfallwagen −20, aktuelle Mängel −18, Vorschäden bis −10, fehlende Aufbereitung bis −12; ein Stern
-              gibt +{STERN_BONUS}. Was du nicht beantwortet hast, kostet nichts — dann ist die Bewertung aber auch
+              Die Zustandspunkte starten bei 100 und werden abgezogen: Exterieur bis −24, Reparaturen bis −26,
+              Interieur bis −20, Unfallschaden −18; die Sonderausstattung gibt +5 beziehungsweise +10,
+              ein Stern +{STERN_BONUS}. Was du nicht beantwortet hast, kostet nichts — dann ist die Bewertung aber auch
               nur so gut wie deine Erfassung. Der erwartete Preis kommt aus deinen eigenen Fahrzeugen dieser
               Gruppe, nicht aus einer Tabelle; Ausstattung und Wartungshistorie stecken nicht darin.
             </div>
@@ -3540,7 +3597,7 @@ function MehrfachFilter({ label, options, werte, zahlen, farbe, onToggle, onClea
   );
 }
 
-// Farbe der Punkte nach Reparatur-Umfang — bewusst deutlicher als die
+// Farbe der Punkte nach der Art der erfolgten Reparaturen — bewusst deutlicher als die
 // zurückhaltenden Kennzeichnungen auf der Fahrzeugkarte.
 function repFarbe(rep) {
   if (rep === "Keine genannt") return T.good;
@@ -3566,13 +3623,16 @@ function Karteikarte({ p }) {
     ["Kilometer", p.km != null ? `${fmtNum(p.km)} km` : ""],
     ["Ort", p.ort],
     ["Anbieter", p.anbieter],
-    ["Fotos", p.fotos],
+    ["Linie", p.linie],
+    ["Exterieur", p.fotos],
+    ["Interieur", p.innen],
+    ["Ausstattung", p.extras],
   ].filter(([, w]) => w);
   return (
     <div style={S.karte}>
       <div style={S.karteKopf}>
         <span style={S.karteNr}>#{p.nr}</span>
-        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparatur unbekannt"}</span>
+        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparaturen offen"}</span>
       </div>
       <div style={S.karteTitel}>{p.title}</div>
       {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
@@ -3603,7 +3663,7 @@ function Formelkarte({ p }) {
     <div style={S.karte}>
       <div style={S.karteKopf}>
         {p.stern && <Star size={11} fill={T.accent} color={T.accent} />}
-        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparatur unbekannt"}</span>
+        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparaturen offen"}</span>
       </div>
       <div style={S.karteTitel}>{p.title}</div>
       {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
@@ -3712,7 +3772,7 @@ function Erwartungskarte({ p }) {
     <div style={S.karte}>
       <div style={S.karteKopf}>
         <span style={S.karteNr}>#{p.nr}</span>
-        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparatur unbekannt"}</span>
+        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparaturen offen"}</span>
       </div>
       <div style={S.karteTitel}>{p.title}</div>
       <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
