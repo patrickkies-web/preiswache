@@ -454,8 +454,39 @@ function preisformel(punkte) {
   const proZehntausend = vorhersage(mkm + 10000) - vorhersage(mkm);
   const prozent = vorhersage(mkm) ? (proZehntausend / vorhersage(mkm)) * 100 : 0;
 
+  /* Drei Stützstellen zum Nachrechnen ohne Formel: die Fahrzeuge nach
+     Laufleistung in drei gleich große Gruppen teilen und je Gruppe den
+     Durchschnitt von Kilometern und Preis bilden. Zwischen den Punkten
+     lässt sich direkt ablesen, ob der Kilometer am Anfang mehr kostet als
+     am Ende. Geteilt wird ausdrücklich nach Laufleistung und nicht nach
+     Preisnähe — sonst wählt man die Punkte danach aus, was man messen
+     will, und bekommt das Ergebnis heraus, das man hineingesteckt hat. */
+  const sortiert = punkte.slice().sort((a, b) => a.km - b.km);
+  const grenze = Math.floor(sortiert.length / 3);
+  const rest = sortiert.length % 3;
+  const groessen = [grenze + (rest > 0 ? 1 : 0), grenze + (rest > 1 ? 1 : 0), grenze];
+  let ab = 0;
+  const stuetzstellen = ["unteres", "mittleres", "oberes"].map((name, i) => {
+    const teil = sortiert.slice(ab, ab + groessen[i]);
+    ab += groessen[i];
+    return {
+      name, n: teil.length,
+      km: Math.round(mittel(teil.map((p) => p.km))),
+      preis: Math.round(mittel(teil.map((p) => p.preis))),
+    };
+  });
+  const zwischen = (a, b) => (b.km === a.km ? null : Math.round(((b.preis - a.preis) / (b.km - a.km)) * 10000));
+  const s12 = zwischen(stuetzstellen[0], stuetzstellen[1]);
+  const s23 = zwischen(stuetzstellen[1], stuetzstellen[2]);
+  let verlauf = "unklar";
+  if (s12 != null && s23 != null && s12 < 0) {
+    const anteil = Math.abs(s23) / Math.abs(s12);
+    verlauf = anteil < 0.75 ? "flacht ab" : anteil > 1.33 ? "wird steiler" : "gleichmäßig";
+  }
+
   return {
     degressiv, vorhersage, n: punkte.length,
+    stuetzstellen, s12, s23, verlauf,
     r2: degressiv ? r2Degressiv : r2Gerade, r2Gerade, r2Degressiv,
     grundwert: Math.round(vorhersage(0)),
     proZehntausend: Math.round(proZehntausend),
@@ -2515,6 +2546,48 @@ export default function App() {
                 zusatz={`aus ${formel.n} Fahrzeugen`} />
             </div>
 
+            <div style={{ ...S.compareHead, marginTop: 2 }}>
+              <span style={S.compareTitle}>Woher die Zahlen kommen</span>
+              <span style={S.resultCount}>drei Stützstellen, nach Laufleistung geteilt</span>
+            </div>
+            <div style={S.stuetzListe}>
+              {formel.stuetzstellen.map((s, i) => (
+                <div key={s.name}>
+                  <div className="pw-stuetz" style={S.stuetzZeile}>
+                    <span style={S.stuetzName}>{s.name} Drittel</span>
+                    <span style={S.stuetzAnzahl}>{s.n} {s.n === 1 ? "Fahrzeug" : "Fahrzeuge"}</span>
+                    <span style={S.stuetzKm}>Ø {fmtNum(s.km)} km</span>
+                    <span style={S.stuetzPreis}>Ø {fmtEUR(s.preis)}</span>
+                    <span style={S.stuetzFormel}>Formel: {fmtEUR(Math.round(formel.vorhersage(s.km)))}</span>
+                  </div>
+                  {i < 2 && (
+                    <div style={S.stuetzPfeil}>
+                      ↓ dazwischen {fmtEUR(i === 0 ? formel.s12 : formel.s23)} je 10.000 km
+                    </div>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div style={S.hinweisKlein}>
+              {formel.verlauf === "flacht ab" && (
+                <>Der Kilometer kostet im unteren Bereich <b style={{ color: T.text }}>{fmtEUR(Math.abs(formel.s12))} je 10.000 km</b>,
+                im oberen nur noch <b style={{ color: T.text }}>{fmtEUR(Math.abs(formel.s23))}</b> — der Verlust flacht ab.
+                Genau deshalb passt hier keine Gerade.</>
+              )}
+              {formel.verlauf === "gleichmäßig" && (
+                <>Unten {fmtEUR(Math.abs(formel.s12))} je 10.000 km, oben {fmtEUR(Math.abs(formel.s23))} — der Verlust läuft
+                <b style={{ color: T.text }}> gleichmäßig</b> durch. Eine Gerade beschreibt diese Auswahl gut.</>
+              )}
+              {formel.verlauf === "wird steiler" && (
+                <>Unten {fmtEUR(Math.abs(formel.s12))} je 10.000 km, oben {fmtEUR(Math.abs(formel.s23))} — der Verlust
+                <b style={{ color: T.accent }}> nimmt zu</b>. Das ist ungewöhnlich; meist steckt dahinter ein
+                Ausreißer oder eine gemischte Gruppe.</>
+              )}
+              {formel.verlauf === "unklar" && <>Die drei Stützstellen liegen zu dicht beieinander, um einen Verlauf abzulesen.</>}
+              {" "}Die Formel unten nutzt <b style={{ color: T.text }}>alle {formel.n} Fahrzeuge</b>, nicht nur diese
+              drei Punkte — die Stützstellen zeigen nur, ob sie in die richtige Richtung läuft.
+            </div>
+
             <div style={S.formelBox}>
               <span style={S.formelLabel}>Die Gleichung</span>
               <code style={S.formelCode}>
@@ -3560,6 +3633,8 @@ const globalCss = `
     /* Sternniveau-Zeilen: Titel oben, Zahlen darunter nebeneinander */
     .pw-anker { grid-template-columns: 1fr auto !important; row-gap: 4px; }
     .pw-master { grid-template-columns: 26px 1fr auto !important; row-gap: 4px; }
+    .pw-stuetz { grid-template-columns: 1fr auto !important; row-gap: 3px; }
+    .pw-stuetz > span:nth-child(5) { grid-column: 1 / -1; text-align: left; }
     .pw-master > span:nth-child(2) { grid-column: 2 / -1; }
     .pw-master > span:nth-child(3) { grid-column: 2; }
     .pw-master > span:nth-child(6) { text-align: right; }
@@ -3611,6 +3686,15 @@ const styles = {
   mischBox: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.bad}`, borderRadius: 9, padding: "10px 13px", marginTop: 4, marginBottom: 8 },
   mischTitel: { display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: T.bad, marginBottom: 5 },
   mischText: { fontSize: 11.5, color: T.muted, lineHeight: 1.6 },
+
+  stuetzListe: { display: "flex", flexDirection: "column", gap: 3, marginBottom: 8 },
+  stuetzZeile: { display: "grid", gridTemplateColumns: "minmax(96px, 1fr) 92px 108px 96px 132px", gap: 8, alignItems: "center", background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 11px" },
+  stuetzName: { fontSize: 12, fontWeight: 700 },
+  stuetzAnzahl: { fontSize: 10.5, color: T.muted },
+  stuetzKm: { fontSize: 11.5, fontFamily: "ui-monospace, Menlo, monospace", color: T.muted },
+  stuetzPreis: { fontSize: 12.5, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace" },
+  stuetzFormel: { fontSize: 10.5, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
+  stuetzPfeil: { fontSize: 11, color: T.accent, padding: "3px 0 3px 12px" },
 
   formelBox: { display: "flex", flexDirection: "column", gap: 7, background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 9, padding: "11px 13px", marginTop: 4, marginBottom: 8 },
   formelLabel: { fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 },
