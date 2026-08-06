@@ -403,6 +403,69 @@ function kleinsteQuadrate(zeilen, y) {
 // Prozent mit einer Nachkommastelle, deutsches Komma.
 const fmtPct = (w) => `${String(Math.abs(w)).replace(".", ",")} %`;
 
+/* --- Preisformel für eine Auswahl ------------------------------------
+   Zwei Formen werden angepasst und gegeneinander gestellt:
+
+     gerade      preis = a + b·km              fester Eurobetrag je Kilometer
+     degressiv   preis = a · q^(km/10.000)     fester Prozentsatz je Kilometer
+
+   Bei der geraden Form kostet der Kilometer bei 60.000 dasselbe wie bei
+   200.000 — das ist selten realistisch. Bei der degressiven fällt der Preis
+   immer um denselben Anteil, der Eurobetrag wird also mit steigender
+   Laufleistung kleiner. Welche Form besser passt, entscheiden die Daten.
+   Gemessen wird beides auf der Euro-Skala, sonst wären die Werte nicht
+   vergleichbar. */
+function ausgleichsgerade(x, y) {
+  const mx = mittel(x), my = mittel(y);
+  let sxx = 0, sxy = 0;
+  x.forEach((w, i) => { const a = w - mx; sxx += a * a; sxy += a * (y[i] - my); });
+  if (!(sxx > 0)) return null;
+  const b = sxy / sxx;
+  return { a: my - b * mx, b };
+}
+
+function preisformel(punkte) {
+  if (punkte.length < 6) return null;
+  const km = punkte.map((p) => p.km), preis = punkte.map((p) => p.preis);
+  if (preis.some((w) => !(w > 0))) return null;
+
+  const my = mittel(preis);
+  const ssTot = preis.reduce((s, w) => s + (w - my) ** 2, 0);
+  const guete = (f) => (ssTot ? 1 - preis.reduce((s, w, i) => s + (w - f(km[i])) ** 2, 0) / ssTot : 0);
+
+  const g = ausgleichsgerade(km, preis);
+  const d = ausgleichsgerade(km, preis.map(Math.log));
+  if (!g && !d) return null;
+  const fGerade = g ? (k) => g.a + g.b * k : null;
+  const fDegressiv = d ? (k) => Math.exp(d.a + d.b * k) : null;
+  const r2Gerade = fGerade ? guete(fGerade) : -Infinity;
+  const r2Degressiv = fDegressiv ? guete(fDegressiv) : -Infinity;
+
+  const degressiv = r2Degressiv > r2Gerade;
+  const vorhersage = degressiv ? fDegressiv : fGerade;
+  const mkm = mittel(km);
+
+  // Streuung als Verhältnis, damit sie bei beiden Formen dasselbe bedeutet.
+  const verhaeltnis = punkte.map((p, i) => preis[i] / vorhersage(km[i])).sort((a, b) => a - b);
+  const q = (t) => verhaeltnis[Math.min(verhaeltnis.length - 1, Math.round(t * (verhaeltnis.length - 1)))];
+
+  // Kennzahlen jeweils in beiden Einheiten, ausgewertet beim mittleren
+  // Kilometerstand — dort sind sie am aussagekräftigsten.
+  const proZehntausend = vorhersage(mkm + 10000) - vorhersage(mkm);
+  const prozent = vorhersage(mkm) ? (proZehntausend / vorhersage(mkm)) * 100 : 0;
+
+  return {
+    degressiv, vorhersage, n: punkte.length,
+    r2: degressiv ? r2Degressiv : r2Gerade, r2Gerade, r2Degressiv,
+    grundwert: Math.round(vorhersage(0)),
+    proZehntausend: Math.round(proZehntausend),
+    prozent: Math.round(prozent * 10) / 10,
+    faktor: degressiv ? Math.exp(d.b * 10000) : null,
+    unten: q(0.1), oben: q(0.9),
+    kmMin: Math.min(...km), kmMax: Math.max(...km), kmMittel: Math.round(mkm),
+  };
+}
+
 // Rangplatz in Prozent: 0 = schlechtester Wert, 100 = bester.
 function perzentil(werte, wert) {
   if (werte.length < 2) return 100;
@@ -870,6 +933,7 @@ export default function App() {
   const [zeitfenster, setZeitfenster] = useState(0); // Tage, 0 = alles
   const [reiheSort, setReiheSort] = useState("preis"); // Reihenfolge der Preisleiter
   const [ankerKm, setAnkerKm] = useState("");          // Kilometerstand für den Sternrechner
+  const [formelKm, setFormelKm] = useState("");        // Kilometerstand für den Preisrechner
   const [masterBezug, setMasterBezug] = useState(0);   // Masterchart: Bezugsgruppe A oder B
   const [masterSchwelle, setMasterSchwelle] = useState("haelfte");
 
@@ -1390,6 +1454,12 @@ export default function App() {
       teuerste: mitRang.slice().sort((a, b) => a.vorteil - b.vorteil).slice(0, 3),
     };
   }, [masterBasis, masterSchwelle]);
+
+  /* ---- Preisformel für die aktuelle Auswahl ---- */
+  const formel = useMemo(() => preisformel(
+    filtered.map((v) => ({ preis: lastPrice(v), km: v.mileage }))
+      .filter((p) => p.preis != null && p.km != null)
+  ), [filtered]);
 
   /* ---- Sternniveau: die Vorzeigefahrzeuge als Messlatte ----
      Die Sterne hast du nach dem Erscheinungsbild vergeben, unabhängig vom
@@ -2413,6 +2483,86 @@ export default function App() {
               Gezeigt wird der Preis beim ersten Erfassen, nicht der heutige. Der Trend beschreibt also,
               wie sich das <b style={{ color: T.text }}>Niveau neuer Angebote</b> entwickelt — nicht, wie
               einzelne Verkäufer ihre Preise senken. Dafür ist der Abschnitt darüber zuständig.
+            </div>
+          </>
+        )}
+      </section>
+
+      {/* Preisformel */}
+      <section style={S.panel}>
+        <div style={S.panelTitle}><Gauge size={15} /> Preisformel für diese Auswahl</div>
+        <p style={S.hint}>
+          Aus allen Fahrzeugen, die durch deinen Filter kommen, wird die Gleichung abgeleitet, nach
+          der der Preis mit der Laufleistung fällt. Damit kannst du für jedes neu gefundene Inserat,
+          das in dieselbe Auswahl passt, ausrechnen, was es kosten müsste.
+        </p>
+
+        {!formel ? (
+          <div style={S.emptySmall}>
+            Dafür braucht es mindestens sechs Fahrzeuge mit Preis und Kilometerstand in dieser
+            Auswahl. Filter weiter stellen oder mehr Inserate erfassen.
+          </div>
+        ) : (
+          <>
+            <div style={S.kennzahlen}>
+              <Kennzahl label="Form" wert={formel.degressiv ? "degressiv" : "gerade"} accent
+                zusatz={formel.degressiv ? "fester Prozentsatz je km" : "fester Eurobetrag je km"} />
+              <Kennzahl label="je 10.000 km" wert={fmtEUR(formel.proZehntausend)}
+                zusatz={formel.degressiv ? `bei ${fmtNum(formel.kmMittel)} km — darüber weniger` : "über den ganzen Bereich gleich"} />
+              <Kennzahl label="je 10.000 km" wert={`${String(formel.prozent).replace(".", ",")} %`}
+                zusatz={formel.degressiv ? "über den ganzen Bereich gleich" : `bei ${fmtNum(formel.kmMittel)} km`} />
+              <Kennzahl label="Erklärungskraft" wert={`${Math.round(formel.r2 * 100)} %`}
+                zusatz={`aus ${formel.n} Fahrzeugen`} />
+            </div>
+
+            <div style={S.formelBox}>
+              <span style={S.formelLabel}>Die Gleichung</span>
+              <code style={S.formelCode}>
+                {formel.degressiv
+                  ? `Preis ≈ ${fmtNum(formel.grundwert)} € × ${String(Math.round(formel.faktor * 10000) / 10000).replace(".", ",")} ^ (km ÷ 10.000)`
+                  : `Preis ≈ ${fmtNum(formel.grundwert)} € − ${fmtNum(Math.abs(formel.proZehntausend))} € × (km ÷ 10.000)`}
+              </code>
+              <span style={S.formelSatz}>
+                {formel.degressiv
+                  ? <>Ein Fahrzeug ohne Laufleistung läge bei {fmtEUR(formel.grundwert)}, und je 10.000 km fallen{" "}
+                    <b style={{ color: T.text }}>{String(Math.abs(formel.prozent)).replace(".", ",")} %</b> weg —
+                    am Anfang sind das mehr Euro als am Ende.</>
+                  : <>Ein Fahrzeug ohne Laufleistung läge bei {fmtEUR(formel.grundwert)}, und jede 10.000 km kosten{" "}
+                    <b style={{ color: T.text }}>{fmtEUR(Math.abs(formel.proZehntausend))}</b> — bei 60.000 km
+                    genauso viel wie bei 200.000.</>}
+              </span>
+            </div>
+
+            <div style={S.rechnerBox}>
+              <span style={S.rechnerLabel}>Ein Fahrzeug dieser Auswahl mit</span>
+              <input value={formelKm} onChange={(e) => setFormelKm(e.target.value)} inputMode="decimal"
+                placeholder="130000" style={S.rechnerInput} />
+              <span style={S.rechnerLabel}>km müsste kosten</span>
+              <span style={S.rechnerWert}>
+                {coerceNum(formelKm) != null ? fmtEUR(Math.round(formel.vorhersage(coerceNum(formelKm)))) : "—"}
+              </span>
+            </div>
+            {coerceNum(formelKm) != null && (
+              <div style={S.hinweisKlein}>
+                Acht von zehn vergleichbaren Fahrzeugen liegen zwischen{" "}
+                <b style={{ color: T.text }}>{fmtEUR(Math.round(formel.vorhersage(coerceNum(formelKm)) * formel.unten))}</b> und{" "}
+                <b style={{ color: T.text }}>{fmtEUR(Math.round(formel.vorhersage(coerceNum(formelKm)) * formel.oben))}</b>.
+                Was darunter liegt, ist entweder ein Fund oder hat einen Grund.
+                {(coerceNum(formelKm) < formel.kmMin || coerceNum(formelKm) > formel.kmMax) && (
+                  <> <b style={{ color: T.accent }}>Achtung:</b> {fmtNum(coerceNum(formelKm))} km liegt außerhalb
+                  deiner Daten ({fmtNum(formel.kmMin)} bis {fmtNum(formel.kmMax)} km) — die Formel wird dort geraten,
+                  nicht gemessen.</>
+                )}
+              </div>
+            )}
+
+            <div style={S.hinweisKlein}>
+              Beide Formen wurden angepasst und gegeneinander gestellt:{" "}
+              <b style={{ color: formel.degressiv ? T.muted : T.text }}>gerade {Math.round(formel.r2Gerade * 100)} %</b>{" "}
+              gegen{" "}
+              <b style={{ color: formel.degressiv ? T.text : T.muted }}>degressiv {Math.round(formel.r2Degressiv * 100)} %</b> —
+              verwendet wird die bessere. Gerechnet wird nur mit Laufleistung und Preis; Zustand, Alter und
+              Ausstattung stecken nicht darin. Wer die mitrechnen will, nimmt den Masterchart.
             </div>
           </>
         )}
@@ -3461,6 +3611,11 @@ const styles = {
   mischBox: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.bad}`, borderRadius: 9, padding: "10px 13px", marginTop: 4, marginBottom: 8 },
   mischTitel: { display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: T.bad, marginBottom: 5 },
   mischText: { fontSize: 11.5, color: T.muted, lineHeight: 1.6 },
+
+  formelBox: { display: "flex", flexDirection: "column", gap: 7, background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 9, padding: "11px 13px", marginTop: 4, marginBottom: 8 },
+  formelLabel: { fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 },
+  formelCode: { fontSize: 13, color: T.text, fontFamily: "ui-monospace, Menlo, monospace", overflowX: "auto", whiteSpace: "nowrap", paddingBottom: 2 },
+  formelSatz: { fontSize: 11.5, color: T.muted, lineHeight: 1.6 },
 
   rechnerBox: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "10px 13px", marginTop: 4 },
   rechnerLabel: { fontSize: 12.5, color: T.muted },
