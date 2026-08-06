@@ -484,16 +484,39 @@ function preisformel(punkte) {
     verlauf = anteil < 0.75 ? "flacht ab" : anteil > 1.33 ? "wird steiler" : "gleichmäßig";
   }
 
+  // Kurve für das Schaubild. Die degressive Form ist gebogen, deshalb wird
+  // sie in Schritten abgetastet statt aus zwei Endpunkten gezogen. Das
+  // Streuband läuft als gestapelte Fläche mit: erst der untere Rand
+  // unsichtbar, darauf die Spanne.
+  const kmMin = Math.min(...km), kmMax = Math.max(...km);
+  const schritte = 40;
+  const kurve = Array.from({ length: schritte + 1 }, (_, i) => {
+    const k = kmMin + ((kmMax - kmMin) * i) / schritte;
+    const soll = vorhersage(k);
+    return {
+      km: Math.round(k), kurve: Math.round(soll),
+      unten: Math.round(soll * q(0.1)), spanne: Math.round(soll * (q(0.9) - q(0.1))),
+    };
+  });
+
+  // Jedes Fahrzeug mit seinem Sollpreis, für Punkte und Karteikarte.
+  const fahrzeuge = punkte.map((p) => {
+    const soll = Math.round(vorhersage(p.km));
+    return { ...p, soll, abweichung: Math.round(p.preis - soll) };
+  });
+  const alleWerte = [...preis, ...kurve.map((k) => k.unten + k.spanne), ...kurve.map((k) => k.unten)];
+
   return {
     degressiv, vorhersage, n: punkte.length,
-    stuetzstellen, s12, s23, verlauf,
+    stuetzstellen, s12, s23, verlauf, kurve, fahrzeuge,
+    yMin: Math.min(...alleWerte), yMax: Math.max(...alleWerte),
     r2: degressiv ? r2Degressiv : r2Gerade, r2Gerade, r2Degressiv,
     grundwert: Math.round(vorhersage(0)),
     proZehntausend: Math.round(proZehntausend),
     prozent: Math.round(prozent * 10) / 10,
     faktor: degressiv ? Math.exp(d.b * 10000) : null,
     unten: q(0.1), oben: q(0.9),
-    kmMin: Math.min(...km), kmMax: Math.max(...km), kmMittel: Math.round(mkm),
+    kmMin, kmMax, kmMittel: Math.round(mkm),
   };
 }
 
@@ -1488,8 +1511,12 @@ export default function App() {
 
   /* ---- Preisformel für die aktuelle Auswahl ---- */
   const formel = useMemo(() => preisformel(
-    filtered.map((v) => ({ preis: lastPrice(v), km: v.mileage }))
-      .filter((p) => p.preis != null && p.km != null)
+    filtered.map((v) => ({
+      preis: lastPrice(v), km: v.mileage, id: v.id, title: v.title || v.id,
+      marke: [v.make, v.model].filter(Boolean).join(" "), url: v.url,
+      ez: erstzulassung(v), rep: v.repairScope, fotos: v.photoDamage,
+      stern: v.showcase === "Vorzeigefahrzeug",
+    })).filter((p) => p.preis != null && p.km != null)
   ), [filtered]);
 
   /* ---- Sternniveau: die Vorzeigefahrzeuge als Messlatte ----
@@ -2606,6 +2633,42 @@ export default function App() {
               </span>
             </div>
 
+            <div style={{ width: "100%", height: 320, marginTop: 6 }}>
+              <ResponsiveContainer>
+                <ComposedChart data={formel.kurve} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
+                  <XAxis dataKey="km" type="number" domain={[formel.kmMin, formel.kmMax]} allowDataOverflow
+                    tickFormatter={(k) => `${Math.round(k / 1000)}k`}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
+                  <YAxis type="number" allowDataOverflow
+                    domain={[Math.floor(formel.yMin * 0.94), Math.ceil(formel.yMax * 1.05)]}
+                    tickFormatter={(w) => fmtNum(Math.round(w))}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
+                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
+                    const p = active && payload?.find((x) => x.dataKey === "preis")?.payload;
+                    return p ? <Formelkarte p={p} /> : null;
+                  }} />
+                  <Area dataKey="unten" stackId="band" stroke="none" fill="transparent" isAnimationActive={false} />
+                  <Area dataKey="spanne" stackId="band" stroke="none" fill={T.accent} fillOpacity={0.09} isAnimationActive={false} />
+                  <Line dataKey="kurve" type="monotone" stroke={T.accent} strokeWidth={2} dot={false} isAnimationActive={false} />
+                  <Scatter data={formel.fahrzeuge} dataKey="preis" isAnimationActive={false} cursor="pointer"
+                    onClick={oeffneInserat}>
+                    {formel.fahrzeuge.map((p) => (
+                      <Cell key={p.id} fill={p.abweichung < 0 ? T.good : T.bad} fillOpacity={0.85} />
+                    ))}
+                  </Scatter>
+                  <Scatter data={formel.stuetzstellen.map((s) => ({ ...s, preis: s.preis }))} dataKey="preis"
+                    shape="diamond" fill={T.text} isAnimationActive={false} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+            <div style={S.legendHint}>
+              Waagerecht Kilometer, senkrecht Preis · <span style={{ color: T.accent }}>gelbe Linie die Formel</span>,
+              das getönte Band die üblichen acht von zehn · <span style={{ color: T.text }}>Rauten die drei Stützstellen</span> ·
+              <span style={{ color: T.good }}> grün unter der Linie</span> ·
+              <span style={{ color: T.bad }}> rot darüber</span>
+            </div>
+
             <div style={S.rechnerBox}>
               <span style={S.rechnerLabel}>Ein Fahrzeug dieser Auswahl mit</span>
               <input value={formelKm} onChange={(e) => setFormelKm(e.target.value)} inputMode="decimal"
@@ -3461,6 +3524,38 @@ function Karteikarte({ p }) {
       {p.stand && p.stand !== "Aktiv" && (
         <div style={{ ...S.karteHinweis, color: tagColor("listingStatus", p.stand) }}>{p.stand}</div>
       )}
+      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
+    </div>
+  );
+}
+
+// Karte im Schaubild zur Preisformel: was das Auto kostet und was die
+// Formel an dieser Stelle sagt.
+function Formelkarte({ p }) {
+  const S = styles;
+  const drunter = p.abweichung < 0;
+  const farbe = p.abweichung === 0 ? T.muted : drunter ? T.good : T.bad;
+  return (
+    <div style={S.karte}>
+      <div style={S.karteKopf}>
+        {p.stern && <Star size={11} fill={T.accent} color={T.accent} />}
+        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparatur unbekannt"}</span>
+      </div>
+      <div style={S.karteTitel}>{p.title}</div>
+      {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
+      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
+      <div style={S.karteListe}>
+        <div style={S.karteZeile}><span style={S.karteLabel}>Kilometer</span><span style={S.karteWert}>{fmtNum(p.km)} km</span></div>
+        <div style={S.karteZeile}><span style={S.karteLabel}>laut Formel</span><span style={S.karteWert}>{fmtEUR(p.soll)}</span></div>
+        <div style={S.karteZeile}>
+          <span style={S.karteLabel}>Abstand</span>
+          <span style={{ ...S.karteWert, color: farbe }}>
+            {p.abweichung === 0 ? "genau auf der Linie" : `${fmtEUR(Math.abs(p.abweichung))} ${drunter ? "darunter" : "darüber"}`}
+          </span>
+        </div>
+        {p.ez && <div style={S.karteZeile}><span style={S.karteLabel}>Erstzulassung</span><span style={S.karteWert}>{p.ez}</span></div>}
+        {p.fotos && <div style={S.karteZeile}><span style={S.karteLabel}>Fotos</span><span style={S.karteWert}>{p.fotos}</span></div>}
+      </div>
       {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
     </div>
   );
