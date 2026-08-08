@@ -528,31 +528,38 @@ function preisformel(punkte) {
     verlauf = anteil < 0.75 ? "flacht ab" : anteil > 1.33 ? "wird steiler" : "gleichmäßig";
   }
 
-  // Kurve für das Schaubild. Die degressive Form ist gebogen, deshalb wird
-  // sie in Schritten abgetastet statt aus zwei Endpunkten gezogen. Das
-  // Streuband läuft als gestapelte Fläche mit: erst der untere Rand
-  // unsichtbar, darauf die Spanne.
-  const kmMin = Math.min(...km), kmMax = Math.max(...km);
-  const schritte = 40;
-  const kurve = Array.from({ length: schritte + 1 }, (_, i) => {
-    const k = kmMin + ((kmMax - kmMin) * i) / schritte;
-    const soll = vorhersage(k);
-    return {
-      km: Math.round(k), kurve: Math.round(soll),
-      unten: Math.round(soll * q(0.1)), spanne: Math.round(soll * (q(0.9) - q(0.1))),
-    };
-  });
-
   // Jedes Fahrzeug mit seinem Sollpreis, für Punkte und Karteikarte.
   const fahrzeuge = punkte.map((p) => {
     const soll = Math.round(vorhersage(p.km));
     return { ...p, soll, abweichung: Math.round(p.preis - soll) };
   });
-  const alleWerte = [...preis, ...kurve.map((k) => k.unten + k.spanne), ...kurve.map((k) => k.unten)];
+
+  /* Eine einzige Reihe fürs Schaubild — Kurve, Streuband, Fahrzeuge und
+     Stützstellen. Getrennte Datensätze je Serie bringen den gemeinsamen
+     Tooltip von recharts durcheinander: die senkrechte Linie steht dann
+     woanders als die Karte, und über weite Strecken erscheint gar keine.
+     Die degressive Form ist gebogen, deshalb kommen zwischen den Fahrzeugen
+     noch Stützpunkte dazu, damit die Kurve rund bleibt. */
+  const kmMin = Math.min(...km), kmMax = Math.max(...km);
+  const schritte = 40;
+  const gitter = Array.from({ length: schritte + 1 },
+    (_, i) => ({ km: Math.round(kmMin + ((kmMax - kmMin) * i) / schritte) }));
+  const reihe = [
+    ...gitter,
+    ...fahrzeuge,
+    ...stuetzstellen.map((s) => ({ km: s.km, stuetz: s.preis, stuetzName: s.name })),
+  ].map((z) => {
+    const soll = vorhersage(z.km);
+    return {
+      ...z, kurve: Math.round(soll),
+      band: [Math.round(soll * q(0.1)), Math.round(soll * q(0.9))],
+    };
+  }).sort((a, b) => a.km - b.km);
+  const alleWerte = [...preis, ...reihe.map((z) => z.band[0]), ...reihe.map((z) => z.band[1])];
 
   return {
     degressiv, vorhersage, n: punkte.length,
-    stuetzstellen, s12, s23, verlauf, kurve, fahrzeuge,
+    stuetzstellen, s12, s23, verlauf, reihe, fahrzeuge,
     yMin: Math.min(...alleWerte), yMax: Math.max(...alleWerte),
     r2: degressiv ? r2Degressiv : r2Gerade, r2Gerade, r2Degressiv,
     grundwert: Math.round(vorhersage(0)),
@@ -562,6 +569,29 @@ function preisformel(punkte) {
     unten: q(0.1), oben: q(0.9),
     kmMin, kmMax, kmMittel: Math.round(mkm),
   };
+}
+
+/* Die Zustandspunkte sind eine ganze Zahl, und sie entstehen aus vier
+   Einordnungen — viele Fahrzeuge landen dadurch auf demselben Wert und liegen
+   im Schaubild exakt übereinander. Ein verdeckter Punkt lässt sich weder
+   ansehen noch anklicken. Gleichstände werden deshalb waagerecht aufgefächert,
+   höchstens um eine halbe Punktbreite. Die Karteikarte nennt weiter den echten
+   Wert; nur die Zeichenposition weicht ab. */
+function schaubildPunkte(liste) {
+  const gruppen = new Map();
+  liste.forEach((p) => {
+    const g = gruppen.get(p.zustand) || [];
+    g.push(p); gruppen.set(p.zustand, g);
+  });
+  const raus = [];
+  gruppen.forEach((g) => {
+    g.sort((a, b) => a.vorteilPct - b.vorteilPct);
+    g.forEach((p, i) => {
+      const versatz = g.length > 1 ? (i / (g.length - 1) - 0.5) * 0.9 : 0;
+      raus.push({ ...p, zustandX: Math.round((p.zustand + versatz) * 100) / 100 });
+    });
+  });
+  return raus.sort((a, b) => a.zustandX - b.zustandX);
 }
 
 // Rangplatz in Prozent: 0 = schlechtester Wert, 100 = bester.
@@ -1613,7 +1643,7 @@ export default function App() {
       jeZehntausendKm: Math.round(modell.b[felder.indexOf("km")] * 10000),
       jeZustandspunkt: felder.includes("zustand") ? Math.round(modell.b[felder.indexOf("zustand")]) : null,
       jeJahr: felder.includes("alter") ? Math.round(modell.b[felder.indexOf("alter")]) : null,
-      punkte: mitRang, kandidaten, bester,
+      punkte: schaubildPunkte(mitRang), kandidaten, bester,
       teuerste: mitRang.slice().sort((a, b) => a.vorteil - b.vorteil).slice(0, 3),
     };
   }, [masterBasis, masterSchwelle]);
@@ -1668,7 +1698,16 @@ export default function App() {
 
     const kmWerte = basis.map((p) => p.km);
     const kmMin = Math.min(...kmWerte), kmMax = Math.max(...kmWerte);
-    const linie = [kmMin, kmMax].map((km) => ({ km, niveau: Math.round(anker(km)) }));
+
+    // Eine Reihe fürs Schaubild: Sterne, übrige Fahrzeuge und die Messlatte
+    // in derselben, nach Kilometern sortierten Liste. Getrennte Datensätze je
+    // Serie lassen den gemeinsamen Tooltip von recharts ins Leere greifen.
+    const alle = basis
+      .map((p) => {
+        const soll = anker(p.km);
+        return { ...p, anker: Math.round(soll), abstand: Math.round(p.preis - soll), niveau: Math.round(soll) };
+      })
+      .sort((a, b) => a.km - b.km);
 
     // Ein C 180 Benziner ist keine Messlatte für einen C 250 Diesel. Wenn die
     // Sternfahrzeuge dieser Auswahl in einem tragenden Merkmal auseinanderlaufen,
@@ -1686,7 +1725,7 @@ export default function App() {
       andere: bewertet,
       jeZehntausend: Math.round(b1 * 10000),
       eigeneSteigung: eigene != null,
-      anker, linie, kmMin, kmMax,
+      anker, alle, kmMin, kmMax,
       ueberNiveau: bewertet.filter((p) => p.abstand >= 0),
       guenstigstes: bewertet[0],
     };
@@ -1713,17 +1752,20 @@ export default function App() {
     }));
     const nachId = Object.fromEntries(mitRang.map((p) => [p.id, p]));
 
-    // Linie fürs Streudiagramm: Modell bei durchschnittlichem Alter ausgewertet
-    const kmWerte = basis.map((p) => p.km);
-    const kmMin = Math.min(...kmWerte), kmMax = Math.max(...kmWerte);
-    const linie = [kmMin, kmMax].map((km) => ({ km, erwartet: Math.round(m.erwartet(km, m.mx2)) }));
-    const streu = basis.map((p) => ({ ...p, ...nachId[p.id] }));
+    // Alles in EINER nach Kilometern aufsteigenden Reihe: Punkte und Linie.
+    // Bringt eine Serie ihre eigenen Daten mit, greift der gemeinsame Tooltip
+    // von recharts daneben und zeigt beim Überfahren immer dasselbe Fahrzeug.
+    // Die Erwartungslinie wird deshalb je Fahrzeug mitgerechnet — bei
+    // durchschnittlichem Alter ausgewertet ergibt das dieselbe Gerade.
+    const streu = basis
+      .map((p) => ({ ...p, ...nachId[p.id], linieErwartet: Math.round(m.erwartet(p.km, m.mx2)) }))
+      .sort((a, b) => a.km - b.km);
 
     return {
       zuWenig: false, anzahl: basis.length, r2: m.r2, kopplung: m.kopplung,
       jeZehntausendKm: Math.round(m.b1 * 10000),
       jeJahr: Math.round(m.b2),
-      streu, linie, balken: mitRang,
+      streu, balken: mitRang,
       bestes: mitRang[0], teuerstes: mitRang[mitRang.length - 1],
     };
   }, [filtered]);
@@ -1755,7 +1797,8 @@ export default function App() {
       const preis = v.priceHistory?.[0]?.price;
       if (!datum || preis == null) return null;
       const d = parseISO(datum);
-      return d ? { t: d.getTime(), datum, preis, id: v.id, title: v.title || v.id } : null;
+      return d ? { t: d.getTime(), datum, preis, id: v.id, title: v.title || v.id, url: v.url,
+        stern: v.showcase === "Vorzeigefahrzeug" } : null;
     }).filter(Boolean).sort((a, b) => a.t - b.t);
     if (!punkte.length) return null;
 
@@ -2504,7 +2547,8 @@ export default function App() {
 
             <div style={{ width: "100%", height: 300, marginTop: 6 }}>
               <ResponsiveContainer>
-                <ComposedChart data={fairValue.streu} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                <ComposedChart data={fairValue.streu} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
+                  onClick={chartKlick(fairValue.streu, "km")}>
                   <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
                   <XAxis dataKey="km" type="number" domain={["dataMin - 5000", "dataMax + 5000"]}
                     tickFormatter={(k) => `${Math.round(k / 1000)}k`}
@@ -2513,17 +2557,14 @@ export default function App() {
                     tickFormatter={(w) => fmtNum(Math.round(w))}
                     stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
                   <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    const p = active && payload?.find((x) => x.dataKey === "preis")?.payload;
+                    const p = active && aktivesFahrzeug(payload, fairValue.streu, "km");
                     return p ? <Erwartungskarte p={p} /> : null;
                   }} />
-                  <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
-                    onClick={oeffneInserat}>
-                    {fairValue.streu.map((p) => (
-                      <Cell key={p.id} fill={p.abweichung < 0 ? T.good : T.bad} fillOpacity={0.85} />
-                    ))}
-                  </Scatter>
-                  <Line data={fairValue.linie} dataKey="erwartet" type="linear" stroke={T.text}
+                  <Line dataKey="linieErwartet" type="linear" stroke={T.text}
                     strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false} />
+                  <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
+                    shape={<Fahrzeugpunkt farbe={(p) => (p.abweichung < 0 ? T.good : T.bad)} />}
+                    onClick={punktKlick} />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -2597,7 +2638,8 @@ export default function App() {
           <>
             <div style={{ width: "100%", height: 320 }}>
               <ResponsiveContainer>
-                <ComposedChart data={preisReihe.rows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                <ComposedChart data={preisReihe.rows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
+                  onClick={chartKlick(preisReihe.rows, "nr")}>
                   <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
                   <XAxis dataKey="nr" type="number" domain={[0, preisReihe.rows.length + 1]} allowDecimals={false}
                     stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
@@ -2605,7 +2647,7 @@ export default function App() {
                     tickFormatter={(w) => fmtNum(Math.round(w))}
                     stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
                   <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    const p = active && payload?.find((x) => x.dataKey === "preis")?.payload;
+                    const p = active && aktivesFahrzeug(payload, preisReihe.rows, "nr");
                     return p ? <Karteikarte p={p} /> : null;
                   }} />
                   {preisReihe.mittelwert != null && (
@@ -2613,9 +2655,8 @@ export default function App() {
                       label={{ value: `Median ${fmtEUR(preisReihe.mittelwert)}`, position: "insideTopLeft", fill: T.muted, fontSize: 10 }} />
                   )}
                   <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
-                    onClick={oeffneInserat}>
-                    {preisReihe.rows.map((r) => <Cell key={r.id} fill={repFarbe(r.rep)} />)}
-                  </Scatter>
+                    shape={<Fahrzeugpunkt farbe={(p) => repFarbe(p.rep)} deckkraft={() => 1} />}
+                    onClick={punktKlick} />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -2644,7 +2685,8 @@ export default function App() {
           <>
             <div style={{ width: "100%", height: 300 }}>
               <ResponsiveContainer>
-                <ComposedChart data={inserateUeberZeit.rows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                <ComposedChart data={inserateUeberZeit.rows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
+                  onClick={chartKlick(inserateUeberZeit.rows, "t")}>
                   <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
                   <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} scale="time"
                     tickFormatter={(t) => { const d = new Date(t); return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getFullYear()).slice(2)}`; }}
@@ -2657,9 +2699,9 @@ export default function App() {
                       der X-Achse als Geldbetrag mit an. */}
                   <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
                     if (!active || !payload?.length) return null;
-                    const punkt = payload.find((x) => x.dataKey === "preis")?.payload;
+                    const punkt = aktivesFahrzeug(payload, inserateUeberZeit.rows, "t");
                     if (!punkt) return null;
-                    const trend = payload.find((x) => x.dataKey === "trend")?.value;
+                    const trend = punkt.trend;
                     return (
                       <div style={S.zeitTooltip}>
                         <div style={S.zeitTooltipDatum}>{fmtDate(punkt.datum)}</div>
@@ -2669,7 +2711,8 @@ export default function App() {
                       </div>
                     );
                   }} />
-                  <Scatter dataKey="preis" fill={AUSWAHL_FARBE[aktiv]} isAnimationActive={false} />
+                  <Scatter dataKey="preis" fill={AUSWAHL_FARBE[aktiv]} isAnimationActive={false}
+                    cursor="pointer" shape={<Fahrzeugpunkt deckkraft={() => 1} />} onClick={punktKlick} />
                   {inserateUeberZeit.proMonat != null && (
                     <Line type="linear" dataKey="trend" stroke={T.text} strokeWidth={2} strokeDasharray="6 4"
                       dot={false} isAnimationActive={false} />
@@ -2797,9 +2840,14 @@ export default function App() {
 
             <div style={{ width: "100%", height: 320, marginTop: 6 }}>
               <ResponsiveContainer>
-                <ComposedChart data={formel.kurve} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                <ComposedChart data={formel.reihe} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
+                  onClick={chartKlick(formel.fahrzeuge, "km")}>
                   <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  <XAxis dataKey="km" type="number" domain={[formel.kmMin, formel.kmMax]} allowDataOverflow
+                  {/* Etwas Luft an beiden Enden, sonst klebt der äußerste
+                      Punkt halb hinter der Achse. */}
+                  <XAxis dataKey="km" type="number" allowDataOverflow
+                    domain={[Math.round(formel.kmMin - (formel.kmMax - formel.kmMin) * 0.04),
+                      Math.round(formel.kmMax + (formel.kmMax - formel.kmMin) * 0.04)]}
                     tickFormatter={(k) => `${Math.round(k / 1000)}k`}
                     stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
                   <YAxis type="number" allowDataOverflow
@@ -2807,20 +2855,15 @@ export default function App() {
                     tickFormatter={(w) => fmtNum(Math.round(w))}
                     stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
                   <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    const p = active && payload?.find((x) => x.dataKey === "preis")?.payload;
+                    const p = active && aktivesFahrzeug(payload, formel.fahrzeuge, "km");
                     return p ? <Formelkarte p={p} /> : null;
                   }} />
-                  <Area dataKey="unten" stackId="band" stroke="none" fill="transparent" isAnimationActive={false} />
-                  <Area dataKey="spanne" stackId="band" stroke="none" fill={T.accent} fillOpacity={0.09} isAnimationActive={false} />
+                  <Area dataKey="band" stroke="none" fill={T.accent} fillOpacity={0.09} isAnimationActive={false} />
                   <Line dataKey="kurve" type="monotone" stroke={T.accent} strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Scatter data={formel.fahrzeuge} dataKey="preis" isAnimationActive={false} cursor="pointer"
-                    onClick={oeffneInserat}>
-                    {formel.fahrzeuge.map((p) => (
-                      <Cell key={p.id} fill={p.abweichung < 0 ? T.good : T.bad} fillOpacity={0.85} />
-                    ))}
-                  </Scatter>
-                  <Scatter data={formel.stuetzstellen.map((s) => ({ ...s, preis: s.preis }))} dataKey="preis"
-                    shape="diamond" fill={T.text} isAnimationActive={false} />
+                  <Scatter dataKey="stuetz" shape="diamond" fill={T.text} isAnimationActive={false} />
+                  <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
+                    shape={<Fahrzeugpunkt farbe={(p) => (p.abweichung < 0 ? T.good : T.bad)} />}
+                    onClick={punktKlick} />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -2930,7 +2973,8 @@ export default function App() {
 
             <div style={{ width: "100%", height: 300, marginTop: 10 }}>
               <ResponsiveContainer>
-                <ComposedChart margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                <ComposedChart data={sternAnker.alle} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
+                  onClick={chartKlick(sternAnker.alle, "km")}>
                   <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
                   <XAxis dataKey="km" type="number" domain={["dataMin - 5000", "dataMax + 5000"]}
                     tickFormatter={(k) => `${Math.round(k / 1000)}k`}
@@ -2939,19 +2983,14 @@ export default function App() {
                     tickFormatter={(w) => fmtNum(Math.round(w))}
                     stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
                   <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    const p = active && payload?.find((x) => x.dataKey === "preis")?.payload;
+                    const p = active && aktivesFahrzeug(payload, sternAnker.alle, "km");
                     return p ? <Ankerkarte p={p} /> : null;
                   }} />
-                  <Line data={sternAnker.linie} dataKey="niveau" type="linear" stroke={T.accent}
+                  <Line dataKey="niveau" type="linear" stroke={T.accent}
                     strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false} />
-                  <Scatter data={sternAnker.andere} dataKey="preis" isAnimationActive={false} cursor="pointer"
-                    onClick={oeffneInserat}>
-                    {sternAnker.andere.map((p) => (
-                      <Cell key={p.id} fill={p.abstand < 0 ? T.good : T.bad} fillOpacity={0.85} />
-                    ))}
-                  </Scatter>
-                  <Scatter data={sternAnker.sterne} dataKey="preis" isAnimationActive={false} cursor="pointer"
-                    shape="star" fill={T.accent} onClick={oeffneInserat} />
+                  <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
+                    shape={<Fahrzeugpunkt farbe={(p) => (p.stern ? T.accent : p.abstand < 0 ? T.good : T.bad)} />}
+                    onClick={punktKlick} />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -3105,15 +3144,16 @@ export default function App() {
 
             <div style={{ width: "100%", height: 340, marginTop: 6 }}>
               <ResponsiveContainer>
-                <ComposedChart data={master.punkte} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
+                <ComposedChart data={master.punkte} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
+                  onClick={chartKlick(master.punkte, "zustandX")}>
                   <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  <XAxis dataKey="zustand" type="number" domain={[(min) => Math.max(0, min - 5), 102]}
+                  <XAxis dataKey="zustandX" type="number" domain={[(min) => Math.max(0, min - 5), 102]}
                     stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }}
                     label={{ value: "Zustandspunkte", position: "insideBottom", offset: -2, fill: T.muted, fontSize: 10 }} />
                   <YAxis dataKey="vorteilPct" type="number" tickFormatter={(w) => `${w > 0 ? "+" : ""}${w} %`}
                     stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
                   <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    const p = active && payload?.find((x) => x.dataKey === "vorteilPct")?.payload;
+                    const p = active && aktivesFahrzeug(payload, master.punkte, "zustandX", "vorteilPct");
                     return p ? <Masterkarte p={p} schwelle={master.schwelle} /> : null;
                   }} />
                   <ReferenceLine y={0} stroke={T.muted} strokeDasharray="4 4"
@@ -3121,16 +3161,13 @@ export default function App() {
                   {master.schwelle > 0 && (
                     <ReferenceLine x={master.schwelle} stroke={T.accent} strokeDasharray="4 4" />
                   )}
-                  <Scatter dataKey="vorteilPct" isAnimationActive={false} cursor="pointer" onClick={oeffneInserat}>
-                    {master.punkte.map((p) => (
-                      <Cell key={p.id}
-                        fill={p.zustand >= master.schwelle && p.vorteil > 0 ? T.good
-                          : p.vorteil < 0 ? T.bad : T.muted}
-                        fillOpacity={p.zustand >= master.schwelle ? 0.95 : 0.4} />
-                    ))}
-                  </Scatter>
-                  <Scatter data={master.punkte.filter((p) => p.stern)} dataKey="vorteilPct"
-                    shape="star" fill={T.accent} isAnimationActive={false} cursor="pointer" onClick={oeffneInserat} />
+                  <Scatter dataKey="vorteilPct" isAnimationActive={false} cursor="pointer"
+                    shape={<Fahrzeugpunkt
+                      farbe={(p) => (p.stern ? T.accent
+                        : p.zustand >= master.schwelle && p.vorteil > 0 ? T.good
+                          : p.vorteil < 0 ? T.bad : T.muted)}
+                      deckkraft={(p) => (p.zustand >= master.schwelle ? 0.95 : 0.4)} />}
+                    onClick={punktKlick} />
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
@@ -3139,6 +3176,9 @@ export default function App() {
               <span style={{ color: T.good }}> grün beides</span> ·
               <span style={{ color: T.bad }}> rot teurer als verdient</span> ·
               <span style={{ color: T.accent }}> Sterne die Vorzeigefahrzeuge</span>
+              <br />
+              Fahrzeuge mit gleicher Punktzahl stehen leicht nebeneinander statt übereinander,
+              damit jedes einzeln anzusehen und anzuklicken ist. Die Karteikarte nennt die echte Punktzahl.
             </div>
 
             {master.bester && (
@@ -3664,6 +3704,85 @@ function repFarbe(rep) {
 function oeffneInserat(d) {
   const daten = d && (d.payload || d);
   if (daten && daten.url) window.open(normalizeUrl(daten.url), "_blank", "noreferrer");
+}
+
+/* --- Zeigen und Treffen in den Schaubildern ---------------------------
+   Recharts sucht beim Überfahren die Zeile heraus, die waagerecht am
+   nächsten liegt — aber nur, wenn alle Reihen aus DERSELBEN, nach der
+   x-Achse sortierten Liste kommen. Gibt man einer Kurve eigene Daten mit,
+   zeigt die Karte danach dauerhaft dasselbe Fahrzeug oder gar keins.
+   Deshalb: eine Liste je Schaubild — und hier wird aus der getroffenen
+   Zeile das nächstgelegene Fahrzeug bestimmt. So ist überall etwas zu
+   sehen, auch zwischen zwei Punkten. */
+function naechstesNach(liste, achse, x) {
+  if (!liste || !liste.length || x == null || isNaN(x)) return null;
+  let treffer = null, nah = Infinity;
+  liste.forEach((p) => {
+    const d = Math.abs(p[achse] - x);
+    if (d < nah) { nah = d; treffer = p; }
+  });
+  return treffer;
+}
+function aktivesFahrzeug(payload, liste, achse, wertFeld = "preis") {
+  const zeile = payload && payload.length ? payload[0].payload : null;
+  if (!zeile) return null;
+  if (zeile[wertFeld] != null && zeile.id) return zeile;
+  return naechstesNach(liste, achse, zeile[achse]);
+}
+
+/* Öffnen mit Maus und mit Finger sind zwei verschiedene Wege.
+
+   Mit der Maus zeigt die Karteikarte immer schon das Fahrzeug, das gemeint
+   ist — dort öffnet ein Klick irgendwo im Schaubild genau dieses Inserat.
+   Recharts reicht dem Klick am Schaubild keinen Datensatz mehr, sondern nur
+   den Wert der waagerechten Achse; das Fahrzeug wird daraus gesucht.
+
+   Auf dem Handy geht das nicht: dort setzt erst die Berührung den Zeiger,
+   und der Klick liest den Stand von davor — er würde regelmäßig das falsche
+   Inserat öffnen. Deshalb zählt beim Tippen nur der Punkt selbst, der seinen
+   Datensatz mitbringt. Getroffen wird er trotzdem, denn unter jedem Punkt
+   liegt eine unsichtbare Fläche von gut dreißig Pixeln. */
+const mitZeigegeraet = () => typeof window !== "undefined" && window.matchMedia
+  ? window.matchMedia("(hover: hover)").matches : true;
+const chartKlick = (liste, achse) => (zustand) => {
+  if (!mitZeigegeraet() || !zustand || !zustand.isTooltipActive) return;
+  const p = naechstesNach(liste, achse, Number(zustand.activeLabel));
+  if (p) oeffneInserat(p);
+};
+const punktKlick = (d) => { if (!mitZeigegeraet()) oeffneInserat(d); };
+
+// Fünfzackiger Stern als Pfad. Die eingebaute Form von recharts lässt sich
+// nicht mit einer vergrößerten Trefferfläche kombinieren.
+function sternPfad(cx, cy, aussen, innen) {
+  let d = "";
+  for (let i = 0; i < 10; i++) {
+    const r = i % 2 ? innen : aussen;
+    const w = (Math.PI / 5) * i - Math.PI / 2;
+    d += `${i ? "L" : "M"}${(cx + r * Math.cos(w)).toFixed(2)},${(cy + r * Math.sin(w)).toFixed(2)}`;
+  }
+  return `${d}Z`;
+}
+
+// Ein Punkt je Fahrzeug. Vorzeigefahrzeuge bekommen einen Stern. Darunter
+// liegt eine unsichtbare, viel größere Fläche — einen Kreis von fünf Pixeln
+// trifft auf dem Handy niemand mit dem Daumen.
+// Farbe und Deckkraft kommen als Funktion herein statt über <Cell>: Cells
+// hängen an der Reihenfolge der Daten, und in den Schaubildern stehen jetzt
+// auch Kurvenpunkte ohne Fahrzeug in derselben Liste.
+function Fahrzeugpunkt({ cx, cy, fill, fillOpacity, payload, farbe, deckkraft }) {
+  if (cx == null || cy == null || isNaN(cx) || isNaN(cy)) return null;
+  const f = (payload && farbe ? farbe(payload) : null) || fill;
+  const eigen = payload && deckkraft ? deckkraft(payload) : null;
+  const stern = !!(payload && payload.stern);
+  const o = eigen != null ? eigen : (fillOpacity != null ? fillOpacity : (stern ? 1 : 0.85));
+  return (
+    <g>
+      <circle cx={cx} cy={cy} r={17} fill="transparent" />
+      {stern
+        ? <path d={sternPfad(cx, cy, 9.5, 4.4)} fill={f} fillOpacity={o} />
+        : <circle cx={cx} cy={cy} r={5} fill={f} fillOpacity={o} />}
+    </g>
+  );
 }
 
 // Die Karteikarte, die beim Zeigen auf einen Punkt erscheint.
