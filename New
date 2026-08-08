@@ -197,11 +197,37 @@ function normalizeMonth(value) {
   return i >= 0 ? String(i + 1).padStart(2, "0") : "";
 }
 
-// Sieht das nach einem Link aus? Bewusst großzügig: mobile.de-Adressen
-// werden oft ohne "https://" kopiert.
-const istLink = (s) => /^\S+\.\S{2,}/.test(String(s == null ? "" : s).trim());
+/* --- Links -----------------------------------------------------------
+   Was im Feld "url" ankommt, ist selten eine nackte Adresse. Sprachmodelle
+   verpacken Links gern als Markdown — [Inserat](https://…) —, setzen sie in
+   spitze Klammern, hängen einen Punkt an oder schreiben einen ganzen Satz
+   drumherum. Ungeprüft übernommen ergibt das eine Adresse, die nirgendwo
+   hinführt. Deshalb wird die Adresse herausgeschnitten, bevor irgendetwas
+   damit passiert. */
+const LINK_MUSTER = /(?:https?:\/\/)?(?:[\w-]+\.)+[a-z]{2,}(?::\d+)?(?:\/[^\s<>"'`]*)?/i;
+function linkAusText(s) {
+  let t = String(s == null ? "" : s).trim();
+  if (!t) return "";
+  // [Text](Adresse) → Adresse. Das Ziel steht in der runden Klammer.
+  const markdown = t.match(/\]\(\s*([^\s)]+)\s*\)/);
+  if (markdown) t = markdown[1];
+  const treffer = t.match(LINK_MUSTER);
+  if (!treffer) return "";
+  // Satzzeichen am Ende gehören zum Satz, nicht zur Adresse.
+  return treffer[0].replace(/[.,;:!?)\]}>»"']+$/, "");
+}
+// Steckt in dem, was du eingetippt oder die KI geschrieben hat, überhaupt
+// eine Adresse? Erst danach ist der Link eine Pflichtangabe erfüllt.
+const istLink = (s) => !!linkAusText(s);
+// Adressen aus einem Fließtext klauben. Hier wird streng gesucht — ohne
+// "https://" oder "www." wäre jedes "details.html" ein Treffer.
+function linksImText(s) {
+  const roh = String(s == null ? "" : s).match(/(?:https?:\/\/|www\.)[^\s<>"'`,;]+/gi) || [];
+  return [...new Set(roh.map(normalizeUrl).filter(Boolean))];
+}
+// Ohne "https://" deutet der Browser den Link als Pfad auf dieser Seite.
 function normalizeUrl(s) {
-  const t = String(s == null ? "" : s).trim();
+  const t = linkAusText(s);
   if (!t) return "";
   return /^https?:\/\//i.test(t) ? t : `https://${t.replace(/^\/+/, "")}`;
 }
@@ -887,7 +913,10 @@ function parseImport(text) {
   const arr = Array.isArray(data) ? data : [data];
   const vehicles = arr.filter((x) => x && typeof x === "object").map(normalizeVehicle);
   if (!vehicles.length) return { error: "Im JSON wurde kein Fahrzeug gefunden." };
-  return { vehicles };
+  // Was außerhalb des JSON-Blocks steht, wird sonst verworfen. Steht dort ein
+  // Link, ist er oft genau der, den die KI im Feld "url" vergessen hat.
+  const drumherum = linksImText(String(text).split(t).join(" \n "));
+  return { vehicles, drumherum };
 }
 
 /* --------------------------- Storage ----------------------------- */
@@ -979,7 +1008,8 @@ function migrate(vehicles) {
     v.showcase = normalizeChoice(v.showcase, "showcase", SHOWCASE_OPTS) || "Normal";
     v.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS) || "Aktiv";
     v.listedSince = v.listedSince || v.priceHistory?.[0]?.date || "";
-    // Ohne "https://" deutet der Browser den Link als Pfad auf dieser Seite.
+    // Schon gespeicherte Links werden mit geradegezogen: Alteinträge tragen
+    // teils noch die Verpackung der KI mit sich herum und führen so ins Leere.
     v.url = normalizeUrl(v.url);
   });
   return vehicles || {};
@@ -1096,9 +1126,14 @@ export default function App() {
         const { vehicles: fern, savedAt } = await serverRead(key);
         baseRef.current = savedAt;
         if (savedAt) {
+          const roh = JSON.stringify(fern);          // migrate arbeitet am Original
           const gehoben = migrate(fern);
           setVehicles(gehoben); localWrite(gehoben);
           setSync({ state: "verbunden", savedAt, msg: "" });
+          // Hat das Anheben etwas geradegezogen — etwa einen kaputten Link —,
+          // gehört der bereinigte Stand auch auf den Server, sonst kommt er
+          // beim nächsten Gerät wieder als Altlast zurück.
+          if (JSON.stringify(gehoben) !== roh) pushToServer(gehoben);
         } else if (Object.keys(lokal).length) {
           await pushToServer(lokal);            // erster Abgleich: lokal hoch
         } else {
@@ -1134,9 +1169,11 @@ export default function App() {
         const { vehicles: fern, savedAt } = await serverRead(sauber);
         baseRef.current = savedAt;
         if (savedAt) {
+          const roh = JSON.stringify(fern);
           const gehoben = migrate(fern);
           setVehicles(gehoben); localWrite(gehoben);
           setSync({ state: "verbunden", savedAt, msg: "" });
+          if (JSON.stringify(gehoben) !== roh) pushToServer(gehoben);
         } else {
           setVehicles((v) => { pushToServer(v); return v; });
         }
@@ -1156,6 +1193,9 @@ export default function App() {
     if (res.error) { setNotice({ type: "err", msg: res.error }); setPreview(null); return; }
     // Bei bekannten Fahrzeugen die früheren Antworten vorbelegen.
     const vorbelegt = {};
+    // Ein einzelner Link neben dem JSON gehört eindeutig zu dem einen Wagen.
+    // Bei mehreren Fahrzeugen wäre die Zuordnung geraten — dann lieber nicht.
+    const ausDemText = res.vehicles.length === 1 && res.drumherum?.length === 1 ? res.drumherum[0] : "";
     res.vehicles.forEach((v) => {
       const alt = vehicles[v.id];
       // Aus einer Sicherung mitgelieferte Antworten zählen zuerst,
@@ -1167,7 +1207,8 @@ export default function App() {
         repairKind: v.repairKind || alt?.repairKind || (v.repairNote ? "" : "Keine genannt"),
         showcase: v.showcase === "Vorzeigefahrzeug" || alt?.showcase === "Vorzeigefahrzeug"
           ? "Vorzeigefahrzeug" : "Normal",
-        url: v.url || alt?.url || "",
+        // Gleich geradegezogen, damit im Feld steht, was später gespeichert wird.
+        url: normalizeUrl(v.url) || normalizeUrl(alt?.url) || ausDemText,
       };
     });
     setAnswers(vorbelegt);
@@ -1910,6 +1951,8 @@ export default function App() {
           und den definierten Analyse-Begriffen. Antwort einfach komplett hier einfügen — Codeblock-Zeichen und Text
           drumherum werden ignoriert. Gleiche <code style={S.code}>id</code> = Preis-Punkte werden ergänzt.
           Über <b style={{ color: T.text }}>Datei laden</b> spielst du eine zuvor exportierte Sicherung zurück.
+          Hat die KI den Link vergessen, füg ihn einfach neben dem JSON mit ein — bei einem
+          einzelnen Fahrzeug wird er von dort übernommen.
         </p>
         <textarea value={raw} onChange={(e) => setRaw(e.target.value)}
           placeholder='Antwort der KI hier einfügen…' style={S.textarea} spellCheck={false} />
@@ -1974,6 +2017,14 @@ export default function App() {
                           ? "Aus dem JSON übernommen — prüfen und bei Bedarf überschreiben."
                           : "Von hier kommst du später mit einem Klick zurück ins Inserat."}
                     </div>
+                    {/* Die KI verpackt Links gern in Klammern oder Markdown.
+                        Was davon übrig bleibt, steht hier — vor dem Speichern. */}
+                    {istLink(answers[v.id]?.url) &&
+                      normalizeUrl(answers[v.id].url) !== String(answers[v.id].url).trim() && (
+                      <div style={S.askHilfe}>
+                        Gespeichert wird <b style={{ color: T.text }}>{normalizeUrl(answers[v.id].url)}</b>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
