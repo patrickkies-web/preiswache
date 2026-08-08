@@ -36,6 +36,12 @@ const TEXT_FIELDS = [
   "listingStatus", "listedSince", "closedDate",
   // Datum, an dem du den Eintrag durchgesehen hast (leer = noch offen):
   "geprueft",
+  // Beobachtung: nur, was sich nicht aus dem Preisverlauf ergibt.
+  // firstSeen      — als die App das Fahrzeug erstmals erfasst hat
+  // lastSeen       — als es zuletzt nachweislich noch online war
+  // disappearedAt  — als zuerst auffiel, dass es nicht mehr online ist
+  // trackingQuality— "full" oder "legacy", einmal beim Aufnehmen bestimmt
+  "firstSeen", "lastSeen", "disappearedAt", "trackingQuality",
 ];
 
 /* Definierte Begriffe (kontrolliertes Vokabular)
@@ -614,6 +620,94 @@ function tageZwischen(von, bis) {
 }
 // Erster bekannter Tag des Inserats: gesetzter Wert, sonst der erste Preis-Punkt.
 const inseriertSeit = (v) => v.listedSince || v.priceHistory?.[0]?.date || "";
+
+/* --- Beobachtung je Fahrzeug -------------------------------------------
+   Gespeichert werden nur die vier Angaben, die sich nicht ausrechnen
+   lassen: firstSeen, lastSeen, disappearedAt und trackingQuality. Alles
+   andere — erster Preis, aktueller Preis, jede Änderung, die Dauer jeder
+   Preisstufe, Standzeit und Veränderung — wird aus dem Preisverlauf
+   abgeleitet. Doppelt speichern hieße zwei Wahrheiten pflegen, und die
+   laufen früher oder später auseinander.
+
+   Der Preisverlauf selbst wird nie überschrieben: jeder Punkt bleibt mit
+   seinem Datum stehen, hinzugefügt wird nur hinten.
+
+   trackingQuality sagt, ob die Beobachtung den Anfang des Inserats
+   mitbekommen hat:
+     full   — erstmals gesehen, als das Inserat frisch war
+     legacy — das Inserat lief schon, als es in die App kam
+   Bei "legacy" fehlt der Anfang: frühe Senkungen sind unsichtbar, und die
+   Standzeit ist länger als das, was hier beobachtet wurde. */
+const istOffline = (v) => !!(v.disappearedAt || (v.listingStatus && v.listingStatus !== "Aktiv"));
+const verschwundenAm = (v) => v.disappearedAt || (v.listingStatus && v.listingStatus !== "Aktiv" ? v.closedDate : "") || "";
+
+/* Preisstufen: aufeinanderfolgende gleiche Preise gehören zu EINER Stufe.
+   Trägst du dreimal denselben Preis nach, ist das kein dreimaliger
+   Preiswechsel, sondern eine Stufe, die drei Beobachtungen lang hielt. */
+function preisStufen(v) {
+  const h = (v.priceHistory || []).slice().sort((a, b) => a.date.localeCompare(b.date));
+  if (!h.length) return [];
+  const stufen = [];
+  h.forEach((p) => {
+    const letzte = stufen[stufen.length - 1];
+    if (letzte && letzte.preis === p.price) { letzte.beobachtungen++; return; }
+    stufen.push({ preis: p.price, von: p.date, beobachtungen: 1 });
+  });
+  const weg = verschwundenAm(v);
+  stufen.forEach((s, i) => {
+    const naechste = stufen[i + 1];
+    s.bis = naechste ? naechste.von : (weg || todayISO());
+    s.laeuft = !naechste && !weg;
+    s.tage = tageZwischen(s.von, s.bis) ?? 0;
+    s.vorher = i > 0 ? stufen[i - 1].preis : null;
+    s.aenderung = i > 0 ? s.preis - stufen[i - 1].preis : null;
+  });
+  return stufen;
+}
+
+function tracking(v) {
+  const stufen = preisStufen(v);
+  const weg = verschwundenAm(v);
+  const erste = stufen[0] || null;
+  const letzte = stufen[stufen.length - 1] || null;
+  const firstSeen = v.firstSeen || erste?.von || "";
+  // Solange nichts anderes bekannt ist, gilt der letzte Preis-Punkt als
+  // letzter Lebenszeichen-Beleg.
+  const lastSeen = [v.lastSeen, letzte?.von].filter(Boolean).sort().pop() || "";
+  const ende = weg || todayISO();
+  const start = inseriertSeit(v);
+  const abs = erste && letzte ? letzte.preis - erste.preis : null;
+  return {
+    stufen,
+    initialTrackedPrice: erste ? erste.preis : null,
+    currentPrice: letzte ? letzte.preis : null,
+    // Der letzte Ask ist erst dann eine eigene Aussage, wenn das Inserat weg ist.
+    lastAsk: weg && letzte ? letzte.preis : null,
+    firstSeen, lastSeen, disappearedAt: weg,
+    offline: !!weg,
+    stand: weg ? (v.listingStatus && v.listingStatus !== "Aktiv" ? v.listingStatus : "Verschwunden") : "Aktiv",
+    daysTracked: firstSeen ? tageZwischen(firstSeen, ende) : null,
+    daysOnline: start ? tageZwischen(start, ende) : null,
+    // Wie alt ist das letzte Lebenszeichen? Nur bei laufenden Inseraten eine Frage.
+    tageSeitGesehen: !weg && lastSeen ? tageZwischen(lastSeen, todayISO()) : null,
+    aenderungen: Math.max(0, stufen.length - 1),
+    tageSeitAenderung: letzte ? tageZwischen(letzte.von, ende) : null,
+    absolut: abs,
+    prozent: abs != null && erste?.preis ? (abs / erste.preis) * 100 : null,
+    qualitaet: v.trackingQuality === "full" ? "full" : "legacy",
+    // Wie viele Tage lief das Inserat schon, bevor die App es gesehen hat?
+    blindTage: start && firstSeen ? tageZwischen(start, firstSeen) : null,
+  };
+}
+
+/* Beim Aufnehmen wird einmal festgehalten, ob der Anfang des Inserats
+   dabei war. Zwei Tage Spielraum, weil du selten am selben Tag erfasst,
+   an dem der Verkäufer einstellt. */
+function trackingGuete(listedSince, firstSeen) {
+  if (!listedSince || !firstSeen) return "legacy";
+  const d = tageZwischen(listedSince, firstSeen);
+  return d != null && d <= 2 ? "full" : "legacy";
+}
 // Laufzeit bis zum Abschluss, bei laufenden Inseraten bis heute.
 function laufzeitTage(v) {
   const start = inseriertSeit(v);
@@ -897,6 +991,11 @@ function normalizeVehicle(v) {
   out.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS);
   out.listedSince = nurDatum(v.listedSince) || out.priceHistory[0]?.date || "";
   out.closedDate = nurDatum(v.closedDate);
+  // Aus einer Sicherung kommen diese Werte zurück; aus einer KI-Antwort nie.
+  out.firstSeen = nurDatum(v.firstSeen);
+  out.lastSeen = nurDatum(v.lastSeen);
+  out.disappearedAt = nurDatum(v.disappearedAt);
+  out.trackingQuality = v.trackingQuality === "full" ? "full" : v.trackingQuality === "legacy" ? "legacy" : "";
   out.id = (v.id && String(v.id).trim()) || slugId(out);
   return out;
 }
@@ -1061,6 +1160,28 @@ function migrate(vehicles) {
     v.showcase = normalizeChoice(v.showcase, "showcase", SHOWCASE_OPTS) || "Normal";
     v.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS) || "Aktiv";
     v.listedSince = v.listedSince || v.priceHistory?.[0]?.date || "";
+
+    /* Beobachtungsdaten für Einträge nachziehen, die es vor dieser Zählung
+       schon gab. Was fehlt, wird aus dem Vorhandenen erschlossen und ist
+       damit eine Annahme — deshalb bekommen sie "legacy", solange sich
+       nicht belegen lässt, dass der Anfang des Inserats dabei war. */
+    const ersterPunkt = v.priceHistory?.[0]?.date || "";
+    const letzterPunkt = v.priceHistory?.[v.priceHistory.length - 1]?.date || "";
+    if (!v.firstSeen) {
+      v.firstSeen = [nurDatum(v.createdAt), ersterPunkt].filter(Boolean).sort()[0] || "";
+    }
+    if (!v.lastSeen) {
+      v.lastSeen = [letzterPunkt, v.geprueft, nurDatum(v.updatedAt)]
+        .filter(Boolean).filter((d) => d <= todayISO()).sort().pop() || v.firstSeen;
+    }
+    if (!v.disappearedAt && v.listingStatus && v.listingStatus !== "Aktiv") {
+      v.disappearedAt = v.closedDate || v.lastSeen || "";
+    }
+    // Ein wieder geöffnetes Inserat ist nicht verschwunden.
+    if (v.listingStatus === "Aktiv") v.disappearedAt = "";
+    if (v.trackingQuality !== "full" && v.trackingQuality !== "legacy") {
+      v.trackingQuality = trackingGuete(v.listedSince, v.firstSeen);
+    }
     // Schon gespeicherte Links werden mit geradegezogen: Alteinträge tragen
     // teils noch die Verpackung der KI mit sich herum und führen so ins Leere.
     v.url = normalizeUrl(v.url);
@@ -1314,10 +1435,29 @@ export default function App() {
         // eine Sicherung bringt ihn mit und stellt ihn wieder her.
         merged.listingStatus = incoming.listingStatus || existing.listingStatus || "Aktiv";
         merged.closedDate = incoming.closedDate || existing.closedDate || "";
+        /* Beobachtung fortschreiben. Die erste Sichtung steht fest und wird
+           nie später — sonst ginge die Vorgeschichte verloren. Das Fahrzeug
+           wurde gerade erneut eingelesen, also war es zu sehen. */
+        merged.firstSeen = [existing.firstSeen, incoming.firstSeen, merged.priceHistory[0]?.date]
+          .filter(Boolean).sort()[0] || "";
+        merged.lastSeen = [existing.lastSeen, incoming.lastSeen, todayISO()]
+          .filter(Boolean).sort().pop() || todayISO();
+        merged.disappearedAt = merged.listingStatus === "Aktiv" ? ""
+          : (incoming.disappearedAt || existing.disappearedAt || merged.closedDate || "");
+        // Einmal vergeben, bleibt die Güte. Sie beschreibt den Moment der
+        // Aufnahme, nicht den heutigen Stand.
+        merged.trackingQuality = existing.trackingQuality || incoming.trackingQuality
+          || trackingGuete(merged.listedSince, merged.firstSeen);
         merged.updatedAt = new Date().toISOString();
         next[incoming.id] = merged; updated++;
       } else {
+        const firstSeen = incoming.firstSeen || todayISO();
         next[incoming.id] = { ...incoming, listingStatus: incoming.listingStatus || "Aktiv",
+          firstSeen,
+          lastSeen: incoming.lastSeen || todayISO(),
+          disappearedAt: incoming.listingStatus && incoming.listingStatus !== "Aktiv"
+            ? (incoming.disappearedAt || incoming.closedDate || "") : "",
+          trackingQuality: incoming.trackingQuality || trackingGuete(incoming.listedSince, firstSeen),
           createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() }; added++;
       }
     });
@@ -1355,9 +1495,26 @@ export default function App() {
   function addPoint(v) {
     const price = coerceNum(addPrice);
     if (price == null || !addDate) { setNotice({ type: "err", msg: "Datum und Preis angeben." }); return; }
-    updateVehicle(v.id, (veh) => { const hist = veh.priceHistory.filter((p) => p.date !== addDate); hist.push({ date: addDate, price }); hist.sort((a, b) => a.date.localeCompare(b.date)); return { ...veh, priceHistory: hist, updatedAt: new Date().toISOString() }; });
+    updateVehicle(v.id, (veh) => {
+      const hist = veh.priceHistory.filter((p) => p.date !== addDate);
+      hist.push({ date: addDate, price });
+      hist.sort((a, b) => a.date.localeCompare(b.date));
+      // Einen Preis nachtragen heißt: an diesem Tag stand das Inserat noch.
+      const gesehen = [veh.lastSeen, addDate].filter(Boolean).sort().pop();
+      return { ...veh, priceHistory: hist, lastSeen: gesehen,
+        firstSeen: veh.firstSeen || hist[0].date, updatedAt: new Date().toISOString() };
+    });
     setAddFor(null); setAddPrice("");
   }
+  /* Ein Blick ins Inserat ohne Preisänderung ist trotzdem eine Beobachtung.
+     Ohne diesen Handgriff bliebe "zuletzt gesehen" auf dem letzten
+     Preis-Update stehen, und die Standzeit stützte sich auf nichts. */
+  const heuteGesehen = useCallback((id) => {
+    updateVehicle(id, (veh) => ({ ...veh, lastSeen: todayISO(),
+      firstSeen: veh.firstSeen || veh.priceHistory?.[0]?.date || todayISO(),
+      updatedAt: new Date().toISOString() }));
+  }, [updateVehicle]);
+
   function deletePoint(v, date) { updateVehicle(v.id, (veh) => ({ ...veh, priceHistory: veh.priceHistory.filter((p) => p.date !== date), updatedAt: new Date().toISOString() })); }
   function removeVehicle(id) { const next = { ...vehicles }; delete next[id]; persist(next); }
 
@@ -1369,11 +1526,15 @@ export default function App() {
   }
   function confirmClose(v) {
     if (!closeDate) { setNotice({ type: "err", msg: "Bitte ein Datum angeben." }); return; }
-    updateVehicle(v.id, (veh) => ({ ...veh, listingStatus: closeStatus, closedDate: closeDate, updatedAt: new Date().toISOString() }));
+    updateVehicle(v.id, (veh) => ({ ...veh, listingStatus: closeStatus, closedDate: closeDate,
+      // Der Tag, an dem es zuerst nicht mehr online war. Ob verkauft oder
+      // zurückgezogen, steht daneben im Status — hier steht nur "weg".
+      disappearedAt: closeDate, updatedAt: new Date().toISOString() }));
     setCloseFor(null);
   }
   function reopen(v) {
-    updateVehicle(v.id, (veh) => ({ ...veh, listingStatus: "Aktiv", closedDate: "", updatedAt: new Date().toISOString() }));
+    updateVehicle(v.id, (veh) => ({ ...veh, listingStatus: "Aktiv", closedDate: "", disappearedAt: "",
+      lastSeen: todayISO(), updatedAt: new Date().toISOString() }));
   }
 
   /* ---- Export (Backup als JSON-Datei) ---- */
@@ -3608,7 +3769,7 @@ export default function App() {
                       openAdd={openAdd} cancelAdd={() => setAddFor(null)} addPoint={addPoint} deletePoint={deletePoint} removeVehicle={removeVehicle}
                       closeFor={closeFor} closeStatus={closeStatus} closeDate={closeDate} setCloseStatus={setCloseStatus} setCloseDate={setCloseDate}
                       openClose={openClose} cancelClose={() => setCloseFor(null)} confirmClose={confirmClose} reopen={reopen}
-                      toggleStern={toggleStern} setzeFeld={setzeFeld} />
+                      toggleStern={toggleStern} setzeFeld={setzeFeld} heuteGesehen={heuteGesehen} />
                   ))}
                 </div>
               </>
@@ -3628,7 +3789,7 @@ export default function App() {
 /* --------------------------- Karte ------------------------------- */
 
 function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, setAddDate, setAddPrice, openAdd, cancelAdd, addPoint, deletePoint, removeVehicle,
-  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen, toggleStern, setzeFeld }) {
+  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen, toggleStern, setzeFeld, heuteGesehen }) {
   const S = styles;
   const h = v.priceHistory || [];
   const last = h[h.length - 1]?.price;
@@ -3722,6 +3883,8 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
           </span>
         </div>
 
+        <Beobachtung v={v} heuteGesehen={heuteGesehen} />
+
         <div style={S.histHead}>
           <span>Preisverlauf · {h.length}</span>
           {addFor === v.id ? (
@@ -3786,6 +3949,111 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
         <Linkfeld v={v} setzeFeld={setzeFeld} trenner />
       </div>
       )}
+    </div>
+  );
+}
+
+/* Was die App über die Beobachtung dieses Inserats weiß.
+   Alles außer firstSeen, lastSeen, disappearedAt und trackingQuality wird
+   aus dem Preisverlauf gerechnet — siehe tracking(). */
+function Beobachtung({ v, heuteGesehen }) {
+  const S = styles;
+  const [stufenOffen, setStufenOffen] = useState(false);
+  const t = tracking(v);
+  if (t.initialTrackedPrice == null) return null;
+
+  const runter = t.absolut != null && t.absolut < 0;
+  const deltaFarbe = t.absolut === 0 || t.absolut == null ? T.muted : runter ? T.good : T.bad;
+  const alt = t.tageSeitGesehen;
+
+  return (
+    <div style={S.beoBox}>
+      <div style={S.beoKopf}>
+        <span style={S.beoTitel}><Gauge size={11} style={{ verticalAlign: -1 }} /> Beobachtung</span>
+        <span style={{ ...S.beoGuete, color: t.qualitaet === "full" ? T.good : T.muted,
+          borderColor: (t.qualitaet === "full" ? T.good : T.muted) + "55" }}
+          title={t.qualitaet === "full"
+            ? "Von Anfang an verfolgt — das Inserat war frisch, als es aufgenommen wurde."
+            : `Das Inserat lief schon${t.blindTage ? ` ${t.blindTage} Tage` : ""}, als es aufgenommen wurde. Frühe Senkungen fehlen.`}>
+          {t.qualitaet === "full" ? "vollständig verfolgt" : "nachträglich aufgenommen"}
+        </span>
+      </div>
+
+      <div style={S.beoGitter}>
+        <BeoWert label="Erster Preis" wert={fmtEUR(t.initialTrackedPrice)} />
+        <BeoWert label="Aktuell" wert={fmtEUR(t.currentPrice)} stark />
+        <BeoWert label="Veränderung" farbe={deltaFarbe}
+          wert={t.absolut === 0 ? "keine"
+            : `${t.absolut > 0 ? "+" : "−"}${fmtEUR(Math.abs(t.absolut))}`}
+          zusatz={t.absolut === 0 || t.prozent == null ? null
+            : `${t.prozent > 0 ? "+" : "−"}${Math.abs(t.prozent).toFixed(1).replace(".", ",")} %`} />
+        <BeoWert label="Preisänderungen" wert={`${t.aenderungen}`}
+          zusatz={t.tageSeitAenderung == null ? null
+            : t.aenderungen === 0 ? `unverändert seit ${laufzeitDativ(t.tageSeitAenderung)}`
+              : `zuletzt vor ${laufzeitDativ(t.tageSeitAenderung)}`} />
+        <BeoWert label="Erstmals gesehen" wert={t.firstSeen ? fmtDate(t.firstSeen) : "—"} />
+        <BeoWert label="Zuletzt gesehen" wert={t.lastSeen ? fmtDate(t.lastSeen) : "—"}
+          farbe={alt != null && alt > 7 ? T.accent : undefined}
+          zusatz={alt == null ? null : alt === 0 ? "heute" : `vor ${laufzeitDativ(alt)}`} />
+        <BeoWert label="Standzeit" wert={t.daysTracked == null ? "—" : laufzeitText(t.daysTracked)}
+          zusatz={t.daysOnline != null && t.daysOnline !== t.daysTracked
+            ? `online ${laufzeitText(t.daysOnline)}` : "seit der ersten Erfassung"} />
+        <BeoWert label="Status" wert={t.stand} farbe={t.offline ? T.muted : T.good}
+          zusatz={t.offline && t.disappearedAt ? `seit ${fmtDate(t.disappearedAt)}` : "noch online"} />
+        {t.lastAsk != null && (
+          <BeoWert label="Letzter Ask" wert={fmtEUR(t.lastAsk)} zusatz="vor dem Verschwinden" />
+        )}
+      </div>
+
+      {!t.offline && (
+        <div style={S.beoZeile}>
+          <button style={S.beoBtn} onClick={() => heuteGesehen(v.id)}
+            title="Festhalten, dass das Inserat heute noch online war — auch ohne Preisänderung">
+            <Check size={12} /> heute noch online
+          </button>
+          {alt != null && alt > 7 && (
+            <span style={S.beoWarnung}>
+              Seit {laufzeitDativ(alt)} nicht bestätigt — die Standzeit stützt sich so lange auf nichts.
+            </span>
+          )}
+        </div>
+      )}
+
+      <button style={S.beoStufenBtn} onClick={() => setStufenOffen((o) => !o)}>
+        <span style={{ ...S.chev, transform: stufenOffen ? "rotate(90deg)" : "none" }}><ChevronRight size={12} /></span>
+        Preisstufen und ihre Dauer · {t.stufen.length}
+      </button>
+      {stufenOffen && (
+        <div style={S.stufenListe}>
+          {t.stufen.map((st, i) => (
+            <div key={`${st.von}-${i}`} className="pw-stufe" style={S.stufenZeile}>
+              <span style={S.stufenPreis}>{fmtEUR(st.preis)}</span>
+              <span style={S.stufenDauer}>{laufzeitText(st.tage)}{st.laeuft ? " · läuft" : ""}</span>
+              <span style={S.stufenZeitraum}>
+                {fmtDate(st.von)} – {st.laeuft ? "heute" : fmtDate(st.bis)}
+              </span>
+              <span style={{ ...S.stufenDelta, color: st.aenderung == null ? T.muted : st.aenderung < 0 ? T.good : T.bad }}>
+                {st.aenderung == null ? "Start"
+                  : `${st.aenderung > 0 ? "+" : "−"}${fmtEUR(Math.abs(st.aenderung))}`}
+              </span>
+            </div>
+          ))}
+          <div style={S.askHilfe}>
+            Gleiche Preise hintereinander zählen als eine Stufe. Die letzte läuft bis heute
+            beziehungsweise bis zu dem Tag, an dem das Inserat verschwunden war.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+function BeoWert({ label, wert, zusatz, farbe, stark }) {
+  const S = styles;
+  return (
+    <div style={S.beoFeld}>
+      <div style={S.beoLabel}>{label}</div>
+      <div style={{ ...S.beoZahl, color: farbe || T.text, fontWeight: stark ? 800 : 700 }}>{wert}</div>
+      {zusatz && <div style={S.beoZusatz}>{zusatz}</div>}
     </div>
   );
 }
@@ -4351,6 +4619,11 @@ const globalCss = `
     .pw-mlabel { display: block; }
     /* Sternniveau-Zeilen: Titel oben, Zahlen darunter nebeneinander */
     .pw-anker { grid-template-columns: 1fr auto !important; row-gap: 4px; }
+    .pw-stufe { grid-template-columns: auto 1fr !important; row-gap: 2px; }
+    .pw-stufe > span:nth-child(1) { grid-area: 1 / 1; }
+    .pw-stufe > span:nth-child(4) { grid-area: 1 / 2; text-align: right; }
+    .pw-stufe > span:nth-child(2) { grid-area: 2 / 1; }
+    .pw-stufe > span:nth-child(3) { grid-area: 2 / 2; text-align: right; }
     .pw-stand { grid-template-columns: 1fr auto !important; row-gap: 4px; }
     .pw-stand > span:nth-child(1) { grid-column: 1 / -1; white-space: normal; }
     .pw-stand > span:nth-child(4) { text-align: right; }
@@ -4472,6 +4745,25 @@ const styles = {
   laufCell: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11.5 },
   laufSummary: { marginTop: 10, fontSize: 11.5, color: T.muted, lineHeight: 1.6 },
 
+  beoBox: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", marginBottom: 10 },
+  beoKopf: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, flexWrap: "wrap", marginBottom: 8 },
+  beoTitel: { color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontSize: 10, fontWeight: 700 },
+  beoGuete: { fontSize: 10, fontWeight: 700, border: "1px solid", borderRadius: 999, padding: "2px 8px" },
+  beoGitter: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(118px, 1fr))", gap: 8 },
+  beoFeld: { background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 7, padding: "6px 8px" },
+  beoLabel: { color: T.muted, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 700 },
+  beoZahl: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, marginTop: 2 },
+  beoZusatz: { color: T.muted, fontSize: 10, marginTop: 1 },
+  beoZeile: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 9 },
+  beoBtn: { display: "inline-flex", alignItems: "center", gap: 5, background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 7, padding: "5px 9px", fontSize: 11.5, fontWeight: 600 },
+  beoWarnung: { color: T.accent, fontSize: 10.5, flex: 1, minWidth: 140 },
+  beoStufenBtn: { display: "flex", alignItems: "center", gap: 6, background: "none", border: "none", color: T.muted, fontSize: 11, padding: "8px 0 0", textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 700 },
+  stufenListe: { display: "flex", flexDirection: "column", gap: 3, marginTop: 6 },
+  stufenZeile: { display: "grid", gridTemplateColumns: "84px 108px 1fr 78px", gap: 8, alignItems: "center", fontSize: 11.5, background: T.surface2, borderRadius: 6, padding: "4px 8px" },
+  stufenPreis: { fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 700 },
+  stufenDauer: { fontFamily: "ui-monospace, Menlo, monospace", color: T.text },
+  stufenZeitraum: { color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 10.5 },
+  stufenDelta: { fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right", fontSize: 11 },
   lifeBox: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10, display: "flex", flexDirection: "column", gap: 7 },
   lifeRow: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, fontSize: 11.5, flexWrap: "wrap" },
   lifeLabel: { color: T.muted, textTransform: "uppercase", letterSpacing: "0.04em", fontSize: 10, fontWeight: 700 },
