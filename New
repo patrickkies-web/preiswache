@@ -7,7 +7,7 @@ import {
   Gauge, Plus, Trash2, Check, X, TrendingDown, TrendingUp, Minus, Car,
   AlertTriangle, Upload, Star, MapPin, Store, User, Wrench, Search, Filter, ShieldCheck, Download,
   Camera, CalendarClock, Archive, RotateCcw, Clock, ChevronRight, FileUp,
-  Cloud, CloudOff, RefreshCw, ArrowUp, ArrowDown,
+  Cloud, CloudOff, RefreshCw, ArrowUp, ArrowDown, Link2,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -1439,14 +1439,20 @@ export default function App() {
       if (!h.length) return;
       // Tag 0 ist entweder der Tag, an dem der Verkäufer inseriert hat, oder
       // der Tag, an dem du das Fahrzeug erstmals erfasst hast. Ersteres zeigt
-      // die echte Standzeit, letzteres vergleicht die Verläufe unabhängig
-      // davon, wie lange ein Inserat vor deiner Erfassung schon lief.
+      // die echte Standzeit — jede Linie ist dann so lang, wie das Inserat
+      // schon läuft. Letzteres zeigt nur, was du selbst beobachtet hast.
       const start = (nullpunkt === "inserat" ? inseriertSeit(v) : "") || h[0].date;
       const startPreis = h[0].price;
       if (!startPreis) return;
       const punkte = h.map((p) => ({ tag: Math.max(0, tageZwischen(start, p.date) ?? 0), price: p.price }));
       // Ab welchem Tag der Standzeit liegt überhaupt eine Beobachtung vor?
       const abTag = punkte[0].tag;
+      // Jede Linie beginnt bei Tag 0, dem Tag des Inserierens. Für die Zeit
+      // davor gibt es keine Beobachtung, also gilt der erste bekannte Preis
+      // rückwärts weiter — dieselbe Annahme wie vorwärts: ein Preis steht,
+      // bis der Verkäufer ihn ändert. Was daran geschätzt ist, steht als
+      // Hinweis über dem Schaubild.
+      if (abTag > 0) punkte.unshift({ tag: 0, price: punkte[0].price, ergaenzt: true });
       // Bis wann ist das Inserat beobachtet? Danach endet die Linie.
       const geschlossen = v.listingStatus && v.listingStatus !== "Aktiv" && v.closedDate;
       const ende = Math.max(tageZwischen(start, geschlossen ? v.closedDate : todayISO()) ?? 0,
@@ -1531,14 +1537,10 @@ export default function App() {
       saetze.forEach(([name, v]) => {
         const werte = v.reihen.map((r) => zeige(r, v.wertBei(r, tag))).filter((w) => w != null);
         if (!werte.length) return;
-        // Beim Inseratsanker treten die Fahrzeuge zu verschiedenen Tagen in die
-        // Beobachtung ein. Ein Durchschnitt über eine wechselnde Teilmenge
-        // steigt und fällt ohne jede Preisänderung — deshalb nur zeichnen,
-        // solange noch keines herausgefallen ist.
-        if (nullpunkt === "inserat") {
-          const moeglich = v.reihen.filter((r) => tag >= r.abTag && tag <= r.ende).length;
-          if (werte.length < moeglich || werte.length < 2) return;
-        }
+        // Der Durchschnitt läuft über die Inserate, die an diesem Tag noch
+        // liefen. Zum Ende hin sind das immer weniger — der Tooltip nennt
+        // deshalb zu jedem Tag die Anzahl.
+        if (werte.length < 2) return;
         const m = mittel(werte);
         // Streuung über die Inserate: wie weit liegen sie an diesem Tag auseinander
         const sd = werte.length > 1 ? Math.sqrt(mittel(werte.map((w) => (w - m) ** 2))) : 0;
@@ -2277,9 +2279,9 @@ export default function App() {
         <p style={S.hint}>
           Senkrecht der Fahrzeugpreis, waagerecht die Tage seit Tag 0.
           {nullpunkt === "inserat"
-            ? <> <b style={{ color: T.text }}>Tag 0 ist der Tag, an dem der Verkäufer inseriert hat</b> — die Linie
-              beginnt dort, wo deine erste Erfassung liegt. Ein Inserat, das schon vier Wochen lief, als du es
-              aufgenommen hast, startet also bei Tag 28. So siehst du die echte Standzeit.</>
+            ? <> <b style={{ color: T.text }}>Tag 0 ist der Tag, an dem der Verkäufer inseriert hat</b> — jede Linie
+              beginnt links bei null, aber sie sind verschieden lang: ein Inserat, das seit 30 Tagen läuft, reicht
+              bis Tag 30, ein frisches nur bis Tag 6. So siehst du die echte Standzeit.</>
             : <> <b style={{ color: T.text }}>Tag 0 ist deine erste Erfassung</b> — jedes Auto beginnt links bei null,
               unabhängig davon, wie lange das Inserat vorher schon lief. So lassen sich die Verläufe direkt
               übereinanderlegen.</>}
@@ -2388,23 +2390,20 @@ export default function App() {
             <div style={S.legendHint}>
               {sekundaer
                 ? <>Durchgezogen: {AUSWAHL_NAME[aktiv]} · gestrichelt: {AUSWAHL_NAME[andere]} · getönte Flächen: Streuung</>
-                : nullpunkt === "inserat"
-                  ? <>Je Inserat eine Linie ab dem Tag, an dem du es erstmals erfasst hast · Durchschnitt und Streuung
-                    nur für Tage mit vollständiger Beobachtung</>
-                  : <>Je Inserat eine Linie von Tag 0 bis heute · dicke Linie: Durchschnitt · getönte Fläche: Streuung</>}
+                : <>Je Inserat eine Linie von Tag 0 bis heute · dicke Linie: Durchschnitt · getönte Fläche: Streuung</>}
               {glaettung > 0 && <> · geglättet über {glaettung} Tage</>}
               {zeitfenster > 0 && <> · Ausschnitt bis Tag {zeitfenster}</>}
             </div>
 
             {nullpunkt === "inserat" && abInserat.blindAnzahl > 0 && (
               <div style={S.hinweisKlein}>
-                <b style={{ color: T.accent }}>Was du vor deiner Erfassung nicht sehen kannst:</b>{" "}
+                <b style={{ color: T.accent }}>Woher der Anfang der Linien kommt:</b>{" "}
                 {abInserat.blindAnzahl} von {abInserat.anzahl} Inseraten liefen schon, bevor du sie aufgenommen hast —
                 im Mittel <b style={{ color: T.text }}>{abInserat.medianAbTag} Tage</b>, im Höchstfall {abInserat.maxAbTag}.
-                Ob der Verkäufer in dieser Zeit schon gesenkt hat, weißt du nicht; die Linie beginnt deshalb erst bei
-                deiner ersten Beobachtung. Die Kennzahlen unten sind dadurch <b style={{ color: T.text }}>eher zu
-                spät als zu früh</b> — sie messen die erste Senkung, <i>die du gesehen hast</i>.
-                Für den reinen Verlaufsvergleich stell Tag 0 oben auf „meine Erfassung".
+                Für diese Zeit gilt der erste Preis, den du gesehen hast, rückwärts weiter. Hat der Verkäufer vorher
+                schon gesenkt, ist dieser Anfang <b style={{ color: T.text }}>zu niedrig gezeichnet</b> und die erste
+                Senkung fällt <b style={{ color: T.text }}>später aus, als sie war</b> — die Kennzahlen unten messen,
+                was du gesehen hast. Mit Tag 0 auf „meine Erfassung" enthält das Schaubild nur Beobachtetes.
               </div>
             )}
 
@@ -2488,10 +2487,9 @@ export default function App() {
             <div style={S.hinweisKlein}>
               {nullpunkt === "inserat"
                 ? <>Tag 0 kommt aus dem Feld „inseriert seit". Liefert das Inserat kein Datum, nimmt die App
-                  ersatzweise deine erste Erfassung — dieses Fahrzeug startet dann bei Tag 0, obwohl es
-                  vielleicht länger lief. Durchschnitt und Streuung werden nur für Tage gezeichnet, an denen
-                  alle Fahrzeuge der Auswahl gleichzeitig beobachtet sind; sonst würde eine wechselnde
-                  Teilmenge den Schnitt bewegen, ohne dass ein Verkäufer etwas geändert hat.</>
+                  ersatzweise deine erste Erfassung — die Standzeit dieses Fahrzeugs ist dann eher zu kurz
+                  gemessen als zu lang. Wie weit eine Linie nach rechts reicht, sagt, wie lange das Inserat
+                  schon läuft; Durchschnitt und Streuung enden dort, wo nur noch ein Inserat übrig ist.</>
                 : <>Tag 0 ist der erste Preis, den du erfasst hast — nicht der Inseratsbeginn.
                   Für die echte Standzeit stell oben auf „das Inserat".</>}
               {" "}Die Kurve ist nur so genau wie deine Preis-Updates: Trägst du wöchentlich nach, liegt die
@@ -3286,21 +3284,13 @@ export default function App() {
 
                   <div style={S.askItem}>
                     <div style={S.askFrage}>Link zum Inserat</div>
-                    <input defaultValue={v.url || ""} placeholder="mobile.de/…" style={S.askInput}
-                      inputMode="url" spellCheck={false}
-                      onBlur={(e) => { const t = e.target.value.trim(); if (t !== (v.url || "")) setzeFeld(v.id, "url", normalizeUrl(t)); }} />
-                    {!istLink(v.url) && <div style={S.askHilfe}>Ohne Link findest du das Inserat später nicht wieder.</div>}
+                    <Linkfeld v={v} setzeFeld={setzeFeld} />
                   </div>
 
                   <div style={S.row}>
                     <button style={S.primaryBtn} onClick={() => setzeFeld(v.id, "geprueft", todayISO())}>
                       <Check size={15} /> {v.geprueft ? "Erneut bestätigen" : "Geprüft"}
                     </button>
-                    {v.url && (
-                      <a href={normalizeUrl(v.url)} target="_blank" rel="noreferrer" style={S.ghostLink}>
-                        Inserat öffnen ↗
-                      </a>
-                    )}
                     {v.geprueft && <span style={S.askHilfe}>bestätigt am {fmtDate(v.geprueft)}</span>}
                   </div>
                 </div>
@@ -3363,7 +3353,7 @@ export default function App() {
                       openAdd={openAdd} cancelAdd={() => setAddFor(null)} addPoint={addPoint} deletePoint={deletePoint} removeVehicle={removeVehicle}
                       closeFor={closeFor} closeStatus={closeStatus} closeDate={closeDate} setCloseStatus={setCloseStatus} setCloseDate={setCloseDate}
                       openClose={openClose} cancelClose={() => setCloseFor(null)} confirmClose={confirmClose} reopen={reopen}
-                      toggleStern={toggleStern} />
+                      toggleStern={toggleStern} setzeFeld={setzeFeld} />
                   ))}
                 </div>
               </>
@@ -3383,7 +3373,7 @@ export default function App() {
 /* --------------------------- Karte ------------------------------- */
 
 function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, setAddDate, setAddPrice, openAdd, cancelAdd, addPoint, deletePoint, removeVehicle,
-  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen, toggleStern }) {
+  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen, toggleStern, setzeFeld }) {
   const S = styles;
   const h = v.priceHistory || [];
   const last = h[h.length - 1]?.price;
@@ -3538,9 +3528,58 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
           )}
         </div>
 
-        {v.url && <a href={normalizeUrl(v.url)} target="_blank" rel="noreferrer" style={S.link}>Inserat öffnen ↗</a>}
+        <Linkfeld v={v} setzeFeld={setzeFeld} trenner />
       </div>
       )}
+    </div>
+  );
+}
+
+/* Der Link zum Inserat, änderbar direkt in der Fahrzeugkarte.
+   Inserate werden neu eingestellt und Adressen laufen ins Leere — bisher ließ
+   sich der Link nur im Prüfbereich ändern, in den ein fertig durchgesehenes
+   Fahrzeug gar nicht mehr kommt. Gespeichert wird beim Verlassen des Feldes
+   oder mit der Eingabetaste, und zwar die herausgeschnittene Adresse. */
+function Linkfeld({ v, setzeFeld, trenner }) {
+  const S = styles;
+  const [text, setText] = useState(v.url || "");
+  const [offen, setOffen] = useState(false);      // ungespeicherte Eingabe
+  useEffect(() => { if (!offen) setText(v.url || ""); }, [v.url, offen]);
+
+  const sichern = () => {
+    const roh = text.trim();
+    if (!roh) { setOffen(false); setText(""); if (v.url) setzeFeld(v.id, "url", ""); return; }
+    const neu = normalizeUrl(roh);
+    // Steckt keine Adresse darin, bleibt das Getippte stehen und der Hinweis
+    // darunter erklärt warum — kommentarlos zurückspringen wäre ärgerlich.
+    if (!neu) return;
+    setOffen(false);
+    setText(neu);
+    if (neu !== (v.url || "")) setzeFeld(v.id, "url", neu);
+  };
+
+  const leer = !text.trim();
+  const unbrauchbar = !leer && !istLink(text);
+  return (
+    <div style={trenner ? { ...S.linkBox, ...S.linkTrenner } : S.linkBox}>
+      <div style={S.linkZeile}>
+        <Link2 size={12} color={T.muted} />
+        <input value={text} placeholder="mobile.de/…" style={S.linkInput}
+          inputMode="url" spellCheck={false}
+          onChange={(e) => { setOffen(true); setText(e.target.value); }}
+          onBlur={sichern}
+          onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
+        {istLink(v.url) && (
+          <a href={normalizeUrl(v.url)} target="_blank" rel="noreferrer" style={S.linkOeffnen}>öffnen ↗</a>
+        )}
+      </div>
+      {unbrauchbar
+        ? <div style={S.askHilfe}>Darin steckt keine Adresse — so wird nichts gespeichert.</div>
+        : leer
+          ? <div style={S.askHilfe}>Ohne Link findest du das Inserat später nicht wieder.</div>
+          : offen
+            ? <div style={S.askHilfe}>Gespeichert wird beim Verlassen des Feldes: {normalizeUrl(text)}</div>
+            : null}
     </div>
   );
 }
@@ -4305,6 +4344,12 @@ const styles = {
   histPrice: { flex: 1, fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 600 },
   histDel: { background: "transparent", border: "none", color: T.muted, display: "grid", placeItems: "center", padding: 2, lineHeight: 0 },
   link: { display: "inline-block", marginTop: 4, fontSize: 11.5, textDecoration: "none" },
+  linkBox: { marginTop: 6 },
+  linkTrenner: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.line}` },
+  linkZeile: { display: "flex", alignItems: "center", gap: 8 },
+  linkInput: { flex: 1, minWidth: 0, background: T.surface2, color: T.text, border: `1px solid ${T.line}`,
+    borderRadius: 8, padding: "8px 10px", fontSize: 12, fontFamily: "ui-monospace, Menlo, monospace" },
+  linkOeffnen: { fontSize: 11.5, color: T.accent, textDecoration: "none", whiteSpace: "nowrap", fontWeight: 600 },
   iconBtn: { background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 7, padding: 6, display: "grid", placeItems: "center", lineHeight: 0 },
   iconBtnAccent: { background: T.accent, color: T.bg, border: "none", borderRadius: 7, padding: 6, display: "grid", placeItems: "center", lineHeight: 0 },
   footer: { color: T.muted, fontSize: 11, textAlign: "center", lineHeight: 1.6, padding: "8px 10px 4px" },
