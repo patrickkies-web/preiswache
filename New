@@ -621,6 +621,9 @@ function laufzeitTage(v) {
   const ende = v.listingStatus && v.listingStatus !== "Aktiv" && v.closedDate ? v.closedDate : todayISO();
   return tageZwischen(start, ende);
 }
+// "nach 6 Tagen" statt "nach 6 Tage" — laufzeitText liefert den Nominativ.
+const laufzeitDativ = (tage) => laufzeitText(tage)
+  .replace(/(\d+) Tage$/, "$1 Tagen").replace(/(\d+) Monate$/, "$1 Monaten");
 function laufzeitText(tage) {
   if (tage == null) return "—";
   if (tage < 14) return `${tage} ${tage === 1 ? "Tag" : "Tage"}`;
@@ -771,6 +774,26 @@ const leereAuswahl = () => ({ q: "", filters: {}, priceMax: "", kmMax: "" });
 // Ein Filterwert ist eine Liste. Einzelne Werte aus früheren Ständen
 // werden mitgenommen, damit nichts kaputtgeht.
 const filterWerte = (val) => (Array.isArray(val) ? val : val ? [val] : []);
+/* --- Preis gegen Standzeit ---------------------------------------------
+   Was ein Auto kostet, sagt für sich genommen nichts. Interessant ist, was
+   der Markt damit macht: Ein Inserat, das nach einer Woche verschwindet,
+   war richtig bepreist. Eines, das seit Monaten steht, ist es nicht.
+
+   Zwei Dinge sind daran heikel, und beide stehen auch in der App:
+   - Ein laufendes Inserat hat seine Standzeit noch vor sich. Der Wert ist
+     ein Mindestwert und wächst jeden Tag weiter. Solche Fahrzeuge werden
+     als Ring gezeichnet, nicht als voller Punkt — sonst sähe ein gestern
+     eingestelltes Auto aus wie ein Schnellverkauf.
+   - Verschwunden heißt nicht verkauft. Der Verkäufer kann zurückgezogen
+     oder neu eingestellt haben. */
+const STANDZEIT_STUFEN = [
+  { bis: 7, label: "bis 7 Tage", farbe: T.good },
+  { bis: 30, label: "8 bis 30 Tage", farbe: "#E9C34A" },
+  { bis: 60, label: "31 bis 60 Tage", farbe: "#EF8B3C" },
+  { bis: Infinity, label: "über 60 Tage", farbe: T.bad },
+];
+const standzeitStufe = (tage) => STANDZEIT_STUFEN.find((s) => tage <= s.bis) || STANDZEIT_STUFEN[3];
+
 const AUSWAHL_FARBE = ["#F5B301", "#4EA8F4"];   // A gelb, B blau
 const AUSWAHL_NAME = ["Auswahl A", "Auswahl B"];
 // Eigene Palette für die Einzellinien — bewusst ohne Gelb und Blau,
@@ -1094,6 +1117,8 @@ export default function App() {
   const [zeitfenster, setZeitfenster] = useState(0); // Tage, 0 = alles
   const [nullpunkt, setNullpunkt] = useState("inserat"); // "inserat" oder "erfassung"
   const [reiheSort, setReiheSort] = useState("preis"); // Reihenfolge der Preisleiter
+  // Preis gegen Standzeit: alle Inserate oder nur die abgeschlossenen
+  const [standNur, setStandNur] = useState("alle");
   const [ankerKm, setAnkerKm] = useState("");          // Kilometerstand für den Sternrechner
   const [formelKm, setFormelKm] = useState("");        // Kilometerstand für den Preisrechner
   const [masterBezug, setMasterBezug] = useState(0);   // Masterchart: Bezugsgruppe A oder B
@@ -1820,6 +1845,87 @@ export default function App() {
       schnitt: Math.round(my),
     };
   }, [filtered]);
+
+  /* ---- Preis gegen Standzeit ----
+     Waagerecht der Preis, senkrecht wie lange das Inserat schon läuft.
+     Unten links steht das, was günstig war und schnell weg; oben rechts,
+     was zu teuer ist und deshalb steht. Der eigentliche Ertrag ist der
+     Punkt dazwischen: ab welchem Preis die Standzeit kippt. */
+  const standzeit = useMemo(() => {
+    const alle = filtered.map((v) => {
+      const preis = lastPrice(v);
+      const tage = laufzeitTage(v);
+      if (preis == null || tage == null) return null;
+      const laeuft = !(v.listingStatus && v.listingStatus !== "Aktiv");
+      return {
+        id: v.id, title: v.title || v.id, preis, tage, laeuft,
+        stand: v.listingStatus || "Aktiv", km: v.mileage, ez: erstzulassung(v),
+        url: v.url, stern: v.showcase === "Vorzeigefahrzeug", rep: v.repairKind,
+        fotos: v.exterieur, marke: [v.make, v.model].filter(Boolean).join(" "),
+        seit: inseriertSeit(v), closedDate: v.closedDate || "",
+      };
+    }).filter(Boolean);
+
+    const basis = standNur === "fertig" ? alle.filter((p) => !p.laeuft) : alle;
+    if (basis.length < 4) return { zuWenig: true, anzahl: basis.length, gesamt: alle.length };
+
+    // Eine Reihe, nach dem Preis aufsteigend — daran hängen Punkte und Stufenlinie.
+    const punkte = basis.slice().sort((a, b) => a.preis - b.preis);
+
+    /* Preisbänder mit jeweils gleich vielen Fahrzeugen. Gleich viele statt
+       gleich breit, weil sonst bei wenigen Autos Bänder leer bleiben und die
+       Linie Löcher bekommt. Je Band der Median der Standzeit — der Median,
+       weil ein einziger Dauerläufer einen Durchschnitt sonst allein trägt. */
+    const anzahlBaender = Math.max(2, Math.min(4, Math.floor(punkte.length / 3)));
+    const baender = [];
+    let ab = 0;
+    for (let i = 0; i < anzahlBaender; i++) {
+      const bis = Math.round(((i + 1) * punkte.length) / anzahlBaender);
+      const teil = punkte.slice(ab, bis);
+      ab = bis;
+      if (!teil.length) continue;
+      baender.push({
+        vonPreis: teil[0].preis, bisPreis: teil[teil.length - 1].preis, n: teil.length,
+        medianTage: median(teil.map((p) => p.tage)),
+        offen: teil.filter((p) => p.laeuft).length,
+        ids: teil.map((p) => p.id),
+      });
+    }
+    // Jeder Punkt trägt den Median seines Bandes mit, damit die Stufenlinie
+    // aus derselben Reihe kommt wie die Punkte.
+    const nachBand = {};
+    baender.forEach((b) => b.ids.forEach((id) => { nachBand[id] = b.medianTage; }));
+    const reihe = punkte.map((p) => ({ ...p, bandTage: nachBand[p.id] ?? null }));
+
+    /* Der Kipppunkt: das erste Band, dessen Median deutlich über dem
+       vorherigen liegt. "Deutlich" heißt mindestens die Hälfte mehr UND
+       mindestens zehn Tage — sonst gilt schon Rauschen als Kippen. */
+    let kipp = null;
+    for (let i = 1; i < baender.length; i++) {
+      const vor = baender[i - 1].medianTage, jetzt = baender[i].medianTage;
+      if (vor != null && jetzt != null && jetzt >= vor * 1.5 && jetzt - vor >= 10) {
+        kipp = { band: baender[i], vorher: baender[i - 1] };
+        break;
+      }
+    }
+
+    const medianPreis = median(punkte.map((p) => p.preis));
+    const medianTage = median(punkte.map((p) => p.tage));
+    // Trotz gutem Preis lange stehen — genau die Ausreißer, die interessieren.
+    const zaeh = punkte.filter((p) => p.preis <= medianPreis && p.tage > medianTage)
+      .sort((a, b) => b.tage - a.tage);
+    // Abgeschlossen und innerhalb einer Woche weg: der Beleg dafür, was geht.
+    const schnell = punkte.filter((p) => !p.laeuft && p.tage <= 7).sort((a, b) => a.preis - b.preis);
+
+    return {
+      zuWenig: false, reihe, punkte, anzahl: punkte.length, gesamt: alle.length,
+      fertigAnzahl: punkte.filter((p) => !p.laeuft).length,
+      baender, kipp, medianPreis, medianTage, zaeh, schnell,
+      stufen: STANDZEIT_STUFEN.map((s) => ({
+        ...s, anzahl: punkte.filter((p) => standzeitStufe(p.tage) === s).length,
+      })),
+    };
+  }, [filtered, standNur]);
 
   /* ---- Doppelte / neu eingestellte Inserate ---- */
   // Beim Import: gegen den gesamten Bestand prüfen, ausdrücklich auch
@@ -2744,6 +2850,155 @@ export default function App() {
               Gezeigt wird der Preis beim ersten Erfassen, nicht der heutige. Der Trend beschreibt also,
               wie sich das <b style={{ color: T.text }}>Niveau neuer Angebote</b> entwickelt — nicht, wie
               einzelne Verkäufer ihre Preise senken. Dafür ist der Abschnitt darüber zuständig.
+            </div>
+          </>
+        )}
+      </section>
+
+      {/* Preis gegen Standzeit */}
+      <section style={S.panel}>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Clock size={15} /> Preis gegen Standzeit
+          </span>
+          <span style={S.toggleGroup}>
+            <button onClick={() => setStandNur("alle")} style={standNur === "alle" ? S.toggleOn : S.toggleOff}>alle</button>
+            <button onClick={() => setStandNur("fertig")} style={standNur === "fertig" ? S.toggleOn : S.toggleOff}>nur abgeschlossene</button>
+          </span>
+        </div>
+        <p style={S.hint}>
+          Waagerecht der Preis, senkrecht wie lange das Inserat läuft. <b style={{ color: T.text }}>Unten links</b> steht,
+          was günstig war und schnell weg — <b style={{ color: T.text }}>oben rechts</b>, was zu teuer ist und deshalb
+          steht. Interessant ist der Punkt dazwischen: ab welchem Preis die Standzeit kippt.
+        </p>
+        {standzeit.zuWenig ? (
+          <div style={S.emptySmall}>
+            Für diese Auswertung braucht es mindestens vier Fahrzeuge mit Preis und Inseratsdatum
+            {standNur === "fertig" ? " — abgeschlossene sind es erst " : " — es sind erst "}
+            {standzeit.anzahl}.
+            {standNur === "fertig" && standzeit.gesamt > standzeit.anzahl &&
+              <> Stell oben auf <b style={{ color: T.text }}>alle</b>, dann sind es {standzeit.gesamt}.</>}
+          </div>
+        ) : (
+          <>
+            <div style={S.kennzahlen}>
+              <Kennzahl label="Ausgewertet" wert={`${standzeit.anzahl}`}
+                zusatz={`${standzeit.fertigAnzahl} abgeschlossen, ${standzeit.anzahl - standzeit.fertigAnzahl} laufen noch`} />
+              <Kennzahl label="Median Standzeit" wert={laufzeitText(standzeit.medianTage)}
+                zusatz={`Median-Preis ${fmtEUR(standzeit.medianPreis)}`} />
+              <Kennzahl label="Kippt ab" accent
+                wert={standzeit.kipp ? fmtEUR(standzeit.kipp.band.vonPreis) : "kein Sprung"}
+                zusatz={standzeit.kipp
+                  ? `von ${laufzeitText(standzeit.kipp.vorher.medianTage)} auf ${laufzeitText(standzeit.kipp.band.medianTage)}`
+                  : "die Standzeit steigt gleichmäßig"} />
+            </div>
+
+            <div style={{ width: "100%", height: 320, marginTop: 6 }}>
+              <ResponsiveContainer>
+                <ComposedChart data={standzeit.reihe} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
+                  onClick={chartKlick(standzeit.reihe, "preis")}>
+                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
+                  <XAxis dataKey="preis" type="number" domain={["dataMin - 400", "dataMax + 400"]}
+                    tickFormatter={(w) => fmtNum(Math.round(w))}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
+                  <YAxis dataKey="tage" type="number" domain={[0, "dataMax + 4"]}
+                    tickFormatter={(t) => `${t} T`}
+                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={48} />
+                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
+                    const p = active && aktivesFahrzeug(payload, standzeit.reihe, "preis");
+                    return p ? <Standzeitkarte p={p} /> : null;
+                  }} />
+                  <ReferenceLine y={standzeit.medianTage} stroke={T.muted} strokeDasharray="4 4"
+                    label={{ value: `Median ${laufzeitText(standzeit.medianTage)}`, position: "insideTopLeft", fill: T.muted, fontSize: 10 }} />
+                  {standzeit.kipp && (
+                    <ReferenceLine x={standzeit.kipp.band.vonPreis} stroke={T.accent} strokeDasharray="4 4"
+                      label={{ value: "kippt", position: "insideTopRight", fill: T.accent, fontSize: 10 }} />
+                  )}
+                  {/* Die Stufenlinie sitzt in derselben Reihe wie die Punkte —
+                      eigene Daten je Serie bringen den Tooltip durcheinander. */}
+                  <Line dataKey="bandTage" type="stepAfter" stroke={T.text} strokeWidth={2}
+                    strokeDasharray="6 4" dot={false} isAnimationActive={false} />
+                  <Scatter dataKey="tage" isAnimationActive={false} cursor="pointer"
+                    shape={<Fahrzeugpunkt farbe={(p) => standzeitStufe(p.tage).farbe} ring={(p) => p.laeuft} />}
+                    onClick={punktKlick} />
+                </ComposedChart>
+              </ResponsiveContainer>
+            </div>
+
+            <div style={S.standLegende}>
+              {standzeit.stufen.map((s) => (
+                <span key={s.label} style={S.standLegendeEintrag}>
+                  <span style={{ ...S.standPunkt, background: s.farbe }} />
+                  {s.label}
+                  <span style={S.standAnzahl}>{s.anzahl}</span>
+                </span>
+              ))}
+              <span style={S.standLegendeEintrag}>
+                <span style={{ ...S.standPunkt, background: "transparent", border: `2px solid ${T.muted}` }} />
+                Ring = läuft noch
+              </span>
+            </div>
+            <div style={S.legendHint}>
+              Waagerecht Preis, senkrecht Tage seit dem Inserieren · gestrichelt waagerecht der Median aller,
+              die Stufenlinie der Median je Preisband
+            </div>
+
+            {standzeit.kipp ? (
+              <div style={S.schluss}>
+                <b style={{ color: T.accent }}>Wo es kippt:</b>{" "}
+                Bis <b style={{ color: T.text }}>{fmtEUR(standzeit.kipp.vorher.bisPreis)}</b> stehen die Fahrzeuge
+                dieser Auswahl im Mittel <b style={{ color: T.text }}>{laufzeitText(standzeit.kipp.vorher.medianTage)}</b>.
+                Ab <b style={{ color: T.text }}>{fmtEUR(standzeit.kipp.band.vonPreis)}</b> springt das
+                auf <b style={{ color: T.bad }}>{laufzeitText(standzeit.kipp.band.medianTage)}</b>.
+                Dort hört der Markt auf mitzugehen — wer darüber inseriert, verhandelt früher oder später nach unten.
+                Für dich heißt das: Ein Auto über dieser Grenze ist kein Fund, sondern eine Verhandlung.
+              </div>
+            ) : (
+              <div style={S.schluss}>
+                <b style={{ color: T.accent }}>Kein Sprung erkennbar:</b>{" "}
+                Die Standzeit wächst mit dem Preis gleichmäßig oder gar nicht — in dieser Auswahl gibt es
+                keine Preisgrenze, ab der der Markt sichtbar aussteigt. Das kann am Filter liegen: je enger
+                die Auswahl, desto klarer wird die Grenze.
+              </div>
+            )}
+
+            {standzeit.zaeh.length > 0 && (
+              <>
+                <div style={{ ...S.compareHead, marginTop: 14 }}>
+                  <span style={S.compareTitle}>Günstig und steht trotzdem</span>
+                  <span style={S.resultCount}>längste Standzeit zuerst</span>
+                </div>
+                <div style={S.hinweisKlein}>
+                  Diese Fahrzeuge liegen <b style={{ color: T.text }}>unter dem Median-Preis</b> und stehen
+                  trotzdem <b style={{ color: T.text }}>länger als der Median</b>. Entweder stimmt am Auto etwas
+                  nicht, was du im Inserat noch nicht gesehen hast — oder der Markt hat es schlicht übersehen.
+                  Beides lohnt einen zweiten Blick.
+                </div>
+                <div style={S.ankerListe}>
+                {standzeit.zaeh.slice(0, 6).map((p) => (
+                  <a key={p.id} className="pw-stand" style={S.standZeile}
+                    href={p.url ? normalizeUrl(p.url) : undefined}
+                    target="_blank" rel="noreferrer">
+                    <span style={S.standTitel}>{p.stern ? "★ " : ""}{p.title}</span>
+                    <span style={{ ...S.standTage, color: standzeitStufe(p.tage).farbe }}>
+                      {laufzeitText(p.tage)}{p.laeuft ? " · läuft" : ` · ${p.stand}`}
+                    </span>
+                    <span style={S.standKm}>{p.km != null ? `${fmtNum(p.km)} km` : "—"}</span>
+                    <span style={S.standPreis}>{fmtEUR(p.preis)}</span>
+                  </a>
+                ))}
+                </div>
+              </>
+            )}
+
+            <div style={S.hinweisKlein}>
+              <b style={{ color: T.accent }}>Was dieses Bild nicht kann:</b>{" "}
+              Ein laufendes Inserat hat seine Standzeit noch vor sich — sein Punkt ist ein Ring und wandert
+              jeden Tag weiter nach oben. Ein gestern eingestelltes Auto sieht deshalb aus wie ein
+              Schnellverkauf, ist aber keiner. Für die ehrliche Antwort stell oben
+              auf <b style={{ color: T.text }}>nur abgeschlossene</b>: dort ist jede Standzeit endgültig.
+              Und: verschwunden heißt nicht verkauft. Ein Verkäufer kann zurückgezogen oder neu eingestellt
+              haben — deshalb steht in der Liste, mit welchem Abschluss du das Inserat geführt hast.
             </div>
           </>
         )}
@@ -3808,18 +4063,25 @@ function sternPfad(cx, cy, aussen, innen) {
 // Farbe und Deckkraft kommen als Funktion herein statt über <Cell>: Cells
 // hängen an der Reihenfolge der Daten, und in den Schaubildern stehen jetzt
 // auch Kurvenpunkte ohne Fahrzeug in derselben Liste.
-function Fahrzeugpunkt({ cx, cy, fill, fillOpacity, payload, farbe, deckkraft }) {
+// "ring" macht aus dem vollen Punkt einen offenen Kreis. Gebraucht wird das
+// für Inserate, deren Standzeit noch nicht zu Ende ist: der Wert ist ein
+// Mindestwert, und das muss man sehen können.
+function Fahrzeugpunkt({ cx, cy, fill, fillOpacity, payload, farbe, deckkraft, ring }) {
   if (cx == null || cy == null || isNaN(cx) || isNaN(cy)) return null;
   const f = (payload && farbe ? farbe(payload) : null) || fill;
   const eigen = payload && deckkraft ? deckkraft(payload) : null;
   const stern = !!(payload && payload.stern);
+  const offen = !!(payload && ring && ring(payload));
   const o = eigen != null ? eigen : (fillOpacity != null ? fillOpacity : (stern ? 1 : 0.85));
   return (
     <g>
       <circle cx={cx} cy={cy} r={17} fill="transparent" />
       {stern
-        ? <path d={sternPfad(cx, cy, 9.5, 4.4)} fill={f} fillOpacity={o} />
-        : <circle cx={cx} cy={cy} r={5} fill={f} fillOpacity={o} />}
+        ? <path d={sternPfad(cx, cy, 9.5, 4.4)} fill={offen ? "none" : f} fillOpacity={o}
+            stroke={f} strokeWidth={offen ? 1.7 : 0} />
+        : offen
+          ? <circle cx={cx} cy={cy} r={4.6} fill="none" stroke={f} strokeWidth={2} />
+          : <circle cx={cx} cy={cy} r={5} fill={f} fillOpacity={o} />}
     </g>
   );
 }
@@ -3936,6 +4198,35 @@ function Masterkarte({ p, schwelle }) {
 
 // Karte im Sternchart: was das Auto kostet und was ein Vorzeigefahrzeug
 // derselben Laufleistung kosten würde.
+function Standzeitkarte({ p }) {
+  const S = styles;
+  const stufe = standzeitStufe(p.tage);
+  return (
+    <div style={S.karte}>
+      <div style={S.karteKopf}>
+        {p.stern && <Star size={11} fill={T.accent} color={T.accent} />}
+        <span style={{ ...S.karteRep, color: stufe.farbe }}>
+          {p.laeuft ? `läuft seit ${laufzeitDativ(p.tage)}` : `${p.stand} nach ${laufzeitDativ(p.tage)}`}
+        </span>
+      </div>
+      <div style={S.karteTitel}>{p.title}</div>
+      {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
+      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
+      <div style={S.karteListe}>
+        {p.seit && <div style={S.karteZeile}><span style={S.karteLabel}>inseriert seit</span><span style={S.karteWert}>{fmtDate(p.seit)}</span></div>}
+        {!p.laeuft && p.closedDate && (
+          <div style={S.karteZeile}><span style={S.karteLabel}>{p.stand}</span><span style={S.karteWert}>{fmtDate(p.closedDate)}</span></div>
+        )}
+        {p.km != null && <div style={S.karteZeile}><span style={S.karteLabel}>Kilometer</span><span style={S.karteWert}>{fmtNum(p.km)} km</span></div>}
+        {p.ez && <div style={S.karteZeile}><span style={S.karteLabel}>Erstzulassung</span><span style={S.karteWert}>{p.ez}</span></div>}
+        {p.fotos && <div style={S.karteZeile}><span style={S.karteLabel}>Exterieur</span><span style={S.karteWert}>{p.fotos}</span></div>}
+      </div>
+      {p.laeuft && <div style={S.karteHinweis}>Die Standzeit ist ein Mindestwert — das Inserat läuft noch.</div>}
+      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
+    </div>
+  );
+}
+
 function Ankerkarte({ p }) {
   const S = styles;
   const drunter = p.abstand < 0;
@@ -4060,6 +4351,9 @@ const globalCss = `
     .pw-mlabel { display: block; }
     /* Sternniveau-Zeilen: Titel oben, Zahlen darunter nebeneinander */
     .pw-anker { grid-template-columns: 1fr auto !important; row-gap: 4px; }
+    .pw-stand { grid-template-columns: 1fr auto !important; row-gap: 4px; }
+    .pw-stand > span:nth-child(1) { grid-column: 1 / -1; white-space: normal; }
+    .pw-stand > span:nth-child(4) { text-align: right; }
     .pw-master { grid-template-columns: 26px 1fr auto !important; row-gap: 4px; }
     .pw-stuetz { grid-template-columns: 1fr auto !important; row-gap: 3px; }
     .pw-stuetz > span:nth-child(5) { grid-column: 1 / -1; text-align: left; }
@@ -4233,6 +4527,15 @@ const styles = {
   karteLabel: { color: T.muted },
   karteWert: { fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
   karteHinweis: { fontSize: 10, color: T.muted, marginTop: 6, fontStyle: "italic" },
+  standLegende: { display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", marginTop: 8, fontSize: 10.5, color: T.muted },
+  standLegendeEintrag: { display: "inline-flex", alignItems: "center", gap: 5 },
+  standPunkt: { width: 9, height: 9, borderRadius: "50%", display: "inline-block", boxSizing: "border-box" },
+  standAnzahl: { color: T.text, fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 700 },
+  standZeile: { display: "grid", gridTemplateColumns: "minmax(120px, 2fr) 128px 92px 92px", gap: 8, alignItems: "center", background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 11px", textDecoration: "none", color: T.text },
+  standTitel: { fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  standTage: { fontSize: 11, fontFamily: "ui-monospace, Menlo, monospace" },
+  standKm: { fontSize: 11, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
+  standPreis: { fontSize: 12.5, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
   repLegende: { display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", marginTop: 8, fontSize: 10.5, color: T.muted },
   repLegendeEintrag: { display: "inline-flex", alignItems: "center", gap: 5 },
   repPunkt: { width: 8, height: 8, borderRadius: "50%", display: "inline-block" },
