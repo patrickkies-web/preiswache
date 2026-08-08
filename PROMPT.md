@@ -22,6 +22,9 @@ Durchschnittspreise vergleichen.
 
 **Den Link kannst du dir sparen:** Schickst du der KI den Link zusammen mit den
 Fahrzeugdaten mit, steht er im Feld `url` und die App füllt das Link-Feld schon aus.
+Vergisst die KI ihn trotzdem, füg ihn beim Import einfach über oder unter dem
+JSON-Block mit ein — bei einem einzelnen Fahrzeug holt die App ihn sich von dort.
+Verpackungen wie `[Inserat](https://…)` oder `<https://…>` schneidet sie weg.
 
 ---
 
@@ -215,6 +218,8 @@ SO FÜLLST DU JEDES FELD AUS:
     ich dir den Link zusammen mit den Fahrzeugdaten mitgeschickt habe.
     Schicke ich mehrere Fahrzeuge auf einmal, ordne jedem Fahrzeug den Link
     zu, der zu ihm gehört. Schreibe ihn vollständig ab, ohne zu kürzen.
+    Nur die nackte Adresse -- keine Markdown-Schreibweise [Text](Adresse),
+    keine spitzen Klammern, kein Punkt dahinter, kein Satz drumherum.
     Findest du keinen: "".
 
 24. "price"
