@@ -720,7 +720,15 @@ function normalizeVehicle(v) {
      aber geraten, und jede Zeitrechnung begann dadurch bei null. Was die
      App nicht weiß, trägt sie jetzt auch nicht ein; nachtragen lässt es
      sich am Fahrzeug. */
-  out.listedSince = nurDatum(v.listedSince);
+  /* Das Inseratsdatum unter allen Namen annehmen, unter denen es kommen
+     kann. Es fehlte in älteren Prompt-Fassungen ganz, und wo es fehlt,
+     bleibt das Feld leer statt mit dem Erfassungstag gefüllt zu werden —
+     sonst sähe eine Vermutung aus wie eine Angabe. */
+  out.listedSince = datumOderVorher(
+    [v.listedSince, v.onlineSince, v.listedAt, v.inseriertSeit, v.onlineSeit,
+      v.insertionDate, v.listingDate, v.publishedAt, v.firstListed]
+      .find((x) => x != null && String(x).trim() !== ""),
+    out.priceHistory[0]?.date);
   out.closedDate = nurDatum(v.closedDate);
   // Aus einer Sicherung kommen diese Werte zurück; aus einer KI-Antwort nie.
   out.firstSeen = nurDatum(v.firstSeen);
@@ -730,7 +738,43 @@ function normalizeVehicle(v) {
   out.id = (v.id && String(v.id).trim()) || slugId(out);
   return out;
 }
-const nurDatum = (s) => (String(s == null ? "" : s).match(/\d{4}-\d{2}-\d{2}/) || [""])[0];
+/* Ein Datum aus dem herausholen, was geliefert wurde. Bisher wurde nur
+   JJJJ-MM-TT erkannt; alles andere fiel still durch und das Feld blieb
+   leer. Eine Antwort schreibt das Datum aber gern deutsch, mit Punkten
+   oder mit Uhrzeit dahinter. */
+function nurDatum(s) {
+  const t = String(s == null ? "" : s).trim();
+  if (!t) return "";
+  const iso = t.match(/(\d{4})-(\d{2})-(\d{2})/);
+  if (iso) return `${iso[1]}-${iso[2]}-${iso[3]}`;
+  const deutsch = t.match(/(\d{1,2})\.\s*(\d{1,2})\.\s*(\d{4})/);         // 26.07.2026
+  if (deutsch) return `${deutsch[3]}-${String(deutsch[2]).padStart(2, "0")}-${String(deutsch[1]).padStart(2, "0")}`;
+  const schraeg = t.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);                // 26/07/2026
+  if (schraeg) return `${schraeg[3]}-${String(schraeg[2]).padStart(2, "0")}-${String(schraeg[1]).padStart(2, "0")}`;
+  const MONATE = { januar: 1, februar: 2, "märz": 3, maerz: 3, april: 4, mai: 5, juni: 6,
+    juli: 7, august: 8, september: 9, oktober: 10, november: 11, dezember: 12 };
+  const wort = t.match(/(\d{1,2})\.?\s*([A-Za-zÄÖÜäöü]+)\s*(\d{4})/);      // 26. Juli 2026
+  if (wort) {
+    const m = MONATE[wort[2].toLowerCase()];
+    if (m) return `${wort[3]}-${String(m).padStart(2, "0")}-${String(wort[1]).padStart(2, "0")}`;
+  }
+  return "";
+}
+/* "vor 3 Wochen online" ist keine Angabe, die man abtippen kann — aber
+   eine, die auf mobile.de steht. Sie wird auf den heutigen Tag bezogen. */
+function datumOderVorher(s, heute) {
+  const fest = nurDatum(s);
+  if (fest) return fest;
+  const rel = String(s == null ? "" : s).toLowerCase()
+    .match(/vor\s+(?:(\d+)\s*)?(tag|tagen|woche|wochen|monat|monaten)/);
+  if (!rel) return "";
+  const zahl = rel[1] ? parseInt(rel[1], 10) : 1;
+  const faktor = rel[2].startsWith("tag") ? 1 : rel[2].startsWith("woche") ? 7 : 30;
+  const d = parseISO(heute || todayISO());
+  if (!d) return "";
+  d.setDate(d.getDate() - zahl * faktor);
+  return d.toISOString().slice(0, 10);
+}
 // Schneidet den JSON-Block aus einer KI-Antwort heraus:
 // Codeblock-Zeichen, Einleitungssätze und Nachtext werden verworfen.
 function extractJson(text) {
@@ -966,6 +1010,8 @@ export default function App() {
   /* Kilometerformel: "auto" nimmt die Form, die besser zu den vier
      Stützpunkten passt — man kann aber jederzeit selbst umschalten. */
   const [kmArt, setKmArt] = useState("auto");
+  // Sammel-Nachtrag der Inseratsdaten direkt am Preisverlauf
+  const [nachtragOffen, setNachtragOffen] = useState(false);
   // Orderbuch: aufgeklappte Preisstufe und der Preis im Rechner
   const [buchStufe, setBuchStufe] = useState(null);
   const [buchPreis, setBuchPreis] = useState("");
@@ -1475,7 +1521,7 @@ export default function App() {
         farbe: farben[nr % farben.length],
         startPreis, letzterPreis, ende, blindBis, punkte, knicke, schritte, senkungen,
         offline: t.offline, stand: t.stand,
-        hatStart: !!v.listedSince,
+        hatStart: !!v.listedSince, fund: t.firstSeen,
         ersteSenkung: senkungen.length ? senkungen[0].tag : null,
         ersteSenkungPct: senkungen.length ? (senkungen[0].delta / senkungen[0].von) * 100 : null,
         gesamtPct: ((letzterPreis - startPreis) / startPreis) * 100,
@@ -1524,6 +1570,9 @@ export default function App() {
          ist keine Kaputtheit des Bildes, sondern eine fehlende Angabe, und
          der Abschnitt sagt das unten selbst. */
       ohneStart: reihen.filter((r) => !r.hatStart).length,
+      ohneStartListe: reihen.filter((r) => !r.hatStart)
+        .map((r) => ({ id: r.id, titel: r.title, fund: r.fund }))
+        .sort((a, b) => a.titel.localeCompare(b.titel, "de")),
       kurz: reihen.filter((r) => r.ende <= 1).length,
     };
   }, [list, verlaufNull]);
@@ -1935,6 +1984,15 @@ export default function App() {
                     {vehicles[v.id] && <span style={S.updTag}> aktualisiert</span>}
                   </span>
                 </div>
+                {/* Das Inseratsdatum fällt sonst niemandem auf: Es fehlt still,
+                    und erst Wochen später steht im Preisverlauf jede Linie auf
+                    einem Tag. Hier ist der Moment, in dem man es noch sieht. */}
+                {!v.listedSince && !vehicles[v.id]?.listedSince && (
+                  <div style={S.previewFehlt}>
+                    <AlertTriangle size={12} /> Kein Inseratsdatum im Block („Online seit"). Tag 0 ist dann dein
+                    Fundtag — nachtragen kannst du es später am Fahrzeug oder gesammelt unter „Wann senken die Anbieter".
+                  </div>
+                )}
                 {previewDubletten[v.id] && <DublettenWarnung neu={v} treffer={previewDubletten[v.id]} />}
                 <div style={S.askBlock}>
                   <div style={S.askIntro}>Deine Einschätzung — das kann dir keine KI abnehmen:</div>
@@ -2467,12 +2525,15 @@ export default function App() {
                 ) : (
                   <>Die hinterlegten Inseratsdaten liegen alle auf dem heutigen oder gestrigen Tag.</>
                 )}
-                {" "}Trag das echte Datum nach: im <b style={{ color: T.text }}>Verzeichnis</b> ein Fahrzeug
-                aufklappen, im Kasten <b style={{ color: T.text }}>Beobachtung</b> steht das
-                Feld <b style={{ color: T.text }}>„Inseriert seit"</b>. Auf mobile.de findest du es als
-                „Online seit". Danach beginnt jede Linie an ihrem echten Tag 0 und wird so lang, wie das Inserat
-                schon läuft.
+                {" "}Auf mobile.de steht es als „Online seit". Trag es hier gleich nach — danach beginnt jede
+                Linie an ihrem echten Tag 0 und wird so lang, wie das Inserat schon läuft.
               </div>
+            )}
+
+            {preisverlaeufe.ohneStart > 0 && (
+              <Nachtragliste liste={preisverlaeufe.ohneStartListe} gesamt={preisverlaeufe.anzahl}
+                offen={nachtragOffen} umschalten={() => setNachtragOffen((o) => !o)}
+                setzen={setzeInseratsdatum} />
             )}
 
             <div style={S.zahlenreihe}>
@@ -2572,14 +2633,6 @@ export default function App() {
                 </>
               )}
             </div>
-
-            {preisverlaeufe.ohneStart > 0 && preisverlaeufe.laengste > 1 && verlaufNull === "inserat" && (
-              <div style={S.kleinerHinweis}>
-                Bei {preisverlaeufe.ohneStart} von {preisverlaeufe.anzahl} Inseraten fehlt das Datum, seit wann
-                sie online sind — dort ist Tag 0 dein Fundtag und nicht der echte Inseratsstart. Nachtragen
-                kannst du es im Verzeichnis unter „Beobachtung" im Feld <b style={{ color: T.text }}>Inseriert seit</b>.
-              </div>
-            )}
 
             {preisverlaeufe.geraten > 0 && verlaufNull === "inserat" && (
               <div style={S.kleinerHinweis}>
@@ -3300,6 +3353,38 @@ function BeoWert({ label, wert, zusatz, farbe, stark }) {
       <div style={S.beoLabel}>{label}</div>
       <div style={{ ...S.beoZahl, color: farbe || T.text, fontWeight: stark ? 800 : 700 }}>{wert}</div>
       {zusatz && <div style={S.beoZusatz}>{zusatz}</div>}
+    </div>
+  );
+}
+
+/* Alle Inserate ohne Inseratsdatum an einer Stelle, mit je einem Feld.
+   Zwanzig Fahrzeuge einzeln im Verzeichnis aufzuklappen ist der falsche
+   Weg für eine Angabe, die überall gleichzeitig fehlt. Die Liste steht
+   dort, wo der Mangel auffällt: unter dem Bild, das ohne sie leer bleibt. */
+function Nachtragliste({ liste, gesamt, offen, umschalten, setzen }) {
+  const S = styles;
+  return (
+    <div style={S.nachtragBox}>
+      <button style={S.nachtragKopf} onClick={umschalten} className="pw-nachtrag">
+        <ChevronRight size={13} style={{ transform: offen ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
+        Inseratsdaten nachtragen · {liste.length} von {gesamt}
+        <span style={S.nachtragKopfHilfe}>{offen ? "" : "aufklappen"}</span>
+      </button>
+      {offen && (
+        <div style={S.nachtragListe}>
+          {liste.map((x) => (
+            <div key={x.id} style={S.nachtragZeile}>
+              <span style={S.nachtragTitel} title={x.titel}>{x.titel}</span>
+              <input type="date" className="pw-nachtrag-datum" max={todayISO()}
+                style={S.nachtragFeld} onChange={(e) => setzen(x.id, e.target.value)} />
+              <span style={S.nachtragFund}>Tag 0 heute: {x.fund ? fmtDate(x.fund) : "—"} (dein Fund)</span>
+            </div>
+          ))}
+          <div style={S.nachtragFuss}>
+            Ein eingetragenes Datum verschwindet aus dieser Liste — sie zeigt nur, was noch fehlt.
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -4159,6 +4244,7 @@ const styles = {
   badge: { background: T.accent + "22", color: T.accent, border: `1px solid ${T.accent}55`, borderRadius: 20, padding: "3px 10px", fontSize: 10.5 },
   previewBlock: { borderBottom: `1px solid ${T.line}`, paddingBottom: 12, marginBottom: 12 },
   previewRow: { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", fontSize: 12.5, flexWrap: "wrap" },
+  previewFehlt: { display: "flex", alignItems: "flex-start", gap: 6, color: T.accent, fontSize: 11, lineHeight: 1.5, margin: "2px 0 6px" },
 
   askBlock: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "11px 12px", marginTop: 8 },
   askIntro: { fontSize: 10.5, color: T.accent, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, marginBottom: 10 },
@@ -4325,6 +4411,18 @@ const styles = {
   quartilTag: { fontWeight: 800, color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
   quartilKm: { fontFamily: "ui-monospace, Menlo, monospace", color: T.text },
   quartilZahl: { fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
+  nachtragBox: { marginTop: 8, background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "6px 10px" },
+  nachtragKopf: { display: "flex", alignItems: "center", gap: 7, width: "100%", background: "none", border: "none", color: T.accent, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 0", textAlign: "left" },
+  nachtragKopfHilfe: { marginLeft: "auto", color: T.muted, fontWeight: 600, textTransform: "none", letterSpacing: 0, fontSize: 10.5 },
+  nachtragListe: { display: "flex", flexDirection: "column", gap: 3, padding: "4px 0 6px" },
+  /* Bricht auf schmalen Geräten um, statt die Spalten zu zerquetschen:
+     Titel und Eingabefeld bleiben oben zusammen, der Fundtag rutscht in
+     die zweite Zeile. */
+  nachtragZeile: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: "3px 8px", background: T.surface2, borderRadius: 6, padding: "6px 9px", fontSize: 11.5 },
+  nachtragTitel: { order: 1, flex: "1 1 110px", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  nachtragFeld: { order: 2, flex: "0 0 128px", background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 6, padding: "5px 7px", fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11.5, colorScheme: "dark", boxSizing: "border-box" },
+  nachtragFund: { order: 3, flex: "1 1 130px", color: T.muted, fontSize: 10.5, fontFamily: "ui-monospace, Menlo, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  nachtragFuss: { color: T.muted, fontSize: 10.5, marginTop: 3, fontStyle: "italic" },
   warnKasten: { marginTop: 2, marginBottom: 4, background: T.accent + "14", border: `1px solid ${T.accent}55`, borderRadius: 9, padding: "11px 13px", fontSize: 12.5, lineHeight: 1.6, color: T.muted },
   spanneSatz: { marginTop: 12, background: T.bg, borderLeft: `3px solid ${T.accent}`, borderRadius: 8, padding: "10px 13px", fontSize: 12.5, lineHeight: 1.55, color: T.muted },
   kleinerHinweis: { marginTop: 10, fontSize: 11, color: T.muted, lineHeight: 1.5 },
