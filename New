@@ -888,6 +888,9 @@ export default function App() {
   // Preisverläufe: Tag 0 und Maßeinheit der senkrechten Achse
   const [verlaufNull, setVerlaufNull] = useState("inserat");   // "inserat" oder "erfassung"
   const [verlaufEinheit, setVerlaufEinheit] = useState("prozent");
+  // Orderbuch: aufgeklappte Preisstufe und der Preis im Rechner
+  const [buchStufe, setBuchStufe] = useState(null);
+  const [buchPreis, setBuchPreis] = useState("");
   const aktiv = tab === "analyseB" ? 1 : 0;
   const andere = 1 - aktiv;
   const [openRows, setOpenRows] = useState({});
@@ -1401,6 +1404,102 @@ export default function App() {
       laengste: Math.max(...reihen.map((r) => r.ende)),
     };
   }, [list, verlaufNull]);
+
+  /* ---- Orderbuch: Angebot und Abgang je Preisstufe ----
+
+     Ein Inserat ist eine Order: "Ich will X € für dieses Auto." Was an der
+     Börse als Brief-Seite im Buch liegt, sind hier die laufenden Inserate.
+     Die Geld-Seite fehlt — Käufer sind unsichtbar. Aber sie hinterlassen
+     eine Spur: ein Inserat, das verschwindet, wurde ausgeführt. Der Preis,
+     zu dem es zuletzt stand, ist der Kurs, bei dem es weg war.
+
+     Daraus wird je Preisstufe:
+       offen  — was dort gerade liegt und auf einen Käufer wartet
+       weg    — was von dieser Stufe schon abgeräumt wurde
+       Abgang — weg / (weg + offen): wie viel der Markt dort schluckt
+       Geduld — wie lange das Liegengebliebene dort schon liegt
+
+     Zwei Dinge muss man dazu wissen, und beide stehen auch in der App:
+     Verschwunden heißt nicht verkauft, und ein Inserat, das erst seit drei
+     Tagen liegt, hatte noch keine Gelegenheit wegzugehen. */
+  const orderbuch = useMemo(() => {
+    const mitte = (zahlen) => {
+      if (!zahlen.length) return null;
+      const s2 = [...zahlen].sort((a, b) => a - b);
+      const m = Math.floor(s2.length / 2);
+      return s2.length % 2 ? s2[m] : Math.round((s2[m - 1] + s2[m]) / 2);
+    };
+    const eintraege = list.map((v) => {
+      const t = tracking(v);
+      // Was gerade im Buch liegt, ist der heutige Preis. Was weg ist, liegt
+      // dort, wo es zuletzt stand — das ist der Kurs, zu dem es ging.
+      const preis = t.offline ? t.lastAsk : t.currentPrice;
+      if (preis == null) return null;
+      return {
+        id: v.id, title: v.title || v.id, preis, offline: t.offline, stand: t.stand,
+        tage: t.daysTracked ?? 0, km: v.mileage, ez: erstzulassung(v), url: v.url,
+        marke: [v.make, v.model].filter(Boolean).join(" "),
+        einstieg: t.initialTrackedPrice, gesenkt: t.aenderungen > 0,
+      };
+    }).filter(Boolean);
+    if (eintraege.length < 3) return { zuWenig: true, anzahl: eintraege.length };
+
+    const preise = eintraege.map((e) => e.preis);
+    const min = Math.min(...preise), max = Math.max(...preise);
+    // Runde Stufenbreite, so dass ungefähr acht bis zwölf Stufen entstehen.
+    const roh = Math.max(1, (max - min) / 9);
+    const groesse = Math.pow(10, Math.floor(Math.log10(roh)));
+    const breite = ([1, 2, 2.5, 5, 10].map((f) => f * groesse).find((x) => x >= roh) || groesse * 10);
+    const unten = Math.floor(min / breite) * breite;
+    const oben = Math.floor(max / breite) * breite;
+
+    const stufen = [];
+    for (let p = oben; p >= unten - 0.5; p -= breite) {
+      const drin = eintraege.filter((e) => e.preis >= p && e.preis < p + breite);
+      const offen = drin.filter((e) => !e.offline);
+      const weg = drin.filter((e) => e.offline);
+      stufen.push({
+        von: Math.round(p), bis: Math.round(p + breite),
+        alle: drin, offen, weg,
+        anzahl: drin.length,
+        abgang: drin.length ? weg.length / drin.length : null,
+        geduld: mitte(offen.map((e) => e.tage)),
+        tempo: mitte(weg.map((e) => e.tage)),
+      });
+    }
+
+    const belegt = stufen.filter((s2) => s2.anzahl > 0);
+    const offenGesamt = eintraege.filter((e) => !e.offline).length;
+    const wegGesamt = eintraege.length - offenGesamt;
+
+    /* Wo macht der Markt zu? Die höchste Stufe, auf der noch mindestens die
+       Hälfte abgeräumt wurde. Unter zwei Beobachtungen ist das Zufall,
+       deshalb zählen nur Stufen mit mindestens zwei Fahrzeugen. */
+    const belastbar = belegt.filter((s2) => s2.anzahl >= 2);
+    const klar = belastbar.filter((s2) => s2.abgang >= 0.5);
+    const zaeh = belastbar.filter((s2) => s2.abgang <= 0.2);
+    const clearing = klar.length ? klar[0] : null;                   // oberste, die noch geht
+    const stau = zaeh.length ? zaeh[zaeh.length - 1] : null;         // unterste, die liegen bleibt
+
+    // Tiefe: was liegt unter einem Preis noch alles offen herum?
+    const tiefeBis = (preis) => {
+      const drunter = eintraege.filter((e) => !e.offline && e.preis <= preis);
+      return { anzahl: drunter.length, geduld: mitte(drunter.map((e) => e.tage)) };
+    };
+    const dickste = belegt.slice().sort((a, b) => b.anzahl - a.anzahl)[0];
+
+    return {
+      /* Auch leere Stufen bleiben stehen: eine Lücke im Buch ist eine
+         Aussage — dort bietet gerade niemand etwas an. */
+      zuWenig: false, stufen, breite, eintraege,
+      anzahl: eintraege.length, offenGesamt, wegGesamt,
+      maxAnzahl: Math.max(...belegt.map((s2) => s2.anzahl)),
+      clearing, stau, dickste, tiefeBis,
+      abgangGesamt: eintraege.length ? wegGesamt / eintraege.length : 0,
+      medianGeduld: mitte(eintraege.filter((e) => !e.offline).map((e) => e.tage)),
+      medianTempo: mitte(eintraege.filter((e) => e.offline).map((e) => e.tage)),
+    };
+  }, [list]);
 
   // Alles, wo noch eine Entscheidung von dir aussteht. Unbestätigte zuerst,
   // danach die mit den meisten offenen Punkten.
@@ -1968,6 +2067,187 @@ export default function App() {
               sechs Tage früher passiert sein, als die Stufe zeigt.
               {verlaufEinheit === "euro" && <> In Euro liegen die Linien auf verschiedenen Höhen und überdecken sich;
                 zum Vergleichen der Zeitpunkte ist <b style={{ color: T.text }}>Prozent</b> die klarere Ansicht.</>}
+            </div>
+          </>
+        )}
+      </section>
+      )}
+
+      {tab === "uebersicht" && (
+      <section style={S.panel}>
+        <div style={S.panelTitle}><Gauge size={15} /> Orderbuch</div>
+        <p style={S.hint}>
+          Ein Inserat ist eine Order: <i>„Ich will X € für dieses Auto."</i> Was an der Börse als Brief-Seite
+          im Buch liegt, sind hier die <b style={{ color: T.text }}>laufenden Inserate</b>. Die Geld-Seite fehlt —
+          Käufer sind unsichtbar. Aber sie hinterlassen eine Spur: ein Inserat, das verschwindet, wurde
+          ausgeführt, und der Preis, zu dem es zuletzt stand, ist der Kurs, bei dem es weg war.
+          Angezeigt wird je Fahrzeug der <b style={{ color: T.text }}>heutige</b> Preis, nicht der Einstiegspreis —
+          nur der liegt wirklich im Buch.
+        </p>
+
+        {orderbuch.zuWenig ? (
+          <div style={S.empty}>
+            <Gauge size={30} color={T.line} />
+            <span>Für ein Buch braucht es mindestens drei Fahrzeuge mit Preis — es sind erst {orderbuch.anzahl}.</span>
+          </div>
+        ) : (
+          <>
+            <div style={S.zahlenreihe}>
+              <Zahlenfeld label="Im Buch" wert={`${orderbuch.offenGesamt}`}
+                zusatz={`liegen offen · ${orderbuch.wegGesamt} schon weg`} />
+              <Zahlenfeld label="Abgang" accent
+                wert={`${Math.round(orderbuch.abgangGesamt * 100)} %`}
+                zusatz="Anteil, den der Markt geschluckt hat" />
+              <Zahlenfeld label="Geduld"
+                wert={orderbuch.medianGeduld == null ? "—" : laufzeitText(orderbuch.medianGeduld)}
+                zusatz="so lange liegt das Offene schon" />
+              <Zahlenfeld label="Tempo"
+                wert={orderbuch.medianTempo == null ? "—" : laufzeitText(orderbuch.medianTempo)}
+                zusatz={orderbuch.wegGesamt ? "so schnell ging das Weggegangene" : "noch nichts weggegangen"} />
+            </div>
+
+            <div className="pw-buch" style={S.buchKopf}>
+              <span style={S.buchKopfPreis}>Preisstufe</span>
+              <span style={S.buchKopfMitte}>← offen im Buch · abgeräumt →</span>
+              <span style={S.buchKopfZahl}>Abgang</span>
+              <span style={S.buchKopfZahl}>Geduld</span>
+            </div>
+            <div style={S.buchListe}>
+              {orderbuch.stufen.map((st) => {
+                if (st.anzahl === 0) {
+                  return (
+                    <div key={st.von} className="pw-buch" style={S.buchLeer}>
+                      <span style={S.buchPreis}>{fmtNum(st.von)}–{fmtNum(st.bis)}</span>
+                      <span style={S.buchLeerText}>hier bietet niemand an</span>
+                    </div>
+                  );
+                }
+                const offenAnteil = st.offen.length / orderbuch.maxAnzahl;
+                const wegAnteil = st.weg.length / orderbuch.maxAnzahl;
+                const auf = buchStufe === st.von;
+                const istClearing = orderbuch.clearing && orderbuch.clearing.von === st.von;
+                const istStau = orderbuch.stau && orderbuch.stau.von === st.von;
+                return (
+                  <div key={st.von}>
+                    <button className="pw-buch" style={{
+                      ...S.buchZeile,
+                      borderLeftColor: istClearing ? T.good : istStau ? T.bad : "transparent",
+                    }} onClick={() => setBuchStufe(auf ? null : st.von)}>
+                      <span style={S.buchPreis}>{fmtNum(st.von)}–{fmtNum(st.bis)}</span>
+                      <span style={S.buchBalken}>
+                        <span style={S.buchLinks}>
+                          {st.offen.length > 0 && (
+                            <span style={{ ...S.buchOffen, width: `${offenAnteil * 100}%` }}>
+                              {st.offen.length}
+                            </span>
+                          )}
+                        </span>
+                        <span style={S.buchRechts}>
+                          {st.weg.length > 0 && (
+                            <span style={{ ...S.buchWeg, width: `${wegAnteil * 100}%` }}>
+                              {st.weg.length}
+                            </span>
+                          )}
+                        </span>
+                      </span>
+                      <span style={{
+                        ...S.buchZahl,
+                        color: st.anzahl < 2 ? T.muted : st.abgang >= 0.5 ? T.good : st.abgang <= 0.2 ? T.bad : T.text,
+                      }}>
+                        {st.anzahl < 2 ? "—" : `${Math.round(st.abgang * 100)} %`}
+                      </span>
+                      <span style={S.buchZahl}>{st.geduld == null ? "—" : laufzeitText(st.geduld)}</span>
+                    </button>
+                    {auf && (
+                      <div style={S.buchDetail}>
+                        {st.alle.slice().sort((a, b) => b.tage - a.tage).map((e) => (
+                          <a key={e.id} href={e.url ? normalizeUrl(e.url) : undefined}
+                            target="_blank" rel="noreferrer" style={S.buchAuto}>
+                            <span style={{ ...S.buchPunkt, background: e.offline ? T.muted : T.accent }} />
+                            <span style={S.buchAutoTitel}>{e.title}</span>
+                            <span style={S.buchAutoZahl}>{fmtEUR(e.preis)}</span>
+                            <span style={S.buchAutoZeit}>
+                              {e.offline ? `${e.stand} nach ${laufzeitDativ(e.tage)}` : `liegt ${laufzeitText(e.tage)}`}
+                            </span>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            <div style={S.feldLegende}>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.accent }} /> links: liegt noch im Buch</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.good }} /> rechts: abgeräumt</span>
+              <span style={S.legendeEintrag}>Zeile anklicken zeigt die Fahrzeuge</span>
+            </div>
+
+            {/* ---- Der Rechner: Tiefe unter einem Preis ---- */}
+            <div style={S.rechnerZeile}>
+              <span style={S.rechnerText}>Ein Auto zu</span>
+              <input value={buchPreis} onChange={(e) => setBuchPreis(e.target.value)}
+                placeholder={String(orderbuch.stufen[Math.floor(orderbuch.stufen.length / 2)]?.von || "")}
+                style={S.rechnerFeld} inputMode="numeric" />
+              <span style={S.rechnerText}>€ —</span>
+              {(() => {
+                const p = coerceNum(buchPreis);
+                if (p == null) return <span style={S.rechnerLeer}>trag einen Preis ein</span>;
+                const tiefe = orderbuch.tiefeBis(p);
+                const stufe = orderbuch.stufen.find((x) => p >= x.von && p < x.bis);
+                return (
+                  <span style={S.rechnerErgebnis}>
+                    <b style={{ color: T.text }}>{tiefe.anzahl}</b>{" "}
+                    {tiefe.anzahl === 1 ? "Inserat liegt" : "Inserate liegen"} zu diesem Preis oder darunter im Buch
+                    {tiefe.geduld != null && <> und {tiefe.anzahl === 1 ? "wartet" : "warten"} im Mittel schon {laufzeitText(tiefe.geduld)}</>}.
+                    {stufe && stufe.anzahl >= 2 && (
+                      <> Auf dieser Stufe {stufe.weg.length === 0 ? "ist bisher nichts weggegangen"
+                        : `sind ${stufe.weg.length} von ${stufe.anzahl} weggegangen (${Math.round(stufe.abgang * 100)} %)`}.</>
+                    )}
+                  </span>
+                );
+              })()}
+            </div>
+
+            {/* ---- Der Schluss ---- */}
+            <div style={S.spanneSatz}>
+              {orderbuch.wegGesamt === 0 ? (
+                <>Noch ist kein Inserat aus dem Buch verschwunden — es gibt also nur eine Seite zu sehen.
+                  Sobald du das erste Inserat abschließt, füllt sich die rechte Spalte, und erst dann sagt der
+                  Abgang etwas darüber, welche Preise der Markt tatsächlich schluckt.</>
+              ) : orderbuch.clearing ? (
+                <>
+                  <b style={{ color: T.accent }}>Wo der Markt zumacht:</b>{" "}
+                  Bis <b style={{ color: T.good }}>{fmtEUR(orderbuch.clearing.bis)}</b> wird abgeräumt — auf dieser
+                  Stufe {orderbuch.clearing.weg.length === 1 ? "ist" : "sind"} {orderbuch.clearing.weg.length} von{" "}
+                  {orderbuch.clearing.anzahl} weggegangen.
+                  {orderbuch.stau && orderbuch.stau.von > orderbuch.clearing.von && (
+                    <> Ab <b style={{ color: T.bad }}>{fmtEUR(orderbuch.stau.von)}</b> bleibt es liegen: dort
+                      {" "}{orderbuch.stau.offen.length} offen und nur {orderbuch.stau.weg.length} weg.
+                      Dazwischen liegt deine Verhandlungszone.</>
+                  )}
+                  {orderbuch.dickste && (
+                    <> Am dicksten liegt das Angebot zwischen <b style={{ color: T.text }}>{fmtNum(orderbuch.dickste.von)}</b> und{" "}
+                      <b style={{ color: T.text }}>{fmtNum(orderbuch.dickste.bis)} €</b> — wer dort verkaufen will,
+                      steht in der längsten Schlange.</>
+                  )}
+                </>
+              ) : (
+                <>
+                  <b style={{ color: T.accent }}>Noch keine klare Kante:</b>{" "}
+                  Auf keiner Preisstufe ist bisher mindestens die Hälfte abgeräumt worden — bei{" "}
+                  {orderbuch.wegGesamt} {orderbuch.wegGesamt === 1 ? "verschwundenen Inserat" : "verschwundenen Inseraten"}{" "}
+                  ist das kein Wunder. Je mehr Inserate du bis zum Ende verfolgst, desto schärfer wird die Grenze.
+                </>
+              )}
+            </div>
+
+            <div style={S.kleinerHinweis}>
+              <b style={{ color: T.accent }}>Zwei Dinge, die dieses Buch nicht kann.</b>{" "}
+              Verschwunden heißt nicht verkauft — ein Verkäufer kann zurückgezogen oder neu eingestellt haben;
+              der Abgang ist also eher zu hoch als zu niedrig. Und ein Inserat, das erst seit drei Tagen liegt,
+              hatte noch keine Gelegenheit wegzugehen: frische Ware drückt den Abgang einer Stufe nach unten,
+              ohne dass der Preis daran schuld wäre. Beides wird sauberer, je länger du verfolgst.
             </div>
           </>
         )}
@@ -2985,6 +3265,8 @@ const globalCss = `
     .pw-metrics { grid-column: 1 / -1; grid-row: 2; display: flex; flex-wrap: wrap; gap: 8px 18px; }
     .pw-mlabel { display: block; }
     /* Sternniveau-Zeilen: Titel oben, Zahlen darunter nebeneinander */
+    .pw-buch { grid-template-columns: 94px 1fr 44px !important; gap: 6px !important; }
+    .pw-buch > span:nth-child(4) { display: none; }
     .pw-stufe { grid-template-columns: auto 1fr !important; row-gap: 2px; }
     .pw-stufe > span:nth-child(1) { grid-area: 1 / 1; }
     .pw-stufe > span:nth-child(4) { grid-area: 1 / 2; text-align: right; }
@@ -3135,6 +3417,32 @@ const styles = {
   feldLegende: { display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center", marginTop: 6, fontSize: 10.5, color: T.muted },
   legendeEintrag: { display: "inline-flex", alignItems: "center", gap: 6 },
   legendePunkt: { width: 9, height: 9, borderRadius: "50%", display: "inline-block" },
+  buchKopf: { display: "grid", gridTemplateColumns: "104px 1fr 60px 74px", gap: 8, alignItems: "center", padding: "0 10px 6px", fontSize: 9.5, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 },
+  buchKopfPreis: {},
+  buchKopfMitte: { textAlign: "center" },
+  buchKopfZahl: { textAlign: "right" },
+  buchListe: { display: "flex", flexDirection: "column", gap: 2 },
+  buchZeile: { display: "grid", gridTemplateColumns: "104px 1fr 60px 74px", gap: 8, alignItems: "center", width: "100%", background: T.bg, border: `1px solid ${T.line}`, borderLeft: "3px solid", borderRadius: 7, padding: "5px 9px", textAlign: "left" },
+  buchPreis: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11.5, color: T.text },
+  buchBalken: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 3, alignItems: "center", minWidth: 0 },
+  buchLinks: { display: "flex", justifyContent: "flex-end" },
+  buchRechts: { display: "flex", justifyContent: "flex-start" },
+  buchOffen: { background: T.accent, color: T.bg, borderRadius: "4px 0 0 4px", fontSize: 10, fontWeight: 800, textAlign: "right", padding: "2px 5px", minWidth: 16, boxSizing: "border-box" },
+  buchWeg: { background: T.good, color: T.bg, borderRadius: "0 4px 4px 0", fontSize: 10, fontWeight: 800, textAlign: "left", padding: "2px 5px", minWidth: 16, boxSizing: "border-box" },
+  buchLeer: { display: "grid", gridTemplateColumns: "104px 1fr", gap: 8, alignItems: "center", padding: "4px 12px", opacity: 0.45 },
+  buchLeerText: { fontSize: 10.5, color: T.muted, fontStyle: "italic" },
+  buchZahl: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11, textAlign: "right", color: T.muted },
+  buchDetail: { display: "flex", flexDirection: "column", gap: 2, margin: "2px 0 4px 12px", paddingLeft: 10, borderLeft: `1px solid ${T.line}` },
+  buchAuto: { display: "grid", gridTemplateColumns: "10px 1fr 82px 156px", gap: 8, alignItems: "center", padding: "4px 8px", background: T.surface2, borderRadius: 6, textDecoration: "none", color: T.text, fontSize: 11.5 },
+  buchPunkt: { width: 8, height: 8, borderRadius: "50%" },
+  buchAutoTitel: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  buchAutoZahl: { fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 700, textAlign: "right" },
+  buchAutoZeit: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 10.5, color: T.muted, textAlign: "right" },
+  rechnerZeile: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "10px 12px", marginTop: 12, fontSize: 12.5 },
+  rechnerText: { color: T.muted },
+  rechnerFeld: { width: 92, background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 7, padding: "6px 9px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace" },
+  rechnerLeer: { color: T.muted, fontStyle: "italic" },
+  rechnerErgebnis: { flex: 1, minWidth: 200, color: T.muted, lineHeight: 1.5 },
   legendeStrich: { width: 16, height: 0, borderTop: `2px dashed ${T.muted}`, display: "inline-block" },
   punktStart: { color: T.muted, fontSize: 10, fontWeight: 400, fontFamily: "system-ui, sans-serif" },
   legendeBand: { width: 16, height: 9, borderRadius: 2, display: "inline-block", background: T.accent, opacity: 0.25 },
