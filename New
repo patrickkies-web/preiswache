@@ -3031,7 +3031,22 @@ export default function App() {
           : list.length === 0 ? (<div style={S.empty}><span>Noch keine Fahrzeuge. Wechsle zu „Erfassen" und füge dort deinen ersten JSON-Block ein.</span></div>)
             : (
               <>
-                <div style={S.sortZeile}>
+                {/* Auf dem Handy tragen die Spaltenköpfe nicht — die Tabelle
+                    ist dort zwei Zeilen hoch. Stattdessen dieselbe Auswahl
+                    als Leiste, die sich seitlich schieben lässt. */}
+                <div className="pw-sortleiste">
+                  <button onClick={() => { setSortFeld(""); setSortRichtung("auf"); }}
+                    style={sortFeld ? S.sortChip : S.sortChipAn}>Zuletzt geändert</button>
+                  {Object.entries(SORT_FELDER).map(([f, d]) => (
+                    <button key={f} onClick={() => sortiereNach(f)}
+                      style={sortFeld === f ? S.sortChipAn : S.sortChip}
+                      title={sortFeld === f ? "Nochmal tippen dreht die Richtung um" : `Nach ${d.label} sortieren`}>
+                      {d.label}
+                      {sortFeld === f && (sortRichtung === "auf" ? <ArrowUp size={11} /> : <ArrowDown size={11} />)}
+                    </button>
+                  ))}
+                </div>
+                <div className="pw-sortselect" style={S.sortZeile}>
                   <span style={S.fieldLabel}>Sortieren nach</span>
                   <select value={sortFeld} onChange={(e) => sortiereNach(e.target.value)} style={S.selectInline}>
                     <option value="">zuletzt geändert</option>
@@ -4186,16 +4201,34 @@ const globalCss = `
   /* Verzeichnis: auf breiten Schirmen eine Tabelle, auf schmalen zwei Zeilen */
   .pw-dirhead, .pw-dirrow {
     display: grid;
-    grid-template-columns: minmax(140px, 2.2fr) 96px 100px 100px 74px minmax(90px, 1.1fr) 96px 28px 32px;
+    grid-template-columns: minmax(150px, 2.6fr) 92px 96px 98px 72px minmax(84px, 1fr) 104px 28px 32px;
     gap: 9px;
     align-items: center;
   }
+  /* Ohne min-width:0 dehnt ein Rasterfeld sich am Inhalt auf, statt ihn zu
+     kürzen — der Fahrzeugtitel lief dadurch aus seiner Spalte heraus und
+     die Reparaturen schoben sich über den Papierkorb. */
+  .pw-dirhead > *, .pw-dirrow > * { min-width: 0; }
+  /* Der Titelknopf ist selbst ein Flex-Kasten: ohne overflow am Knopf und
+     min-width am inneren Feld schiebt der lange Fahrzeugname die Zeile auf
+     und rutscht links aus der Karte heraus. */
+  .pw-dirrow > button:first-of-type { width: 100%; max-width: 100%; overflow: hidden; }
+  .pw-dirrow > button:first-of-type > span:last-child { flex: 1 1 auto; min-width: 0; overflow: hidden; }
   .pw-metrics { display: contents; }
   /* Auf breiten Schirmen tragen die Spaltenköpfe die Beschriftung */
   .pw-mlabel { display: none; }
+  /* Die Sortierleiste ersetzt auf schmalen Schirmen die Spaltenköpfe */
+  .pw-sortleiste { display: none; }
   @media (max-width: 820px) {
     .pw-dirhead { display: none; }
-    .pw-dirrow { grid-template-columns: 1fr auto; row-gap: 9px; }
+    .pw-sortselect { display: none !important; }   /* schlägt den Inline-Stil */
+    .pw-sortleiste {
+      display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none;
+      padding-bottom: 2px; margin-bottom: 10px;
+    }
+    .pw-sortleiste::-webkit-scrollbar { display: none; }
+    .pw-sortleiste > button { flex-shrink: 0; }
+    .pw-dirrow { grid-template-columns: minmax(0, 1fr) auto; row-gap: 9px; }
     .pw-dirrow > button:first-of-type { grid-column: 1; grid-row: 1; }
     .pw-dirrow > button:nth-last-of-type(2) { grid-column: 2; grid-row: 1; justify-self: end; margin-right: 30px; }
     .pw-dirrow > button:last-of-type { grid-column: 2; grid-row: 1; justify-self: end; }
@@ -4448,6 +4481,8 @@ const styles = {
   listHeadLabels: { padding: "0 12px 7px" },
   sortKopf: { display: "inline-flex", alignItems: "center", gap: 4, background: "transparent", border: "none", padding: 0, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, textAlign: "left", lineHeight: 1.3 },
   sortZeile: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 },
+  sortChip: { display: "inline-flex", alignItems: "center", gap: 4, background: T.bg, color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "6px 12px", fontSize: 11.5, fontWeight: 600, whiteSpace: "nowrap" },
+  sortChipAn: { display: "inline-flex", alignItems: "center", gap: 4, background: T.accent, color: T.bg, border: `1px solid ${T.accent}`, borderRadius: 20, padding: "6px 12px", fontSize: 11.5, fontWeight: 800, whiteSpace: "nowrap" },
   richtungBtn: { display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 7, padding: "5px 10px", fontSize: 11.5, fontWeight: 600 },
   listWrap: { display: "flex", flexDirection: "column", gap: 6 },
   listRow: { background: T.surface2, border: `1px solid ${T.line}`, borderLeft: "3px solid", borderRadius: 10, overflow: "hidden" },
@@ -4458,8 +4493,8 @@ const styles = {
   listSub: { display: "block", fontSize: 10.5, color: T.muted, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   metric: { display: "flex", flexDirection: "column", gap: 1, minWidth: 0 },
   metricLabel: { fontSize: 9, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 },
-  metricValue: { fontSize: 12, fontFamily: "ui-monospace, Menlo, monospace", whiteSpace: "nowrap" },
-  metricStark: { fontSize: 14, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace", whiteSpace: "nowrap" },
+  metricValue: { fontSize: 12, fontFamily: "ui-monospace, Menlo, monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
+  metricStark: { fontSize: 14, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" },
 
   cardBody: { padding: "4px 14px 13px", minWidth: 0, borderTop: `1px solid ${T.line}` },
   cardSub: { fontSize: 11.5, color: T.muted, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
