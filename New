@@ -942,6 +942,9 @@ export default function App() {
      bei 100 % und man sieht zwar die Zeitpunkte, aber nicht mehr, auf
      welcher Höhe sich der Markt trifft. Genau darum geht es hier. */
   const [verlaufEinheit, setVerlaufEinheit] = useState("euro");
+  /* Kilometerformel: "auto" nimmt die Form, die besser zu den vier
+     Stützpunkten passt — man kann aber jederzeit selbst umschalten. */
+  const [kmArt, setKmArt] = useState("auto");
   // Orderbuch: aufgeklappte Preisstufe und der Preis im Rechner
   const [buchStufe, setBuchStufe] = useState(null);
   const [buchPreis, setBuchPreis] = useState("");
@@ -1479,6 +1482,100 @@ export default function App() {
       zone, abgaenge: ausstieg.length,
     };
   }, [list, verlaufNull]);
+
+  /* ---- Was der Kilometer kostet: vier Quartile, eine Formel ----
+     Die Fahrzeuge werden nach Laufleistung sortiert und in vier gleich
+     große Gruppen geteilt. Jede Gruppe gibt einen einzigen Punkt her:
+     ihren mittleren Kilometerstand und ihren mittleren Preis. Durch diese
+     vier Punkte wird eine Linie gelegt — einmal als Gerade (gleich viel
+     Euro je 1.000 km), einmal als Kurve (gleich viel Prozent je 10.000 km).
+     Bewusst nur vier Stützpunkte: so wiegt jedes Viertel des Feldes gleich
+     schwer und ein einzelner Ausreißer kann die Formel nicht kippen. */
+  const kmFormel = useMemo(() => {
+    const mittel = (z) => z.reduce((a, b) => a + b, 0) / z.length;
+    const perzentil = (sortiert, p) => {
+      if (!sortiert.length) return null;
+      const i = (sortiert.length - 1) * p, u = Math.floor(i), o = Math.ceil(i);
+      return u === o ? sortiert[u] : sortiert[u] + (sortiert[o] - sortiert[u]) * (i - u);
+    };
+
+    const autos = list.map((v) => {
+      const t = tracking(v);
+      const km = Number(v.mileage) || 0;
+      const preis = t.currentPrice || 0;
+      if (km <= 0 || preis <= 0) return null;
+      return {
+        id: v.id, titel: v.title || v.id, url: v.url, ez: erstzulassung(v),
+        marke: [v.make, v.model].filter(Boolean).join(" "),
+        km, preis, offline: t.offline, stand: t.stand,
+      };
+    }).filter(Boolean).sort((a, b) => a.km - b.km);
+
+    /* Unter acht Fahrzeugen hätte ein Viertel weniger als zwei — dann ist
+       ein „Durchschnitt" nur ein einzelnes Auto mit anderem Namen. */
+    if (autos.length < 8) return { zuWenig: true, anzahl: autos.length };
+
+    const grenze = (i) => Math.floor((i * autos.length) / 4);
+    const quartile = [0, 1, 2, 3].map((i) => {
+      const teil = autos.slice(grenze(i), grenze(i + 1));
+      return {
+        nr: i + 1, n: teil.length, autos: teil,
+        kmVon: teil[0].km, kmBis: teil[teil.length - 1].km,
+        km: mittel(teil.map((a) => a.km)), preis: mittel(teil.map((a) => a.preis)),
+      };
+    });
+
+    // Kleinste Quadrate durch die vier Stützpunkte.
+    const xs = quartile.map((q) => q.km);
+    const ys = quartile.map((q) => q.preis);
+    const kq = (werte) => {
+      const mx = mittel(xs), my = mittel(werte);
+      let oben = 0, unten = 0;
+      xs.forEach((x, i) => { oben += (x - mx) * (werte[i] - my); unten += (x - mx) ** 2; });
+      const b = unten === 0 ? 0 : oben / unten;
+      return { a: my - b * mx, b };
+    };
+    /* Bestimmtheitsmaß immer in Euro gerechnet, auch für die Kurve — sonst
+       vergliche man Äpfel mit Logarithmen und die Kurve gewänne immer. */
+    const guete = (f) => {
+      const my = mittel(ys);
+      let rest = 0, ganz = 0;
+      ys.forEach((y, i) => { rest += (y - f(xs[i])) ** 2; ganz += (y - my) ** 2; });
+      return ganz === 0 ? 1 : 1 - rest / ganz;
+    };
+
+    const g = kq(ys);
+    const k = kq(ys.map((y) => Math.log(y)));
+    const medianKm = perzentil(autos.map((a) => a.km), 0.5);
+
+    const bauen = (art, a, b, f) => {
+      /* Der Gürtel: die mittlere Hälfte der Abweichungen aller Fahrzeuge
+         von der Linie. Nicht die Formel wird damit breiter, sondern das,
+         was das Feld um sie herum tatsächlich tut. */
+      const abweichung = autos.map((x) => x.preis - f(x.km)).sort((p, q) => p - q);
+      const unten = perzentil(abweichung, 0.25), oben = perzentil(abweichung, 0.75);
+      return {
+        art, a, b, f, r2: guete(f), unten, oben, halbeBreite: (oben - unten) / 2,
+        je10: f(medianKm) - f(medianKm + 10000),   // positiv = der Preis fällt
+        faktor: art === "kurve" ? Math.exp(b * 10000) : null,
+        innen: autos.filter((x) => {
+          const d = x.preis - f(x.km);
+          return d >= unten && d <= oben;
+        }).length,
+      };
+    };
+
+    const gerade = bauen("gerade", g.a, g.b, (x) => g.a + g.b * x);
+    const kurve = bauen("kurve", Math.exp(k.a), k.b, (x) => Math.exp(k.a + k.b * x));
+
+    return {
+      autos, quartile, gerade, kurve, medianKm,
+      besser: kurve.r2 > gerade.r2 ? "kurve" : "gerade",
+      anzahl: autos.length, offline: autos.filter((a) => a.offline).length,
+      kmMin: autos[0].km, kmMax: autos[autos.length - 1].km,
+      ohneKm: list.length - autos.length,
+    };
+  }, [list]);
 
   /* ---- Orderbuch: Angebot und Abgang je Preisstufe ----
 
@@ -2099,6 +2196,177 @@ export default function App() {
             </div>
           </>
         )}
+      </section>
+      )}
+
+      {tab === "uebersicht" && (
+      <section style={S.panel}>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Gauge size={15} /> Was der Kilometer kostet
+          </span>
+          {kmFormel && !kmFormel.zuWenig && (
+            <span style={S.umschalter}>
+              <button onClick={() => setKmArt("gerade")}
+                style={kmArt !== "kurve" && (kmArt === "gerade" || kmFormel.besser === "gerade") ? S.umschalterAn : S.umschalterAus}>Gerade</button>
+              <button onClick={() => setKmArt("kurve")}
+                style={kmArt !== "gerade" && (kmArt === "kurve" || kmFormel.besser === "kurve") ? S.umschalterAn : S.umschalterAus}>Kurve</button>
+            </span>
+          )}
+        </div>
+        <p style={S.hint}>
+          Alle Fahrzeuge nach Laufleistung sortiert und in <b style={{ color: T.text }}>vier gleich große
+          Viertel</b> geteilt — von ganz wenig bis ganz viel. Jedes Viertel gibt einen Durchschnittspreis her,
+          das sind die vier Rauten. Durch sie wird eine Gleichung gelegt: die gelbe Linie. Jeder kleine Punkt
+          ist ein Fahrzeug — so siehst du, wie es zur Linie steht. Zeigen erklärt, ein Klick öffnet das Inserat.
+        </p>
+
+        {!kmFormel || kmFormel.zuWenig ? (
+          <div style={S.empty}>
+            <Car size={30} color={T.line} />
+            <span>
+              Für vier Viertel brauche ich mindestens acht Fahrzeuge mit Kilometerstand und Preis
+              — bisher sind es {kmFormel ? kmFormel.anzahl : 0}. Sonst besteht ein „Durchschnitt" aus
+              einem einzigen Auto.
+            </span>
+          </div>
+        ) : (() => {
+          const F = kmFormel[kmArt === "auto" ? kmFormel.besser : kmArt];
+          const faellt = F.je10 > 0;
+          const stellen = 24;
+          const stelle = (i) => kmFormel.kmMin + ((kmFormel.kmMax - kmFormel.kmMin) * i) / stellen;
+          const linie = Array.from({ length: stellen + 1 }, (_, i) => {
+            const x = stelle(i); return { x, y: F.f(x) };
+          });
+          const proz = (w) => `${w.toFixed(1).replace(".", ",")} %`;
+          return (
+          <>
+            <div style={S.zahlenreihe}>
+              <Zahlenfeld label="Fahrzeuge" wert={`${kmFormel.anzahl}`}
+                zusatz={`${kmFormel.quartile.map((q) => q.n).join(" + ")} je Viertel`} />
+              <Zahlenfeld label="Je 10.000 km" accent
+                wert={`${faellt ? "−" : "+"}${fmtEUR(Math.abs(Math.round(F.je10)))}`}
+                zusatz={F.art === "kurve"
+                  ? `${faellt ? "−" : "+"}${proz(Math.abs(1 - F.faktor) * 100)} vom Wert, am mittleren Stand`
+                  : "gleich viel über die ganze Strecke"} />
+              <Zahlenfeld label="Gürtel" wert={`± ${fmtEUR(Math.round(F.halbeBreite))}`}
+                zusatz={`${F.innen} von ${kmFormel.anzahl} Fahrzeugen liegen darin`} />
+              <Zahlenfeld label="Passung" wert={`${Math.round(F.r2 * 100)} %`}
+                zusatz="so genau sitzen die Rauten" />
+            </div>
+
+            <Punktfeld
+              hoehe={370}
+              punkte={kmFormel.autos.map((a) => {
+                const soll = F.f(a.km);
+                return {
+                  id: a.id, x: a.km, y: a.preis, offen: a.offline,
+                  farbe: a.preis <= soll ? T.good : T.bad,
+                  daten: { ...a, soll, delta: a.preis - soll },
+                };
+              })}
+              yFormat={(w) => fmtNum(Math.round(w))}
+              xFormat={(w) => `${fmtNum(Math.round(w / 1000))}k`}
+              xTitel="Laufleistung in Kilometern"
+              yTitel="Geforderter Preis in Euro"
+              kurve={linie}
+              guertel={{
+                oben: linie.map((p) => ({ x: p.x, y: p.y + F.oben })),
+                unten: linie.map((p) => ({ x: p.x, y: p.y + F.unten })),
+              }}
+              marken={kmFormel.quartile.map((q) => ({ x: q.km, y: q.preis, label: `Q${q.nr}` }))}
+              karte={(a) => <Kilometerkarte a={a} />}
+              aufKlick={(a) => { if (a.daten.url) window.open(normalizeUrl(a.daten.url), "_blank", "noreferrer"); }}
+            />
+
+            <div style={S.feldLegende}>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.good }} /> günstiger als die Formel</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.bad }} /> teurer als die Formel</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.bg, border: `2px solid ${T.muted}` }} /> hohl: nicht mehr online</span>
+              <span style={S.legendeEintrag}><span style={S.legendeRaute} /> Durchschnitt eines Viertels</span>
+              <span style={S.legendeEintrag}><span style={S.legendeBand} /> der Gürtel: die mittlere Hälfte</span>
+            </div>
+
+            <div style={S.formelKasten}>
+              <div style={S.formelLabel}>Die Gleichung aus den vier Durchschnittspreisen</div>
+              <div style={S.formelZeile}>
+                {F.art === "gerade" ? (
+                  <>Preis(km) = {fmtNum(Math.round(F.a))} € {F.b < 0 ? "−" : "+"} {fmtNum(Math.round(Math.abs(F.b) * 1000))} € × (km ÷ 1.000)</>
+                ) : (
+                  <>Preis(km) = {fmtNum(Math.round(F.a))} € × {F.faktor.toFixed(3).replace(".", ",")}<sup>(km ÷ 10.000)</sup></>
+                )}
+              </div>
+              <div style={S.formelKlartext}>
+                {F.art === "gerade"
+                  ? <>Bei null Kilometern stünde die Linie bei <b style={{ color: T.text }}>{fmtEUR(Math.round(F.a))}</b>, und
+                    jede weiteren 1.000 km {faellt ? "kosten" : "bringen"} <b style={{ color: T.text }}>{fmtEUR(Math.abs(Math.round(F.b * 1000)))}</b> —
+                    unten wie oben gleich viel.</>
+                  : <>Der Preis {faellt ? "verliert" : "gewinnt"} je 10.000 km
+                    <b style={{ color: T.text }}> {proz(Math.abs(1 - F.faktor) * 100)}</b> vom jeweils erreichten Wert.
+                    Am unteren Ende sind das in Euro mehr als am oberen — deshalb die Krümmung.</>}
+              </div>
+            </div>
+
+            <div style={S.quartilListe}>
+              <div style={{ ...S.quartilZeile, ...S.quartilKopf }}>
+                <span>Nr.</span><span>Kilometerstand</span><span style={{ textAlign: "right" }}>Anz.</span>
+                <span style={{ textAlign: "right" }}>Ø Preis</span><span style={{ textAlign: "right" }}>zur Linie</span>
+              </div>
+              {kmFormel.quartile.map((q) => {
+                const d = q.preis - F.f(q.km);
+                return (
+                  <div key={q.nr} style={S.quartilZeile}>
+                    <span style={S.quartilTag}>Q{q.nr}</span>
+                    <span style={S.quartilKm}>{fmtNum(q.kmVon)} – {fmtNum(q.kmBis)}</span>
+                    <span style={{ ...S.quartilZahl, color: T.muted }}>{q.n}</span>
+                    <span style={S.quartilZahl}>{fmtEUR(Math.round(q.preis))}</span>
+                    <span style={{ ...S.quartilZahl, color: Math.abs(d) < 150 ? T.muted : (d > 0 ? T.bad : T.good) }}>
+                      {d > 0 ? "+" : "−"}{fmtEUR(Math.abs(Math.round(d)))}
+                    </span>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={S.spanneSatz}>
+              <b style={{ color: T.accent }}>Was das heißt:</b>{" "}
+              {faellt ? (
+                <>Über dein Feld hinweg {F.art === "kurve" ? "schmilzt" : "kostet"} jede
+                  10.000 km <b style={{ color: T.text }}>{fmtEUR(Math.abs(Math.round(F.je10)))}</b>.
+                  Zwischen dem sparsamsten und dem meistgelaufenen Fahrzeug
+                  liegen <b style={{ color: T.text }}>{fmtNum(kmFormel.kmMax - kmFormel.kmMin)} km</b> — nach dieser
+                  Formel also <b style={{ color: T.text }}>{fmtEUR(Math.abs(Math.round(F.f(kmFormel.kmMin) - F.f(kmFormel.kmMax))))}</b> Unterschied
+                  allein durch die Laufleistung.</>
+              ) : (
+                <>In deinem Verzeichnis steigt der Preis mit der Laufleistung, statt zu fallen. Das ist kein
+                  Marktgesetz, sondern ein Zeichen: Die viel gelaufenen Fahrzeuge sind vermutlich jünger, besser
+                  ausgestattet oder in besserem Zustand. Solange das so ist, misst diese Linie nicht die
+                  Kilometer, sondern etwas anderes.</>
+              )}
+              {" "}Ein Fahrzeug <b style={{ color: T.good }}>unter</b> der Linie ist für seine Kilometer günstig
+              angesetzt, eines <b style={{ color: T.bad }}>darüber</b> teuer — vorausgesetzt, es ist sonst
+              vergleichbar.
+            </div>
+
+            {F.r2 < 0.5 && (
+              <div style={S.kleinerHinweis}>
+                <b style={{ color: T.accent }}>Vorsicht:</b> Die vier Durchschnittspreise liegen nur zu{" "}
+                {Math.round(Math.max(0, F.r2) * 100)} % auf dieser Linie. Solange das so niedrig ist, beschreibt die
+                Formel eher deine Zufallsauswahl als den Zusammenhang zwischen Kilometern und Preis.
+              </div>
+            )}
+
+            <div style={S.kleinerHinweis}>
+              Gerechnet wird mit dem <b style={{ color: T.text }}>heute geforderten Preis</b>; bei nicht mehr
+              erreichbaren Inseraten mit dem zuletzt gesehenen. Die Formel kennt nur eine einzige Größe: die
+              Kilometer. Alles andere — Baujahr, Ausstattung, Zustand, Unfall — steckt unsortiert in der Streuung
+              um die Linie. Deshalb der Gürtel: Er sagt, wie weit dieses Feld um seine eigene Linie schwankt.
+              {kmFormel.ohneKm > 0 && <> {kmFormel.ohneKm} {kmFormel.ohneKm === 1 ? "Fahrzeug hat" : "Fahrzeuge haben"} keinen
+                Kilometerstand oder keinen Preis und {kmFormel.ohneKm === 1 ? "fehlt" : "fehlen"} in dieser Rechnung.</>}
+            </div>
+          </>
+          );
+        })()}
       </section>
       )}
 
@@ -3202,7 +3470,8 @@ function useBreite(ref) {
    getroffene. Deshalb erscheint überall etwas, und der Klick öffnet immer
    das, was die Karte gerade zeigt. */
 function Punktfeld({ punkte, hoehe = 330, yFormat, xFormat, xTitel, yTitel,
-  linien = [], band = null, karte, aufKlick, leer }) {
+  linien = [], band = null, kurve = null, guertel = null, marken = [],
+  karte, aufKlick, leer }) {
   const S = styles;
   const huelle = useRef(null);
   const breite = useBreite(huelle);
@@ -3221,7 +3490,9 @@ function Punktfeld({ punkte, hoehe = 330, yFormat, xFormat, xTitel, yTitel,
 
   const xs = punkte.map((p) => p.x);
   const ys = punkte.map((p) => p.y);
-  const werteY = [...ys, ...linien.map((l) => l.y), ...(band ? [band.von, band.bis] : [])];
+  const werteY = [...ys, ...linien.map((l) => l.y), ...(band ? [band.von, band.bis] : []),
+    ...(kurve || []).map((p) => p.y), ...(guertel ? guertel.oben.concat(guertel.unten).map((p) => p.y) : []),
+    ...marken.map((m) => m.y)];
   let yMin = Math.min(...werteY), yMax = Math.max(...werteY);
   const luft = (yMax - yMin) * 0.08 || Math.max(1, yMax * 0.05);
   yMin -= luft; yMax += luft;
@@ -3312,6 +3583,19 @@ function Punktfeld({ punkte, hoehe = 330, yFormat, xFormat, xTitel, yTitel,
             </g>
           ))}
 
+          {/* Der Gürtel um die Kurve: hin über die obere Kante, zurück über
+              die untere. Dahinter die Kurve selbst — beides gehört unter die
+              Punkte, sonst verdeckt es sie. */}
+          {guertel && guertel.oben.length > 1 && (
+            <path fill={T.accent} fillOpacity={0.12}
+              d={guertel.oben.map((p, i) => `${i ? "L" : "M"}${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join("")
+                + [...guertel.unten].reverse().map((p) => `L${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join("") + "Z"} />
+          )}
+          {kurve && kurve.length > 1 && (
+            <path fill="none" stroke={T.accent} strokeWidth={2.2} strokeLinecap="round"
+              d={kurve.map((p, i) => `${i ? "L" : "M"}${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join("")} />
+          )}
+
           {/* Zeigerlinie */}
           {aktiv && (
             <line x1={aktiv.cx} x2={aktiv.cx} y1={rand.oben} y2={rand.oben + zeichenH}
@@ -3323,6 +3607,19 @@ function Punktfeld({ punkte, hoehe = 330, yFormat, xFormat, xTitel, yTitel,
             <circle key={p.id} cx={p.cx} cy={p.cy} r={aktiv && aktiv.id === p.id ? 7.5 : 5}
               fill={p.offen ? T.bg : p.farbe} stroke={p.farbe}
               strokeWidth={p.offen ? 2 : 0} fillOpacity={p.offen ? 1 : 0.9} />
+          ))}
+
+          {/* Die Stützpunkte, aus denen die Formel gerechnet wurde: als
+              Raute, damit man sie nie mit einem Fahrzeug verwechselt. */}
+          {marken.map((m, i) => (
+            <g key={i}>
+              <path d={`M${px(m.x)},${py(m.y) - 8}L${px(m.x) + 8},${py(m.y)}L${px(m.x)},${py(m.y) + 8}L${px(m.x) - 8},${py(m.y)}Z`}
+                fill={T.bg} stroke={m.farbe || T.accent} strokeWidth={2.2} />
+              {m.label && (
+                <text x={px(m.x)} y={py(m.y) - 13} textAnchor="middle" fontSize="10" fontWeight="700"
+                  fill={m.farbe || T.accent}>{m.label}</text>
+              )}
+            </g>
           ))}
 
           {/* Achsenbeschriftung */}
@@ -3590,6 +3887,42 @@ function Verlaufskarte({ r, tag, einheit }) {
 }
 
 // Die Karte, die beim Zeigen auf einen Punkt der Übersicht erscheint.
+/* Die Karte am Kilometerfeld: was dieses Fahrzeug kostet, was die Formel
+   an seiner Stelle sagt, und wie weit es davon abweicht. */
+function Kilometerkarte({ a }) {
+  const S = styles;
+  const guenstig = a.delta <= 0;
+  return (
+    <div style={S.punktKarte}>
+      <div style={{ ...S.punktKopf, color: a.offline ? T.muted : T.accent }}>
+        {fmtNum(a.km)} km{a.offline ? ` · ${a.stand}` : ""}
+      </div>
+      <div style={S.punktTitel}>{a.titel}</div>
+      {a.marke && <div style={S.punktMarke}>{a.marke}</div>}
+      <div style={S.punktPreis}>{fmtEUR(a.preis)}</div>
+      <div style={{ ...S.punktJetzt, color: guenstig ? T.good : T.bad }}>
+        {guenstig ? "−" : "+"}{fmtEUR(Math.abs(Math.round(a.delta)))} zur Linie
+        {" "}({guenstig ? "−" : "+"}{Math.abs((a.delta / a.soll) * 100).toFixed(1).replace(".", ",")} %)
+      </div>
+      <div style={S.punktListe}>
+        <div style={S.punktZeile}>
+          <span style={S.punktLabel}>Formel sagt</span>
+          <span style={S.punktWert}>{fmtEUR(Math.round(a.soll))}</span>
+        </div>
+        {a.ez && (
+          <div style={S.punktZeile}>
+            <span style={S.punktLabel}>Erstzulassung</span>
+            <span style={S.punktWert}>{a.ez}</span>
+          </div>
+        )}
+      </div>
+      <div style={S.punktFussnote}>
+        {guenstig ? "günstig für seine Kilometer" : "teuer für seine Kilometer"} — wenn sonst vergleichbar
+      </div>
+    </div>
+  );
+}
+
 function Uebersichtskarte({ p }) {
   const S = styles;
   const gefallen = p.jetzt != null && p.jetzt !== p.preis;
@@ -3874,6 +4207,19 @@ const styles = {
   legendeStrich: { width: 16, height: 0, borderTop: `2px dashed ${T.muted}`, display: "inline-block" },
   punktStart: { color: T.muted, fontSize: 10, fontWeight: 400, fontFamily: "system-ui, sans-serif" },
   legendeBand: { width: 16, height: 9, borderRadius: 2, display: "inline-block", background: T.accent, opacity: 0.25 },
+  legendeRaute: { width: 9, height: 9, display: "inline-block", background: T.bg, border: `2px solid ${T.accent}`, transform: "rotate(45deg)" },
+  formelKasten: { marginTop: 12, background: T.bg, border: `1px solid ${T.line}`, borderRadius: 10, padding: "11px 13px" },
+  formelLabel: { color: T.muted, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 },
+  /* Die Gleichung darf umbrechen statt abzuschneiden — auf dem Handy
+     passt sie sonst nicht in eine Zeile. */
+  formelZeile: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: "clamp(12.5px, 3.4vw, 17px)", fontWeight: 800, color: T.accent, margin: "6px 0 7px", lineHeight: 1.5 },
+  formelKlartext: { fontSize: 11.5, color: T.muted, lineHeight: 1.6 },
+  quartilListe: { display: "flex", flexDirection: "column", gap: 2, marginTop: 10, overflowX: "auto" },
+  quartilZeile: { display: "grid", gridTemplateColumns: "28px minmax(118px,1fr) 40px 76px 72px", gap: 6, alignItems: "center", background: T.bg, borderRadius: 6, padding: "5px 9px", fontSize: 11.5, minWidth: 340 },
+  quartilKopf: { background: "transparent", color: T.muted, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700, padding: "0 9px 2px" },
+  quartilTag: { fontWeight: 800, color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
+  quartilKm: { fontFamily: "ui-monospace, Menlo, monospace", color: T.text },
+  quartilZahl: { fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
   spanneSatz: { marginTop: 12, background: T.bg, borderLeft: `3px solid ${T.accent}`, borderRadius: 8, padding: "10px 13px", fontSize: 12.5, lineHeight: 1.55, color: T.muted },
   kleinerHinweis: { marginTop: 10, fontSize: 11, color: T.muted, lineHeight: 1.5 },
   punktKarte: { background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 9, padding: "9px 12px", fontSize: 12, maxWidth: 250, boxShadow: "0 6px 22px rgba(0,0,0,.45)" },
