@@ -161,7 +161,10 @@ SO FÜLLST DU JEDES FELD AUS:
 18. "listedSince"
     Seit wann das Inserat online ist, als JJJJ-MM-TT.
     Steht auf mobile.de oft als "Online seit" oder "Inseriert am".
-    Findest du kein Datum: "".
+    Such danach gründlich -- ohne dieses Datum kann die App die Standzeit
+    erst ab dem Tag rechnen, an dem du das Inserat erfasst hast.
+    Steht dort eine Angabe wie "vor 3 Wochen online gestellt", rechne sie
+    ins Datum um. Findest du wirklich nichts: "" -- rate nicht.
 
 19. "repairNote"
     Was das Inserat über BEREITS ERFOLGTE Reparaturen und Erneuerungen sagt --

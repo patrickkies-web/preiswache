@@ -478,7 +478,10 @@ function tracking(v) {
     tageSeitAenderung: letzte ? tageZwischen(letzte.von, ende) : null,
     absolut: abs,
     prozent: abs != null && erste?.preis ? (abs / erste.preis) * 100 : null,
-    qualitaet: v.trackingQuality === "full" ? "full" : "legacy",
+    /* Drei Zustände, nicht zwei: Ohne Inseratsdatum ist schlicht nicht
+       bekannt, ob der Anfang dabei war — das ist etwas anderes, als zu
+       wissen, dass er fehlte. */
+    qualitaet: !v.listedSince ? "unbekannt" : v.trackingQuality === "full" ? "full" : "legacy",
     // Wie viele Tage lief das Inserat schon, bevor die App es gesehen hat?
     blindTage: start && firstSeen ? tageZwischen(start, firstSeen) : null,
   };
@@ -712,7 +715,12 @@ function normalizeVehicle(v) {
   // Bleibt leer, wenn nichts mitgeliefert wurde — daran erkennt der Import,
   // ob ein Abschluss gemeint ist oder nur ein Preis-Update.
   out.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS);
-  out.listedSince = nurDatum(v.listedSince) || out.priceHistory[0]?.date || "";
+  /* Bleibt leer, wenn im Inserat kein "Online seit" stand. Früher wurde
+     hier der Erfassungstag eingesetzt — das sah aus wie eine Angabe, war
+     aber geraten, und jede Zeitrechnung begann dadurch bei null. Was die
+     App nicht weiß, trägt sie jetzt auch nicht ein; nachtragen lässt es
+     sich am Fahrzeug. */
+  out.listedSince = nurDatum(v.listedSince);
   out.closedDate = nurDatum(v.closedDate);
   // Aus einer Sicherung kommen diese Werte zurück; aus einer KI-Antwort nie.
   out.firstSeen = nurDatum(v.firstSeen);
@@ -882,7 +890,20 @@ function migrate(vehicles) {
     v.ausstattung = ausstattungsStufe(v.equipment.length);
     delete v.showcase;
     v.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS) || "Aktiv";
-    v.listedSince = v.listedSince || v.priceHistory?.[0]?.date || "";
+    v.listedSince = nurDatum(v.listedSince);   // nichts erfinden, siehe normalize()
+
+    /* Aufräumen nach der alten Regel: Bis hierher hat die App ein fehlendes
+       Inseratsdatum stillschweigend mit dem Tag der ersten Erfassung
+       gefüllt. Das ist keine Angabe, sondern eine Vermutung — und sie hat
+       jede Linie im Preisverlauf bei Tag 0 beginnen und dort auch enden
+       lassen. Wo das Datum genau auf dem ersten Preis-Punkt und der ersten
+       Sichtung liegt, war es dieser Automatismus; es wird geleert, damit
+       die App danach fragt. Gerechnet wird ohnehin weiter mit dem ersten
+       Preis-Punkt, es geht also keine Zahl verloren — nur die Behauptung. */
+    if (v.listedSince && v.listedSince === v.priceHistory?.[0]?.date
+        && (!v.firstSeen || v.firstSeen === v.listedSince)) {
+      v.listedSince = "";
+    }
 
     /* Beobachtungsdaten für Einträge nachziehen, die es vor dieser Zählung
        schon gab. Was fehlt, wird aus dem Vorhandenen erschlossen und ist
@@ -1139,8 +1160,10 @@ export default function App() {
         existing.priceHistory.forEach((p) => { byDate[p.date] = p.price; });
         incoming.priceHistory.forEach((p) => { byDate[p.date] = p.price; });
         merged.priceHistory = Object.entries(byDate).map(([date, price]) => ({ date, price })).sort((a, b) => a.date.localeCompare(b.date));
-        // Der früheste bekannte Tag bleibt der Beginn des Inserats.
-        merged.listedSince = [existing.listedSince, incoming.listedSince, merged.priceHistory[0]?.date]
+        /* Der früheste bekannte Tag bleibt der Beginn des Inserats — aber nur
+           ein wirklich gemeldeter. Der erste Preis-Punkt ist der Tag deiner
+           Erfassung und beweist über den Inseratsstart nichts. */
+        merged.listedSince = [existing.listedSince, incoming.listedSince]
           .filter(Boolean).sort()[0] || "";
         // Ein Preis-Update der KI enthält keinen Abschluss und lässt ihn unangetastet;
         // eine Sicherung bringt ihn mit und stellt ihn wieder her.
@@ -1181,6 +1204,21 @@ export default function App() {
   // bestätigen. Sonst verschwände der Eintrag nach der ersten Korrektur.
   const setzeFeld = useCallback((id, feld, wert) => {
     updateVehicle(id, (v) => ({ ...v, [feld]: wert, updatedAt: new Date().toISOString() }));
+  }, [updateVehicle]);
+
+  /* Der Tag, an dem der Verkäufer inseriert hat, ist die wichtigste Angabe
+     für jede Zeitrechnung — und die einzige, die man am Inserat abliest
+     statt sie zu beobachten. Steht sie nicht drin, beginnt jede Linie im
+     Preisverlauf erst am Tag der Erfassung. Deshalb ist sie nachtragbar.
+     Mit ihr ändert sich auch, ob der Anfang mitverfolgt wurde. */
+  const setzeInseratsdatum = useCallback((id, datum) => {
+    updateVehicle(id, (v) => {
+      const listedSince = nurDatum(datum);
+      const firstSeen = v.firstSeen || v.priceHistory?.[0]?.date || "";
+      return { ...v, listedSince,
+        trackingQuality: listedSince ? trackingGuete(listedSince, firstSeen) : "legacy",
+        updatedAt: new Date().toISOString() };
+    });
   }, [updateVehicle]);
 
 
@@ -1437,6 +1475,7 @@ export default function App() {
         farbe: farben[nr % farben.length],
         startPreis, letzterPreis, ende, blindBis, punkte, knicke, schritte, senkungen,
         offline: t.offline, stand: t.stand,
+        hatStart: !!v.listedSince,
         ersteSenkung: senkungen.length ? senkungen[0].tag : null,
         ersteSenkungPct: senkungen.length ? (senkungen[0].delta / senkungen[0].von) * 100 : null,
         gesamtPct: ((letzterPreis - startPreis) / startPreis) * 100,
@@ -1480,6 +1519,12 @@ export default function App() {
       geraten: reihen.filter((r) => r.blindBis > 0).length,
       laengste: Math.max(...reihen.map((r) => r.ende)),
       zone, abgaenge: ausstieg.length,
+      /* Ohne Inseratsdatum nimmt die App den Erfassungstag als Tag 0. Wer
+         alles heute erfasst hat, bekommt lauter Linien der Länge 1 — das
+         ist keine Kaputtheit des Bildes, sondern eine fehlende Angabe, und
+         der Abschnitt sagt das unten selbst. */
+      ohneStart: reihen.filter((r) => !r.hatStart).length,
+      kurz: reihen.filter((r) => r.ende <= 1).length,
     };
   }, [list, verlaufNull]);
 
@@ -2410,6 +2455,26 @@ export default function App() {
           </div>
         ) : (
           <>
+            {preisverlaeufe.laengste <= 1 && verlaufNull === "inserat" && (
+              <div style={S.warnKasten}>
+                <b style={{ color: T.accent }}>Alle Linien sind nur einen Tag lang</b> — und das liegt nicht am
+                Bild, sondern an einer fehlenden Angabe.{" "}
+                {preisverlaeufe.ohneStart > 0 ? (
+                  <>Bei <b style={{ color: T.text }}>{preisverlaeufe.ohneStart} von {preisverlaeufe.anzahl}</b> Inseraten
+                    ist nicht hinterlegt, seit wann sie online sind. Ohne diese Angabe nimmt die App deinen
+                    Erfassungstag als Tag 0 — hast du alle am selben Tag aufgenommen, fangen und enden auch alle
+                    Linien am selben Tag.</>
+                ) : (
+                  <>Die hinterlegten Inseratsdaten liegen alle auf dem heutigen oder gestrigen Tag.</>
+                )}
+                {" "}Trag das echte Datum nach: im <b style={{ color: T.text }}>Verzeichnis</b> ein Fahrzeug
+                aufklappen, im Kasten <b style={{ color: T.text }}>Beobachtung</b> steht das
+                Feld <b style={{ color: T.text }}>„Inseriert seit"</b>. Auf mobile.de findest du es als
+                „Online seit". Danach beginnt jede Linie an ihrem echten Tag 0 und wird so lang, wie das Inserat
+                schon läuft.
+              </div>
+            )}
+
             <div style={S.zahlenreihe}>
               <Zahlenfeld label="Mit Senkung" wert={`${preisverlaeufe.mitSenkung} von ${preisverlaeufe.anzahl}`}
                 zusatz={preisverlaeufe.mehrfach > 0 ? `${preisverlaeufe.mehrfach} mehr als einmal` : "keiner mehrfach"} />
@@ -2507,6 +2572,14 @@ export default function App() {
                 </>
               )}
             </div>
+
+            {preisverlaeufe.ohneStart > 0 && preisverlaeufe.laengste > 1 && verlaufNull === "inserat" && (
+              <div style={S.kleinerHinweis}>
+                Bei {preisverlaeufe.ohneStart} von {preisverlaeufe.anzahl} Inseraten fehlt das Datum, seit wann
+                sie online sind — dort ist Tag 0 dein Fundtag und nicht der echte Inseratsstart. Nachtragen
+                kannst du es im Verzeichnis unter „Beobachtung" im Feld <b style={{ color: T.text }}>Inseriert seit</b>.
+              </div>
+            )}
 
             {preisverlaeufe.geraten > 0 && verlaufNull === "inserat" && (
               <div style={S.kleinerHinweis}>
@@ -2939,7 +3012,7 @@ export default function App() {
                       openAdd={openAdd} cancelAdd={() => setAddFor(null)} addPoint={addPoint} deletePoint={deletePoint} removeVehicle={removeVehicle}
                       closeFor={closeFor} closeStatus={closeStatus} closeDate={closeDate} setCloseStatus={setCloseStatus} setCloseDate={setCloseDate}
                       openClose={openClose} cancelClose={() => setCloseFor(null)} confirmClose={confirmClose} reopen={reopen}
-                      setzeFeld={setzeFeld} heuteGesehen={heuteGesehen} />
+                      setzeFeld={setzeFeld} heuteGesehen={heuteGesehen} setzeInseratsdatum={setzeInseratsdatum} />
                   ))}
                 </div>
               </>
@@ -2959,7 +3032,7 @@ export default function App() {
 /* --------------------------- Karte ------------------------------- */
 
 function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, setAddDate, setAddPrice, openAdd, cancelAdd, addPoint, deletePoint, removeVehicle,
-  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen, setzeFeld, heuteGesehen }) {
+  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen, setzeFeld, heuteGesehen, setzeInseratsdatum }) {
   const S = styles;
   const h = v.priceHistory || [];
   const last = h[h.length - 1]?.price;
@@ -3046,7 +3119,7 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
           </span>
         </div>
 
-        <Beobachtung v={v} heuteGesehen={heuteGesehen} />
+        <Beobachtung v={v} heuteGesehen={heuteGesehen} setzeInseratsdatum={setzeInseratsdatum} />
 
         <div style={S.histHead}>
           <span>Preisverlauf · {h.length}</span>
@@ -3119,7 +3192,7 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
 /* Was die App über die Beobachtung dieses Inserats weiß.
    Alles außer firstSeen, lastSeen, disappearedAt und trackingQuality wird
    aus dem Preisverlauf gerechnet — siehe tracking(). */
-function Beobachtung({ v, heuteGesehen }) {
+function Beobachtung({ v, heuteGesehen, setzeInseratsdatum }) {
   const S = styles;
   const [stufenOffen, setStufenOffen] = useState(false);
   const t = tracking(v);
@@ -3133,12 +3206,16 @@ function Beobachtung({ v, heuteGesehen }) {
     <div style={S.beoBox}>
       <div style={S.beoKopf}>
         <span style={S.beoTitel}><Gauge size={11} style={{ verticalAlign: -1 }} /> Beobachtung</span>
-        <span style={{ ...S.beoGuete, color: t.qualitaet === "full" ? T.good : T.muted,
-          borderColor: (t.qualitaet === "full" ? T.good : T.muted) + "55" }}
+        <span style={{ ...S.beoGuete,
+          color: t.qualitaet === "full" ? T.good : t.qualitaet === "unbekannt" ? T.accent : T.muted,
+          borderColor: (t.qualitaet === "full" ? T.good : t.qualitaet === "unbekannt" ? T.accent : T.muted) + "55" }}
           title={t.qualitaet === "full"
             ? "Von Anfang an verfolgt — das Inserat war frisch, als es aufgenommen wurde."
-            : `Das Inserat lief schon${t.blindTage ? ` ${t.blindTage} Tage` : ""}, als es aufgenommen wurde. Frühe Senkungen fehlen.`}>
-          {t.qualitaet === "full" ? "vollständig verfolgt" : "nachträglich aufgenommen"}
+            : t.qualitaet === "unbekannt"
+              ? "Es ist kein Datum hinterlegt, seit wann das Inserat online ist. Ob der Anfang dabei war, lässt sich nicht sagen — und jede Zeitrechnung beginnt erst an deinem Fundtag."
+              : `Das Inserat lief schon${t.blindTage ? ` ${t.blindTage} Tage` : ""}, als es aufgenommen wurde. Frühe Senkungen fehlen.`}>
+          {t.qualitaet === "full" ? "vollständig verfolgt"
+            : t.qualitaet === "unbekannt" ? "Anfang unbekannt" : "nachträglich aufgenommen"}
         </span>
       </div>
 
@@ -3154,6 +3231,12 @@ function Beobachtung({ v, heuteGesehen }) {
           zusatz={t.tageSeitAenderung == null ? null
             : t.aenderungen === 0 ? `unverändert seit ${laufzeitDativ(t.tageSeitAenderung)}`
               : `zuletzt vor ${laufzeitDativ(t.tageSeitAenderung)}`} />
+        <BeoDatum label="Inseriert seit" wert={v.listedSince}
+          gesetzt={!!v.listedSince}
+          zusatz={v.listedSince
+            ? (t.blindTage ? `${t.blindTage} Tage vor deinem Fund` : "du warst von Anfang an dabei")
+            : "fehlt — Tag 0 ist dein Fundtag"}
+          aendern={(d) => setzeInseratsdatum(v.id, d)} />
         <BeoWert label="Erstmals gesehen" wert={t.firstSeen ? fmtDate(t.firstSeen) : "—"} />
         <BeoWert label="Zuletzt gesehen" wert={t.lastSeen ? fmtDate(t.lastSeen) : "—"}
           farbe={alt != null && alt > 7 ? T.accent : undefined}
@@ -3217,6 +3300,23 @@ function BeoWert({ label, wert, zusatz, farbe, stark }) {
       <div style={S.beoLabel}>{label}</div>
       <div style={{ ...S.beoZahl, color: farbe || T.text, fontWeight: stark ? 800 : 700 }}>{wert}</div>
       {zusatz && <div style={S.beoZusatz}>{zusatz}</div>}
+    </div>
+  );
+}
+
+/* Ein Datum im Beobachtungsgitter, das man ändern kann. Sieht aus wie ein
+   BeoWert, ist aber ein Eingabefeld — das Inseratsdatum liest man am
+   Inserat ab, die App kann es nicht wissen. Fehlt es, wird das Feld
+   angemahnt statt still zu bleiben. */
+function BeoDatum({ label, wert, zusatz, gesetzt, aendern }) {
+  const S = styles;
+  return (
+    <div style={{ ...S.beoFeld, borderColor: gesetzt ? T.line : T.accent + "66" }}>
+      <div style={S.beoLabel}>{label}</div>
+      <input type="date" className="pw-datum" value={wert || ""} max={todayISO()}
+        style={{ ...S.beoDatumFeld, color: gesetzt ? T.text : T.accent }}
+        onChange={(e) => aendern(e.target.value)} />
+      {zusatz && <div style={{ ...S.beoZusatz, color: gesetzt ? T.muted : T.accent }}>{zusatz}</div>}
     </div>
   );
 }
@@ -3433,11 +3533,15 @@ function absorptionsFarbe(anteil) {
 }
 
 // Runde Achsenschritte: 1, 2, 2,5 oder 5 mal einer Zehnerpotenz.
-function achsenSchritte(min, max, anzahl = 5) {
+function achsenSchritte(min, max, anzahl = 5, ganz = false) {
   const spanne = (max - min) || 1;
   const roh = spanne / anzahl;
   const groesse = Math.pow(10, Math.floor(Math.log10(roh)));
-  const schritt = [1, 2, 2.5, 5, 10].map((f) => f * groesse).find((x) => x >= roh) || groesse * 10;
+  let schritt = [1, 2, 2.5, 5, 10].map((f) => f * groesse).find((x) => x >= roh) || groesse * 10;
+  /* Zählbare Einheiten — Tage — dürfen nicht in Bruchteilen beschriftet
+     werden. Bei einer Spanne von einem Tag käme sonst der Schritt 0,2
+     heraus und die Achse trüge dreimal "0 T" und dreimal "1 T". */
+  if (ganz) schritt = Math.max(1, Math.ceil(schritt));
   const werte = [];
   for (let w = Math.ceil(min / schritt) * schritt; w <= max + schritt * 1e-6; w += schritt) {
     werte.push(Math.round(w * 1e6) / 1e6);
@@ -3718,7 +3822,7 @@ function Linienfeld({ reihen, hoehe = 360, yFormat, xFormat, xTitel, yTitel,
   const setzen = (o) => { setAktiv(o.reihe); setStelle(o.x); };
 
   const yTicks = achsenSchritte(yMin, yMax, 5);
-  const xTicks = achsenSchritte(0, xMax, B > 560 ? 7 : 4);
+  const xTicks = achsenSchritte(0, xMax, B > 560 ? 7 : 4, true);   // Tage sind ganz
   const aktivWert = aktiv && stelle != null ? wertBei(aktiv, stelle) : null;
   const kartenSeite = stelle != null && px(stelle) > B * 0.55 ? "rechts" : "links";
 
@@ -4106,6 +4210,7 @@ const styles = {
   beoLabel: { color: T.muted, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.04em", fontWeight: 700 },
   beoZahl: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, marginTop: 2 },
   beoZusatz: { color: T.muted, fontSize: 10, marginTop: 1 },
+  beoDatumFeld: { width: "100%", background: "transparent", border: "none", padding: 0, marginTop: 2, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 13, fontWeight: 700, colorScheme: "dark" },
   beoZeile: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 9 },
   beoBtn: { display: "inline-flex", alignItems: "center", gap: 5, background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 7, padding: "5px 9px", fontSize: 11.5, fontWeight: 600 },
   beoWarnung: { color: T.accent, fontSize: 10.5, flex: 1, minWidth: 140 },
@@ -4220,6 +4325,7 @@ const styles = {
   quartilTag: { fontWeight: 800, color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
   quartilKm: { fontFamily: "ui-monospace, Menlo, monospace", color: T.text },
   quartilZahl: { fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
+  warnKasten: { marginTop: 2, marginBottom: 4, background: T.accent + "14", border: `1px solid ${T.accent}55`, borderRadius: 9, padding: "11px 13px", fontSize: 12.5, lineHeight: 1.6, color: T.muted },
   spanneSatz: { marginTop: 12, background: T.bg, borderLeft: `3px solid ${T.accent}`, borderRadius: 8, padding: "10px 13px", fontSize: 12.5, lineHeight: 1.55, color: T.muted },
   kleinerHinweis: { marginTop: 10, fontSize: 11, color: T.muted, lineHeight: 1.5 },
   punktKarte: { background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 9, padding: "9px 12px", fontSize: 12, maxWidth: 250, boxShadow: "0 6px 22px rgba(0,0,0,.45)" },
