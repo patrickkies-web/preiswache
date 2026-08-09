@@ -885,6 +885,9 @@ export default function App() {
   const [tab, setTab] = useState("erfassen");
   // Übersicht: wonach die Inserate nebeneinander stehen
   const [uebersichtSort, setUebersichtSort] = useState("preis");
+  // Preisverläufe: Tag 0 und Maßeinheit der senkrechten Achse
+  const [verlaufNull, setVerlaufNull] = useState("inserat");   // "inserat" oder "erfassung"
+  const [verlaufEinheit, setVerlaufEinheit] = useState("prozent");
   const aktiv = tab === "analyseB" ? 1 : 0;
   const andere = 1 - aktiv;
   const [openRows, setOpenRows] = useState({});
@@ -1311,6 +1314,93 @@ export default function App() {
       guenstigstes: nachPreis[0], teuerstes: nachPreis[nachPreis.length - 1],
     };
   }, [list]);
+
+  /* ---- Preisverläufe: wann senken die Anbieter? ----
+     Je Inserat eine Treppe. Waagerecht die Tage seit dem Start, senkrecht
+     der geforderte Preis. Ein Preis gilt, bis der Verkäufer ihn ändert —
+     deshalb Treppe und nicht Gerade.
+
+     Die Linien sind verschieden lang, und genau das ist die Aussage: eine
+     kurze Linie heißt, das Inserat war schnell wieder weg; eine lange
+     heißt, es steht immer noch. */
+  const preisverlaeufe = useMemo(() => {
+    const mitte = (zahlen) => {
+      if (!zahlen.length) return null;
+      const s2 = [...zahlen].sort((a, b) => a - b);
+      const m = Math.floor(s2.length / 2);
+      return s2.length % 2 ? s2[m] : (s2[m - 1] + s2[m]) / 2;
+    };
+    const farben = ["#F5B301", "#4EA8F4", "#35C46B", "#C77DFF", "#F4544E",
+      "#2DD4BF", "#FB923C", "#E879A9", "#A3E635", "#22D3EE"];
+
+    const reihen = list.map((v, nr) => {
+      const t = tracking(v);
+      const stufen = t.stufen;
+      if (!stufen.length || !stufen[0].preis) return null;
+      const start = (verlaufNull === "inserat" ? inseriertSeit(v) : t.firstSeen) || t.firstSeen || stufen[0].von;
+      if (!start) return null;
+      const startPreis = stufen[0].preis;
+      const ende = Math.max(1, tageZwischen(start, verschwundenAm(v) || todayISO()) ?? 1);
+
+      /* Treppe: je Stufe ein waagerechtes Stück. Der erste Punkt sitzt
+         immer auf Tag 0 — lief das Inserat schon, bevor du es gefunden
+         hast, wird der erste bekannte Preis rückwärts fortgeschrieben.
+         Dieses Stück wird gestrichelt gezeichnet, es ist eine Annahme. */
+      const blindBis = Math.max(0, Math.min(ende, tageZwischen(start, stufen[0].von) ?? 0));
+      const punkte = [];
+      const knicke = [];
+      stufen.forEach((st, i) => {
+        const von = i === 0 ? 0 : Math.max(0, Math.min(ende, tageZwischen(start, st.von) ?? 0));
+        const bis = i + 1 < stufen.length
+          ? Math.max(von, Math.min(ende, tageZwischen(start, stufen[i + 1].von) ?? ende))
+          : ende;
+        punkte.push({ x: von, preis: st.preis });
+        punkte.push({ x: bis, preis: st.preis });
+        if (i > 0) knicke.push({ x: von, preis: st.preis });
+      });
+
+      // Nur echte Senkungen zählen; eine Erhöhung ist etwas anderes.
+      const schritte = stufen.slice(1).map((st, i) => ({
+        tag: Math.max(0, Math.min(ende, tageZwischen(start, st.von) ?? 0)),
+        von: stufen[i].preis, nach: st.preis, delta: st.preis - stufen[i].preis,
+      }));
+      const senkungen = schritte.filter((x) => x.delta < 0);
+      const letzterPreis = stufen[stufen.length - 1].preis;
+
+      return {
+        id: v.id, title: v.title || v.id, url: v.url,
+        marke: [v.make, v.model].filter(Boolean).join(" "),
+        km: v.mileage, ez: erstzulassung(v), guete: t.qualitaet,
+        farbe: farben[nr % farben.length],
+        startPreis, letzterPreis, ende, blindBis, punkte, knicke, schritte, senkungen,
+        offline: t.offline, stand: t.stand,
+        ersteSenkung: senkungen.length ? senkungen[0].tag : null,
+        ersteSenkungPct: senkungen.length ? (senkungen[0].delta / senkungen[0].von) * 100 : null,
+        gesamtPct: ((letzterPreis - startPreis) / startPreis) * 100,
+        blindTage: t.blindTage,
+      };
+    }).filter(Boolean);
+    if (!reihen.length) return null;
+
+    const mitSenkung = reihen.filter((r) => r.senkungen.length);
+    const tageBis = mitSenkung.map((r) => r.ersteSenkung);
+    const abstaende = [];
+    reihen.forEach((r) => {
+      for (let i = 1; i < r.senkungen.length; i++) abstaende.push(r.senkungen[i].tag - r.senkungen[i - 1].tag);
+    });
+
+    return {
+      reihen, anzahl: reihen.length,
+      mitSenkung: mitSenkung.length,
+      mehrfach: reihen.filter((r) => r.senkungen.length > 1).length,
+      medianTage: mitte(tageBis),
+      medianErste: mitte(mitSenkung.map((r) => Math.abs(r.ersteSenkungPct))),
+      medianGesamt: mitte(mitSenkung.map((r) => Math.abs(r.gesamtPct))),
+      medianAbstand: mitte(abstaende),
+      geraten: reihen.filter((r) => r.blindBis > 0).length,
+      laengste: Math.max(...reihen.map((r) => r.ende)),
+    };
+  }, [list, verlaufNull]);
 
   // Alles, wo noch eine Entscheidung von dir aussteht. Unbestätigte zuerst,
   // danach die mit den meisten offenen Punkten.
@@ -1749,6 +1839,135 @@ export default function App() {
             <div style={S.kleinerHinweis}>
               Der Einstiegspreis ist nicht der Marktwert, sondern eine Forderung. Ob sie durchgeht, zeigt erst,
               ob und wann das Inserat verschwindet — und das steht am Fahrzeug im Verzeichnis.
+            </div>
+          </>
+        )}
+      </section>
+      )}
+
+      {tab === "uebersicht" && (
+      <section style={S.panel}>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Clock size={15} /> Wann senken die Anbieter
+          </span>
+          {preisverlaeufe && (
+            <span style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+              <span style={S.umschalter}>
+                <button onClick={() => setVerlaufEinheit("prozent")}
+                  style={verlaufEinheit === "prozent" ? S.umschalterAn : S.umschalterAus}>Prozent</button>
+                <button onClick={() => setVerlaufEinheit("euro")}
+                  style={verlaufEinheit === "euro" ? S.umschalterAn : S.umschalterAus}>Euro</button>
+              </span>
+              <span style={S.umschalter}>
+                <button onClick={() => setVerlaufNull("inserat")}
+                  style={verlaufNull === "inserat" ? S.umschalterAn : S.umschalterAus}>ab Inserat</button>
+                <button onClick={() => setVerlaufNull("erfassung")}
+                  style={verlaufNull === "erfassung" ? S.umschalterAn : S.umschalterAus}>ab Fund</button>
+              </span>
+            </span>
+          )}
+        </div>
+        <p style={S.hint}>
+          Je Inserat eine durchgehende Linie. Waagerecht die Tage seit Tag 0, senkrecht der geforderte Preis.
+          Ein Preis gilt, bis der Verkäufer ihn ändert — deshalb Treppe und nicht Gerade. Jede
+          Stufe nach unten ist eine Senkung. <b style={{ color: T.text }}>Die Linien sind unterschiedlich lang</b>,
+          und genau das ist die zweite Aussage: eine kurze war schnell wieder weg, eine lange steht immer noch.
+        </p>
+
+        {!preisverlaeufe ? (
+          <div style={S.empty}>
+            <Car size={30} color={T.line} />
+            <span>Noch kein Fahrzeug mit Preisverlauf. Trage über „+ Preis-Update" einen zweiten Preis ein,
+              dann bekommt die Linie eine Stufe.</span>
+          </div>
+        ) : (
+          <>
+            <div style={S.zahlenreihe}>
+              <Zahlenfeld label="Mit Senkung" wert={`${preisverlaeufe.mitSenkung} von ${preisverlaeufe.anzahl}`}
+                zusatz={preisverlaeufe.mehrfach > 0 ? `${preisverlaeufe.mehrfach} mehr als einmal` : "keiner mehrfach"} />
+              <Zahlenfeld label="Erste Senkung nach" accent
+                wert={preisverlaeufe.medianTage == null ? "—" : laufzeitText(Math.round(preisverlaeufe.medianTage))}
+                zusatz={preisverlaeufe.medianTage == null ? "noch keine beobachtet" : "die Hälfte davor, die Hälfte danach"} />
+              <Zahlenfeld label="Erster Schritt"
+                wert={preisverlaeufe.medianErste == null ? "—" : `−${preisverlaeufe.medianErste.toFixed(1).replace(".", ",")} %`}
+                zusatz="typische Höhe der ersten Senkung" />
+              <Zahlenfeld label="Bis heute gesenkt"
+                wert={preisverlaeufe.medianGesamt == null ? "—" : `−${preisverlaeufe.medianGesamt.toFixed(1).replace(".", ",")} %`}
+                zusatz="über alle Schritte zusammen" />
+            </div>
+
+            <Linienfeld
+              hoehe={380}
+              reihen={preisverlaeufe.reihen.map((r) => ({
+                ...r,
+                punkte: r.punkte.map((p) => ({
+                  x: p.x,
+                  y: verlaufEinheit === "prozent" ? (p.preis / r.startPreis) * 100 : p.preis,
+                })),
+                knicke: r.knicke.map((k) => ({
+                  x: k.x,
+                  y: verlaufEinheit === "prozent" ? (k.preis / r.startPreis) * 100 : k.preis,
+                })),
+              }))}
+              yFormat={verlaufEinheit === "prozent"
+                ? (w) => `${Math.round(w)} %`
+                : (w) => fmtNum(Math.round(w))}
+              xFormat={(w) => `${Math.round(w)} T`}
+              xTitel={verlaufNull === "inserat"
+                ? "Tage seit dem Tag, an dem der Verkäufer inseriert hat"
+                : "Tage seit dem Tag, an dem du das Inserat gefunden hast"}
+              yTitel={verlaufEinheit === "prozent" ? "Anteil vom Startpreis" : "Geforderter Preis in Euro"}
+              /* Keine Linie bei 100 %: Die Achse zeigt den Startpreis ohnehin, und
+                 ein gestrichelter Strich quer durchs Bild sähe aus wie ein Inserat. */
+              linien={[]}
+              karte={(r, tag) => <Verlaufskarte r={r} tag={tag} einheit={verlaufEinheit} />}
+              aufKlick={(r) => { if (r.url) window.open(normalizeUrl(r.url), "_blank", "noreferrer"); }}
+            />
+
+            <div style={S.feldLegende}>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.text }} /> Punkt auf der Linie: eine Preisänderung</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.text }} /> volles Ende: läuft noch</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.bg, border: `2px solid ${T.text}` }} /> offenes Ende: nicht mehr online</span>
+              <span style={S.legendeEintrag}><span style={S.legendeStrich} /> gestrichelt: vor deiner ersten Beobachtung</span>
+            </div>
+
+            <div style={S.spanneSatz}>
+              {preisverlaeufe.medianTage == null ? (
+                <>Bisher hat in dieser Auswahl noch kein Verkäufer gesenkt — oder du hast eine Senkung noch nicht
+                  erfasst. Trag bei den Fahrzeugen regelmäßig den aktuellen Preis nach, dann füllt sich dieses Bild.</>
+              ) : (
+                <>
+                  <b style={{ color: T.accent }}>Was das heißt:</b>{" "}
+                  Von {preisverlaeufe.anzahl} Inseraten haben <b style={{ color: T.text }}>{preisverlaeufe.mitSenkung}</b> den
+                  Preis gesenkt. Die Hälfte davon tat es innerhalb
+                  von <b style={{ color: T.text }}>{laufzeitText(Math.round(preisverlaeufe.medianTage))}</b>, und
+                  der erste Schritt lag typischerweise
+                  bei <b style={{ color: T.good }}>−{preisverlaeufe.medianErste.toFixed(1).replace(".", ",")} %</b>.
+                  {preisverlaeufe.medianAbstand != null && (
+                    <> Wer zweimal senkt, lässt dazwischen im Mittel <b style={{ color: T.text }}>{laufzeitText(Math.round(preisverlaeufe.medianAbstand))}</b> vergehen.</>
+                  )}
+                  {" "}Kurz vor diesem Punkt anzuschreiben trifft den Verkäufer, während er ohnehin über den Preis
+                  nachdenkt.
+                </>
+              )}
+            </div>
+
+            {preisverlaeufe.geraten > 0 && verlaufNull === "inserat" && (
+              <div style={S.kleinerHinweis}>
+                Bei {preisverlaeufe.geraten} von {preisverlaeufe.anzahl} Inseraten ist der Anfang gestrichelt: Sie
+                liefen schon, bevor du sie gefunden hast. Hat der Verkäufer in dieser Zeit bereits gesenkt, siehst
+                du diesen Schritt nicht — die erste beobachtete Senkung fällt dann{" "}
+                <b style={{ color: T.text }}>später aus, als sie war</b>. Mit „ab Fund" enthält das Bild nur
+                Beobachtetes, dafür beginnt keine Linie beim echten Inseratsstart.
+              </div>
+            )}
+
+            <div style={S.kleinerHinweis}>
+              Die Auflösung ist so fein wie deine Erfassung: Trägst du wöchentlich nach, kann eine Senkung bis zu
+              sechs Tage früher passiert sein, als die Stufe zeigt.
+              {verlaufEinheit === "euro" && <> In Euro liegen die Linien auf verschiedenen Höhen und überdecken sich;
+                zum Vergleichen der Zeitpunkte ist <b style={{ color: T.text }}>Prozent</b> die klarere Ansicht.</>}
             </div>
           </>
         )}
@@ -2467,6 +2686,214 @@ function Punktfeld({ punkte, hoehe = 330, yFormat, xFormat, xTitel, yTitel,
   );
 }
 
+/* Linienfeld: je Beobachtung eine Treppe.
+   Ein Preis gilt, bis der Verkäufer ihn ändert — deshalb Treppe und nicht
+   Gerade. Beim Zeigen wird die Linie gesucht, die an dieser Stelle am
+   nächsten liegt: erst der Wert jeder Linie an dieser Stelle, dann die mit
+   dem kleinsten senkrechten Abstand. Bei einem Feld voller Linien ist das
+   die einzige Art, eine einzelne davon zu greifen. */
+function Linienfeld({ reihen, hoehe = 360, yFormat, xFormat, xTitel, yTitel,
+  linien = [], karte, aufKlick, leer }) {
+  const S = styles;
+  const huelle = useRef(null);
+  const breite = useBreite(huelle);
+  const [aktiv, setAktiv] = useState(null);
+  const [stelle, setStelle] = useState(null);
+  const vorherAktiv = useRef(null);
+  const letzteBeruehrung = useRef(0);
+
+  const rand = { links: 64, rechts: 16, oben: 14, unten: xTitel ? 40 : 26 };
+  const B = Math.max(240, breite);
+  const zeichenB = Math.max(60, B - rand.links - rand.rechts);
+  const zeichenH = Math.max(60, hoehe - rand.oben - rand.unten);
+
+  if (!reihen.length) return <div style={S.leerFeld}>{leer || "Keine Daten."}</div>;
+
+  const alleY = reihen.flatMap((r) => r.punkte.map((p) => p.y)).concat(linien.map((l) => l.y));
+  let yMin = Math.min(...alleY), yMax = Math.max(...alleY);
+  const luft = (yMax - yMin) * 0.08 || Math.max(1, Math.abs(yMax) * 0.05);
+  yMin -= luft; yMax += luft;
+  const xMax = Math.max(1, ...reihen.map((r) => r.ende));
+
+  const px = (x) => rand.links + (x / xMax) * zeichenB;
+  const py = (y) => rand.oben + zeichenH - ((y - yMin) / (yMax - yMin)) * zeichenH;
+
+  const pfad = (punkte) => punkte.map((p, i) => `${i ? "L" : "M"}${px(p.x).toFixed(1)},${py(p.y).toFixed(1)}`).join("");
+  /* Ab einer Stelle weiterzeichnen, ohne Lücke: die Treppe wird an dieser
+     Stelle abgeschnitten und bekommt dort ihren gerade geltenden Wert als
+     Anfangspunkt. Bloßes Wegfiltern hinterließe ein Loch bis zum nächsten
+     Knick. */
+  const ab = (punkte, stelle) => {
+    if (stelle <= 0) return punkte;
+    let wert = punkte[0].y;
+    for (const p of punkte) { if (p.x <= stelle) wert = p.y; else break; }
+    return [{ x: stelle, y: wert }, ...punkte.filter((p) => p.x > stelle)];
+  };
+  // Wert einer Treppe an einer Stelle. Außerhalb ihrer Laufzeit: nichts.
+  const wertBei = (r, x) => {
+    if (x < 0 || x > r.ende) return null;
+    let letzter = null;
+    for (const p of r.punkte) { if (p.x <= x) letzter = p; else break; }
+    return letzter ? letzter.y : null;
+  };
+
+  const naechste = (mx, my) => {
+    const x = ((mx - rand.links) / zeichenB) * xMax;
+    let treffer = null, nah = Infinity;
+    reihen.forEach((r) => {
+      const y = wertBei(r, x);
+      if (y == null) return;
+      const d = Math.abs(py(y) - my);
+      if (d < nah) { nah = d; treffer = r; }
+    });
+    return { reihe: treffer, x: Math.max(0, Math.min(xMax, x)) };
+  };
+  const ausEreignis = (e) => {
+    const kasten = e.currentTarget.getBoundingClientRect();
+    const punkt = e.touches?.[0] || e.changedTouches?.[0] || e;
+    return naechste(punkt.clientX - kasten.left, punkt.clientY - kasten.top);
+  };
+  const setzen = (o) => { setAktiv(o.reihe); setStelle(o.x); };
+
+  const yTicks = achsenSchritte(yMin, yMax, 5);
+  const xTicks = achsenSchritte(0, xMax, B > 560 ? 7 : 4);
+  const aktivWert = aktiv && stelle != null ? wertBei(aktiv, stelle) : null;
+  const kartenSeite = stelle != null && px(stelle) > B * 0.55 ? "rechts" : "links";
+
+  return (
+    <div ref={huelle} style={{ ...S.feldHuelle, height: hoehe }}>
+      {breite > 0 && (
+        <svg className="pw-feld" width={B} height={hoehe} style={{ display: "block", touchAction: "pan-y" }}
+          onMouseMove={(e) => setzen(ausEreignis(e))}
+          onMouseLeave={() => { setAktiv(null); setStelle(null); }}
+          onTouchStart={(e) => {
+            vorherAktiv.current = aktiv ? aktiv.id : null;
+            letzteBeruehrung.current = Date.now();
+            setzen(ausEreignis(e));
+          }}
+          onTouchMove={(e) => { letzteBeruehrung.current = Date.now(); setzen(ausEreignis(e)); }}
+          onClick={(e) => {
+            const o = ausEreignis(e);
+            if (!o.reihe || !aufKlick) return;
+            if (Date.now() - letzteBeruehrung.current < 800 && vorherAktiv.current !== o.reihe.id) return;
+            aufKlick(o.reihe);
+          }}>
+
+          {yTicks.map((w) => (
+            <g key={w}>
+              <line x1={rand.links} x2={rand.links + zeichenB} y1={py(w)} y2={py(w)}
+                stroke={T.line} strokeDasharray="2 4" />
+              <text x={rand.links - 8} y={py(w) + 3.5} textAnchor="end" fontSize="10.5" fill={T.muted}
+                fontFamily="ui-monospace, Menlo, monospace">{yFormat ? yFormat(w) : w}</text>
+            </g>
+          ))}
+          {xTicks.map((w) => (
+            <text key={w} x={px(w)} y={hoehe - rand.unten + 14} textAnchor="middle" fontSize="10.5"
+              fill={T.muted} fontFamily="ui-monospace, Menlo, monospace">{xFormat ? xFormat(w) : w}</text>
+          ))}
+          {linien.map((l, i) => (
+            <g key={i}>
+              <line x1={rand.links} x2={rand.links + zeichenB} y1={py(l.y)} y2={py(l.y)}
+                stroke={l.farbe || T.muted} strokeDasharray="5 4" strokeWidth={1.5} />
+              {l.label && <text x={rand.links + 6} y={py(l.y) - 5} fontSize="10" fill={l.farbe || T.muted}>{l.label}</text>}
+            </g>
+          ))}
+
+          {stelle != null && (
+            <line x1={px(stelle)} x2={px(stelle)} y1={rand.oben} y2={rand.oben + zeichenH}
+              stroke={T.line} strokeWidth={1.5} />
+          )}
+
+          {/* Erst alle blassen Linien, dann die gegriffene obendrauf */}
+          {reihen.map((r) => {
+            const dran = aktiv && aktiv.id === r.id;
+            return (
+              <g key={r.id} opacity={aktiv ? (dran ? 1 : 0.22) : 0.8}>
+                {/* Der Teil vor der ersten eigenen Beobachtung ist geraten:
+                    der erste bekannte Preis, rückwärts fortgeschrieben. */}
+                {r.blindBis > 0 && (
+                  <path d={pfad([{ x: 0, y: r.punkte[0].y }, { x: r.blindBis, y: r.punkte[0].y }])}
+                    fill="none" stroke={r.farbe} strokeWidth={dran ? 2.5 : 1.5}
+                    strokeDasharray="3 3" opacity={0.7} />
+                )}
+                <path d={pfad(ab(r.punkte, r.blindBis))} fill="none"
+                  stroke={r.farbe} strokeWidth={dran ? 2.8 : 1.5} strokeLinejoin="round" />
+                {r.knicke.map((k, i) => (
+                  <circle key={i} cx={px(k.x)} cy={py(k.y)} r={dran ? 4 : 2.6} fill={r.farbe} />
+                ))}
+                {/* Ende der Linie: gefüllt heißt läuft noch, offen heißt weg */}
+                <circle cx={px(r.ende)} cy={py(r.punkte[r.punkte.length - 1].y)} r={dran ? 5 : 3.4}
+                  fill={r.offline ? T.bg : r.farbe} stroke={r.farbe} strokeWidth={r.offline ? 1.8 : 0} />
+              </g>
+            );
+          })}
+
+          {aktivWert != null && (
+            <circle cx={px(stelle)} cy={py(aktivWert)} r={4} fill={T.text} />
+          )}
+
+          {xTitel && <text x={rand.links + zeichenB / 2} y={hoehe - 6} textAnchor="middle" fontSize="10" fill={T.muted}>{xTitel}</text>}
+          {yTitel && (
+            <text x={12} y={rand.oben + zeichenH / 2} fontSize="10" fill={T.muted}
+              transform={`rotate(-90 12 ${rand.oben + zeichenH / 2})`} textAnchor="middle">{yTitel}</text>
+          )}
+        </svg>
+      )}
+      {aktiv && karte && (
+        <div className="pw-punktkarte" style={{
+          ...S.feldKarte,
+          top: Math.min(hoehe - 70, Math.max(4, (aktivWert != null ? py(aktivWert) : hoehe / 2) - 24)),
+          ...(kartenSeite === "rechts" ? { right: B - px(stelle) + 14 } : { left: px(stelle) + 14 }),
+        }}>
+          {karte(aktiv, Math.round(stelle))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Die Karte am Preisverlauf: was diese Linie an dieser Stelle zeigt.
+function Verlaufskarte({ r, tag, einheit }) {
+  const S = styles;
+  const zeige = (p) => (einheit === "prozent"
+    ? `${Math.round((p / r.startPreis) * 1000) / 10} %`.replace(".", ",")
+    : fmtEUR(p));
+  return (
+    <div style={S.punktKarte}>
+      <div style={{ ...S.punktKopf, color: r.farbe }}>
+        Tag {tag} · {r.offline ? `${r.stand} nach ${laufzeitDativ(r.ende)}` : `läuft seit ${laufzeitDativ(r.ende)}`}
+      </div>
+      <div style={S.punktTitel}>{r.title}</div>
+      {r.marke && <div style={S.punktMarke}>{r.marke}</div>}
+      <div style={S.punktPreis}>{fmtEUR(r.startPreis)} <span style={S.punktStart}>zum Start</span></div>
+      {r.senkungen.length === 0 ? (
+        <div style={S.punktFussnote}>Noch keine Senkung beobachtet.</div>
+      ) : (
+        <div style={S.punktListe}>
+          {r.senkungen.slice(0, 5).map((x, i) => (
+            <div key={i} style={S.punktZeile}>
+              <span style={S.punktLabel}>Tag {x.tag}</span>
+              <span style={{ ...S.punktWert, color: T.good }}>
+                {zeige(x.nach)} · −{fmtEUR(Math.abs(x.delta))}
+              </span>
+            </div>
+          ))}
+          {r.senkungen.length > 5 && <div style={S.punktFussnote}>… und {r.senkungen.length - 5} weitere</div>}
+        </div>
+      )}
+      {r.gesamtPct < 0 && (
+        <div style={{ ...S.punktJetzt, color: T.good }}>
+          zusammen −{Math.abs(r.gesamtPct).toFixed(1).replace(".", ",")} % auf {fmtEUR(r.letzterPreis)}
+        </div>
+      )}
+      {r.blindBis > 0 && (
+        <div style={S.punktFussnote}>Die ersten {laufzeitText(r.blindBis)} sind fortgeschrieben, nicht beobachtet.</div>
+      )}
+      {r.url && <div style={S.punktFussnote}>Klicken öffnet das Inserat ↗</div>}
+    </div>
+  );
+}
+
 // Die Karte, die beim Zeigen auf einen Punkt der Übersicht erscheint.
 function Uebersichtskarte({ p }) {
   const S = styles;
@@ -2708,6 +3135,8 @@ const styles = {
   feldLegende: { display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center", marginTop: 6, fontSize: 10.5, color: T.muted },
   legendeEintrag: { display: "inline-flex", alignItems: "center", gap: 6 },
   legendePunkt: { width: 9, height: 9, borderRadius: "50%", display: "inline-block" },
+  legendeStrich: { width: 16, height: 0, borderTop: `2px dashed ${T.muted}`, display: "inline-block" },
+  punktStart: { color: T.muted, fontSize: 10, fontWeight: 400, fontFamily: "system-ui, sans-serif" },
   legendeBand: { width: 16, height: 9, borderRadius: 2, display: "inline-block", background: T.accent, opacity: 0.25 },
   spanneSatz: { marginTop: 12, background: T.bg, borderLeft: `3px solid ${T.accent}`, borderRadius: 8, padding: "10px 13px", fontSize: 12.5, lineHeight: 1.55, color: T.muted },
   kleinerHinweis: { marginTop: 10, fontSize: 11, color: T.muted, lineHeight: 1.5 },
