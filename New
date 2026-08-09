@@ -883,6 +883,8 @@ export default function App() {
   // Preisverlauf nach Datum oder nach Tagen seit Inserat
   // Reiter und aufgeklappte Zeilen im Verzeichnis
   const [tab, setTab] = useState("erfassen");
+  // Übersicht: wonach die Inserate nebeneinander stehen
+  const [uebersichtSort, setUebersichtSort] = useState("preis");
   const aktiv = tab === "analyseB" ? 1 : 0;
   const andere = 1 - aktiv;
   const [openRows, setOpenRows] = useState({});
@@ -1271,6 +1273,45 @@ export default function App() {
   // Nur die Anzeige im Verzeichnis wird umsortiert, nicht die Daten der Auswertung.
   const verzeichnis = useMemo(() => sortiere(list, sortFeld, sortRichtung), [list, sortFeld, sortRichtung]);
 
+  /* ---- Übersicht: ein Punkt je Inserat, zum Einstiegspreis ----
+     Gezeigt wird ausdrücklich der Preis bei der ERSTEN Erfassung — das ist
+     der Preis, den man beim Fund im Netz gesehen hat. Spätere Senkungen
+     stecken im Verlauf, nicht in diesem Bild. */
+  const uebersicht = useMemo(() => {
+    const punkte = list.map((v) => {
+      const t = tracking(v);
+      if (t.initialTrackedPrice == null) return null;
+      const seit = t.firstSeen || v.priceHistory?.[0]?.date || "";
+      return {
+        id: v.id, title: v.title || v.id, preis: t.initialTrackedPrice,
+        jetzt: t.currentPrice, offline: t.offline, stand: t.stand,
+        firstSeen: seit, seitZeit: parseISO(seit)?.getTime() ?? null,
+        tage: t.daysTracked, aenderungen: t.aenderungen, guete: t.qualitaet,
+        km: v.mileage, ez: erstzulassung(v), ort: v.location,
+        rep: v.repairKind, fotos: v.exterieur, linie: v.trimline,
+        anbieter: v.dealerName || v.sellerType, url: v.url,
+        marke: [v.make, v.model].filter(Boolean).join(" "),
+      };
+    }).filter(Boolean);
+    if (!punkte.length) return null;
+
+    const preise = punkte.map((p) => p.preis).slice().sort((a, b) => a - b);
+    const q = (t) => preise[Math.min(preise.length - 1, Math.round(t * (preise.length - 1)))];
+    const nachPreis = punkte.slice().sort((a, b) => a.preis - b.preis);
+    // Ohne Erfassungsdatum lässt sich nach Zeit nicht ordnen — solche
+    // Einträge hängen sich hinten an, statt zu verschwinden.
+    const nachZeit = punkte.slice().sort((a, b) => (a.seitZeit ?? Infinity) - (b.seitZeit ?? Infinity));
+
+    return {
+      punkte, nachPreis, nachZeit, anzahl: punkte.length,
+      min: preise[0], max: preise[preise.length - 1],
+      median: q(0.5), q1: q(0.25), q3: q(0.75),
+      offline: punkte.filter((p) => p.offline).length,
+      ohneDatum: punkte.filter((p) => p.seitZeit == null).length,
+      guenstigstes: nachPreis[0], teuerstes: nachPreis[nachPreis.length - 1],
+    };
+  }, [list]);
+
   // Alles, wo noch eine Entscheidung von dir aussteht. Unbestätigte zuerst,
   // danach die mit den meisten offenen Punkten.
   const zuPruefen = useMemo(() => list
@@ -1304,6 +1345,10 @@ export default function App() {
       <nav style={S.tabs}>
         <button style={tab === "erfassen" ? S.tabOn : S.tabOff} onClick={() => setTab("erfassen")}>
           <Upload size={14} /> Erfassen
+        </button>
+        <button style={tab === "uebersicht" ? S.tabOn : S.tabOff} onClick={() => setTab("uebersicht")}>
+          <TrendingDown size={14} /> Übersicht
+          {uebersicht && <span style={tab === "uebersicht" ? S.tabCountOn : S.tabCount}>{uebersicht.anzahl}</span>}
         </button>
         <button style={tab === "verzeichnis" ? S.tabOn : S.tabOff} onClick={() => setTab("verzeichnis")}>
           <Car size={14} /> Verzeichnis
@@ -1607,6 +1652,106 @@ export default function App() {
               ))}
             </div>
           )}
+      </section>
+      )}
+
+      {tab === "uebersicht" && (
+      <section style={S.panel}>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <TrendingDown size={15} /> Was wird verlangt
+          </span>
+          {uebersicht && (
+            <span style={S.umschalter}>
+              <button onClick={() => setUebersichtSort("preis")}
+                style={uebersichtSort === "preis" ? S.umschalterAn : S.umschalterAus}>nach Preis</button>
+              <button onClick={() => setUebersichtSort("zeit")}
+                style={uebersichtSort === "zeit" ? S.umschalterAn : S.umschalterAus}>nach Fundtag</button>
+            </span>
+          )}
+        </div>
+        <p style={S.hint}>
+          Ein Punkt je Inserat, auf der Höhe seines <b style={{ color: T.text }}>Einstiegspreises</b> — also
+          des Preises, den du beim Fund im Netz gesehen hast. Spätere Senkungen stecken im Preisverlauf des
+          Fahrzeugs, nicht in diesem Bild. Zeig auf einen Punkt, dann steht daneben, worum es sich handelt;
+          ein Klick öffnet das Inserat.
+        </p>
+
+        {!uebersicht ? (
+          <div style={S.empty}>
+            <Car size={30} color={T.line} />
+            <span>Noch kein Fahrzeug mit Preis erfasst. Importiere unter „Erfassen" deinen ersten JSON-Block.</span>
+          </div>
+        ) : (
+          <>
+            <div style={S.zahlenreihe}>
+              <Zahlenfeld label="Inserate" wert={`${uebersicht.anzahl}`}
+                zusatz={uebersicht.offline > 0 ? `${uebersicht.offline} nicht mehr online` : "alle noch online"} />
+              <Zahlenfeld label="Günstigstes" wert={fmtEUR(uebersicht.min)}
+                zusatz={uebersicht.guenstigstes.title.slice(0, 30)} />
+              <Zahlenfeld label="Mitte" wert={fmtEUR(uebersicht.median)} accent
+                zusatz={`die Hälfte liegt darunter`} />
+              <Zahlenfeld label="Teuerstes" wert={fmtEUR(uebersicht.max)}
+                zusatz={uebersicht.teuerstes.title.slice(0, 30)} />
+            </div>
+
+            <Punktfeld
+              hoehe={340}
+              punkte={(uebersichtSort === "preis" ? uebersicht.nachPreis : uebersicht.nachZeit)
+                .map((p, i) => ({
+                  id: p.id,
+                  x: uebersichtSort === "preis" ? i + 1 : (p.seitZeit ?? 0),
+                  y: p.preis,
+                  farbe: p.offline ? T.muted : T.accent,
+                  daten: p,
+                }))}
+              yFormat={(w) => fmtNum(Math.round(w))}
+              xFormat={uebersichtSort === "zeit"
+                ? (t) => { const d = new Date(t); return `${String(d.getDate()).padStart(2, "0")}.${String(d.getMonth() + 1).padStart(2, "0")}.`; }
+                : null}
+              xTitel={uebersichtSort === "preis"
+                ? "Inserate, vom günstigsten zum teuersten"
+                : "Tag, an dem du das Inserat gefunden hast"}
+              yTitel="Einstiegspreis in Euro"
+              band={{ von: uebersicht.q1, bis: uebersicht.q3 }}
+              linien={[{ y: uebersicht.median, farbe: T.accent, label: `Mitte ${fmtEUR(uebersicht.median)}` }]}
+              karte={(p) => <Uebersichtskarte p={p} />}
+              aufKlick={(p) => { if (p.daten.url) window.open(normalizeUrl(p.daten.url), "_blank", "noreferrer"); }}
+            />
+
+            <div style={S.feldLegende}>
+              <span style={S.legendeEintrag}>
+                <span style={{ ...S.legendePunkt, background: T.accent }} /> läuft noch
+              </span>
+              <span style={S.legendeEintrag}>
+                <span style={{ ...S.legendePunkt, background: T.muted }} /> nicht mehr online
+              </span>
+              <span style={S.legendeEintrag}>
+                <span style={{ ...S.legendeBand }} /> das mittlere Feld: die Hälfte aller Inserate
+              </span>
+            </div>
+
+            <div style={S.spanneSatz}>
+              Zwischen dem günstigsten und dem teuersten Inserat liegen{" "}
+              <b style={{ color: T.text }}>{fmtEUR(uebersicht.max - uebersicht.min)}</b>.
+              Die mittlere Hälfte liegt zwischen <b style={{ color: T.text }}>{fmtEUR(uebersicht.q1)}</b> und{" "}
+              <b style={{ color: T.text }}>{fmtEUR(uebersicht.q3)}</b> — das ist die Spanne, in der sich das
+              Feld tatsächlich abspielt. Was weit darunter liegt, hat einen Grund; was weit darüber liegt, auch.
+            </div>
+
+            {uebersichtSort === "zeit" && uebersicht.ohneDatum > 0 && (
+              <div style={S.kleinerHinweis}>
+                {uebersicht.ohneDatum} {uebersicht.ohneDatum === 1 ? "Inserat hat" : "Inserate haben"} kein
+                Erfassungsdatum und {uebersicht.ohneDatum === 1 ? "steht" : "stehen"} deshalb ganz links.
+              </div>
+            )}
+
+            <div style={S.kleinerHinweis}>
+              Der Einstiegspreis ist nicht der Marktwert, sondern eine Forderung. Ob sie durchgeht, zeigt erst,
+              ob und wann das Inserat verschwindet — und das steht am Fahrzeug im Verzeichnis.
+            </div>
+          </>
+        )}
       </section>
       )}
 
@@ -2128,6 +2273,252 @@ function ChoiceQuestion({ frage, options, hilfe, value, onChange }) {
 
 
 
+/* --------------------------- Schaubilder ----------------------------- *
+   Gezeichnet wird in eigenem SVG, nicht mit einer Diagramm-Bibliothek.
+   Zwei Gründe: für ein Punktfeld mit zwei Achsen braucht es keine halbe
+   Megabyte Fremdcode, und das Zeigen und Klicken verhält sich genau so,
+   wie es soll — der nächstgelegene Punkt wird hier selbst gesucht, mit der
+   Maus wie mit dem Finger. Genau daran ist die Bibliothek vorher immer
+   wieder gescheitert.
+ * -------------------------------------------------------------------- */
+
+// Runde Achsenschritte: 1, 2, 2,5 oder 5 mal einer Zehnerpotenz.
+function achsenSchritte(min, max, anzahl = 5) {
+  const spanne = (max - min) || 1;
+  const roh = spanne / anzahl;
+  const groesse = Math.pow(10, Math.floor(Math.log10(roh)));
+  const schritt = [1, 2, 2.5, 5, 10].map((f) => f * groesse).find((x) => x >= roh) || groesse * 10;
+  const werte = [];
+  for (let w = Math.ceil(min / schritt) * schritt; w <= max + schritt * 1e-6; w += schritt) {
+    werte.push(Math.round(w * 1e6) / 1e6);
+  }
+  return werte;
+}
+
+// Breite des Behälters mitlesen, damit die Beschriftung nicht verzerrt.
+function useBreite(ref) {
+  const [breite, setBreite] = useState(0);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const messen = () => setBreite(el.clientWidth);
+    messen();
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", messen);
+      return () => window.removeEventListener("resize", messen);
+    }
+    const beobachter = new ResizeObserver(messen);
+    beobachter.observe(el);
+    return () => beobachter.disconnect();
+  }, [ref]);
+  return breite;
+}
+
+/* Punktfeld mit zwei Achsen.
+   punkte: [{ id, x, y, farbe, offen, daten }]
+   Beim Zeigen wird der nächstgelegene Punkt gesucht — nicht der genau
+   getroffene. Deshalb erscheint überall etwas, und der Klick öffnet immer
+   das, was die Karte gerade zeigt. */
+function Punktfeld({ punkte, hoehe = 330, yFormat, xFormat, xTitel, yTitel,
+  linien = [], band = null, karte, aufKlick, leer }) {
+  const S = styles;
+  const huelle = useRef(null);
+  const breite = useBreite(huelle);
+  const [aktiv, setAktiv] = useState(null);
+  /* Mit der Maus zeigt der Zeiger schon, bevor geklickt wird — ein Klick
+     kann also sofort öffnen. Mit dem Finger gibt es kein Zeigen: der erste
+     Tipper würde gleichzeitig zeigen und öffnen, und man bekäme die Karte
+     nie zu sehen. Deshalb zeigt der erste Tipper, der zweite öffnet. */
+  const vorherAktiv = useRef(null);
+  const letzteBeruehrung = useRef(0);
+
+  const rand = { links: 64, rechts: 16, oben: 14, unten: xTitel ? 40 : 26 };
+  const B = Math.max(240, breite);
+  const zeichenB = Math.max(60, B - rand.links - rand.rechts);
+  const zeichenH = Math.max(60, hoehe - rand.oben - rand.unten);
+
+  const xs = punkte.map((p) => p.x);
+  const ys = punkte.map((p) => p.y);
+  const werteY = [...ys, ...linien.map((l) => l.y), ...(band ? [band.von, band.bis] : [])];
+  let yMin = Math.min(...werteY), yMax = Math.max(...werteY);
+  const luft = (yMax - yMin) * 0.08 || Math.max(1, yMax * 0.05);
+  yMin -= luft; yMax += luft;
+  let xMin = Math.min(...xs), xMax = Math.max(...xs);
+  if (xMin === xMax) { xMin -= 1; xMax += 1; }
+  const xLuft = (xMax - xMin) * 0.04;
+  xMin -= xLuft; xMax += xLuft;
+
+  const px = (x) => rand.links + ((x - xMin) / (xMax - xMin)) * zeichenB;
+  const py = (y) => rand.oben + zeichenH - ((y - yMin) / (yMax - yMin)) * zeichenH;
+
+  const gelegt = punkte.map((p) => ({ ...p, cx: px(p.x), cy: py(p.y) }));
+
+  // Nächstgelegener Punkt zur Zeigerstelle. Waagerecht zählt doppelt, damit
+  // bei mehreren Punkten übereinander die Höhe entscheidet.
+  const naechster = (mx, my) => {
+    let treffer = null, nah = Infinity;
+    gelegt.forEach((p) => {
+      const d = ((p.cx - mx) * 2) ** 2 + (p.cy - my) ** 2;
+      if (d < nah) { nah = d; treffer = p; }
+    });
+    return treffer;
+  };
+  const ausEreignis = (e) => {
+    const kasten = e.currentTarget.getBoundingClientRect();
+    const punkt = e.touches?.[0] || e.changedTouches?.[0] || e;
+    return naechster(punkt.clientX - kasten.left, punkt.clientY - kasten.top);
+  };
+
+  if (!punkte.length) return <div style={S.leerFeld}>{leer || "Keine Daten."}</div>;
+
+  const yTicks = achsenSchritte(yMin, yMax, 5);
+  const xTicks = xFormat ? achsenSchritte(xMin, xMax, B > 560 ? 6 : 4) : [];
+
+  // Karte am Rand umklappen, damit sie nicht aus dem Bild läuft.
+  const kartenSeite = aktiv && aktiv.cx > B * 0.55 ? "rechts" : "links";
+
+  return (
+    <div ref={huelle} style={{ ...S.feldHuelle, height: hoehe }}>
+      {breite > 0 && (
+        <svg className="pw-feld" width={B} height={hoehe} style={{ display: "block", touchAction: "pan-y" }}
+          onMouseMove={(e) => setAktiv(ausEreignis(e))}
+          onMouseLeave={() => setAktiv(null)}
+          onTouchStart={(e) => {
+            vorherAktiv.current = aktiv ? aktiv.id : null;
+            letzteBeruehrung.current = Date.now();
+            setAktiv(ausEreignis(e));
+          }}
+          onTouchMove={(e) => { letzteBeruehrung.current = Date.now(); setAktiv(ausEreignis(e)); }}
+          onClick={(e) => {
+            const p = ausEreignis(e);
+            if (!p || !aufKlick) return;
+            const ausBeruehrung = Date.now() - letzteBeruehrung.current < 800;
+            if (ausBeruehrung && vorherAktiv.current !== p.id) return;   // erst zeigen
+            aufKlick(p);
+          }}>
+
+          {/* Gitter und senkrechte Achse */}
+          {yTicks.map((w) => (
+            <g key={w}>
+              <line x1={rand.links} x2={rand.links + zeichenB} y1={py(w)} y2={py(w)}
+                stroke={T.line} strokeDasharray="2 4" />
+              <text x={rand.links - 8} y={py(w) + 3.5} textAnchor="end"
+                fontSize="10.5" fill={T.muted} fontFamily="ui-monospace, Menlo, monospace">
+                {yFormat ? yFormat(w) : w}
+              </text>
+            </g>
+          ))}
+          {xTicks.map((w) => (
+            <text key={w} x={px(w)} y={hoehe - rand.unten + 14} textAnchor="middle"
+              fontSize="10.5" fill={T.muted} fontFamily="ui-monospace, Menlo, monospace">
+              {xFormat(w)}
+            </text>
+          ))}
+
+          {/* Streuband und waagerechte Bezugslinien */}
+          {band && (
+            <rect x={rand.links} width={zeichenB} y={py(band.bis)} height={Math.max(1, py(band.von) - py(band.bis))}
+              fill={band.farbe || T.accent} fillOpacity={0.08} />
+          )}
+          {linien.map((l, i) => (
+            <g key={i}>
+              <line x1={rand.links} x2={rand.links + zeichenB} y1={py(l.y)} y2={py(l.y)}
+                stroke={l.farbe || T.muted} strokeDasharray="5 4" strokeWidth={1.5} />
+              {l.label && (
+                <text x={rand.links + 6} y={py(l.y) - 5} fontSize="10" fill={l.farbe || T.muted}>{l.label}</text>
+              )}
+            </g>
+          ))}
+
+          {/* Zeigerlinie */}
+          {aktiv && (
+            <line x1={aktiv.cx} x2={aktiv.cx} y1={rand.oben} y2={rand.oben + zeichenH}
+              stroke={T.line} strokeWidth={1.5} />
+          )}
+
+          {/* Punkte */}
+          {gelegt.map((p) => (
+            <circle key={p.id} cx={p.cx} cy={p.cy} r={aktiv && aktiv.id === p.id ? 7.5 : 5}
+              fill={p.offen ? T.bg : p.farbe} stroke={p.farbe}
+              strokeWidth={p.offen ? 2 : 0} fillOpacity={p.offen ? 1 : 0.9} />
+          ))}
+
+          {/* Achsenbeschriftung */}
+          {xTitel && (
+            <text x={rand.links + zeichenB / 2} y={hoehe - 6} textAnchor="middle"
+              fontSize="10" fill={T.muted}>{xTitel}</text>
+          )}
+          {yTitel && (
+            <text x={12} y={rand.oben + zeichenH / 2} fontSize="10" fill={T.muted}
+              transform={`rotate(-90 12 ${rand.oben + zeichenH / 2})`} textAnchor="middle">{yTitel}</text>
+          )}
+        </svg>
+      )}
+      {aktiv && karte && (
+        <div className="pw-punktkarte" style={{
+          ...S.feldKarte,
+          top: Math.min(hoehe - 60, Math.max(4, aktiv.cy - 20)),
+          ...(kartenSeite === "rechts" ? { right: B - aktiv.cx + 14 } : { left: aktiv.cx + 14 }),
+        }}>
+          {karte(aktiv.daten)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Die Karte, die beim Zeigen auf einen Punkt der Übersicht erscheint.
+function Uebersichtskarte({ p }) {
+  const S = styles;
+  const gefallen = p.jetzt != null && p.jetzt !== p.preis;
+  const zeilen = [
+    p.km != null ? ["Kilometer", `${fmtNum(p.km)} km`] : null,
+    p.ez ? ["Erstzulassung", p.ez] : null,
+    p.linie ? ["Linie", p.linie] : null,
+    p.fotos ? ["Exterieur", p.fotos] : null,
+    p.ort ? ["Ort", p.ort] : null,
+    p.firstSeen ? ["gefunden am", fmtDate(p.firstSeen)] : null,
+  ].filter(Boolean);
+  return (
+    <div style={S.punktKarte}>
+      <div style={{ ...S.punktKopf, color: p.offline ? T.muted : T.accent }}>
+        {p.offline ? `${p.stand} · stand ${laufzeitDativ(p.tage)}` : `läuft seit ${laufzeitDativ(p.tage)}`}
+      </div>
+      <div style={S.punktTitel}>{p.title}</div>
+      {p.marke && <div style={S.punktMarke}>{p.marke}</div>}
+      <div style={S.punktPreis}>{fmtEUR(p.preis)}</div>
+      {gefallen && (
+        <div style={{ ...S.punktJetzt, color: p.jetzt < p.preis ? T.good : T.bad }}>
+          heute {fmtEUR(p.jetzt)} · {p.jetzt < p.preis ? "−" : "+"}{fmtEUR(Math.abs(p.jetzt - p.preis))}
+          {p.aenderungen > 1 ? ` in ${p.aenderungen} Schritten` : ""}
+        </div>
+      )}
+      <div style={S.punktListe}>
+        {zeilen.map(([k, w]) => (
+          <div key={k} style={S.punktZeile}>
+            <span style={S.punktLabel}>{k}</span><span style={S.punktWert}>{w}</span>
+          </div>
+        ))}
+      </div>
+      {p.guete === "legacy" && (
+        <div style={S.punktFussnote}>Nachträglich aufgenommen — das Inserat lief schon.</div>
+      )}
+      {p.url && <div style={S.punktFussnote}>Klicken öffnet das Inserat ↗</div>}
+    </div>
+  );
+}
+
+function Zahlenfeld({ label, wert, zusatz, accent }) {
+  const S = styles;
+  return (
+    <div style={S.zahlenfeld}>
+      <div style={S.zahlenLabel}>{label}</div>
+      <div style={{ ...S.zahlenWert, color: accent ? T.accent : T.text }}>{wert}</div>
+      {zusatz && <div style={S.zahlenZusatz}>{zusatz}</div>}
+    </div>
+  );
+}
+
 function Stat({ label, value, accent }) {
   return (<div style={styles.stat}><div style={{ ...styles.statValue, color: accent || styles.statValue.color }}>{value}</div><div style={styles.statLabel}>{label}</div></div>);
 }
@@ -2303,6 +2694,34 @@ const styles = {
   dubletteAngabe: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11, color: T.muted, whiteSpace: "nowrap" },
   dubletteSchluss: { fontSize: 11.5, color: T.muted, lineHeight: 1.6, marginTop: 9, paddingTop: 8, borderTop: `1px solid ${T.line}` },
 
+  umschalter: { display: "inline-flex", gap: 4, background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: 3 },
+  umschalterAn: { background: T.accent, color: T.bg, border: "none", borderRadius: 7, padding: "5px 11px", fontSize: 11.5, fontWeight: 700 },
+  umschalterAus: { background: "transparent", color: T.muted, border: "none", borderRadius: 7, padding: "5px 11px", fontSize: 11.5, fontWeight: 600 },
+  zahlenreihe: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(148px, 1fr))", gap: 8, margin: "12px 0 10px" },
+  zahlenfeld: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "9px 11px" },
+  zahlenLabel: { color: T.muted, fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 },
+  zahlenWert: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 18, fontWeight: 800, marginTop: 2 },
+  zahlenZusatz: { color: T.muted, fontSize: 10, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  feldHuelle: { position: "relative", width: "100%", userSelect: "none", cursor: "pointer" },
+  leerFeld: { color: T.muted, fontSize: 12, padding: "24px 0", textAlign: "center" },
+  feldKarte: { position: "absolute", zIndex: 5, pointerEvents: "none" },
+  feldLegende: { display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center", marginTop: 6, fontSize: 10.5, color: T.muted },
+  legendeEintrag: { display: "inline-flex", alignItems: "center", gap: 6 },
+  legendePunkt: { width: 9, height: 9, borderRadius: "50%", display: "inline-block" },
+  legendeBand: { width: 16, height: 9, borderRadius: 2, display: "inline-block", background: T.accent, opacity: 0.25 },
+  spanneSatz: { marginTop: 12, background: T.bg, borderLeft: `3px solid ${T.accent}`, borderRadius: 8, padding: "10px 13px", fontSize: 12.5, lineHeight: 1.55, color: T.muted },
+  kleinerHinweis: { marginTop: 10, fontSize: 11, color: T.muted, lineHeight: 1.5 },
+  punktKarte: { background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 9, padding: "9px 12px", fontSize: 12, maxWidth: 250, boxShadow: "0 6px 22px rgba(0,0,0,.45)" },
+  punktKopf: { fontSize: 9.5, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 800 },
+  punktTitel: { fontWeight: 700, margin: "3px 0 1px", lineHeight: 1.3 },
+  punktMarke: { color: T.accent, fontSize: 11, fontWeight: 600 },
+  punktPreis: { fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 800, fontSize: 16, marginTop: 5 },
+  punktJetzt: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11, marginTop: 2 },
+  punktListe: { marginTop: 7, borderTop: `1px solid ${T.line}`, paddingTop: 6, display: "flex", flexDirection: "column", gap: 2 },
+  punktZeile: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 10.5 },
+  punktLabel: { color: T.muted },
+  punktWert: { fontFamily: "ui-monospace, Menlo, monospace" },
+  punktFussnote: { color: T.muted, fontSize: 10, marginTop: 6, fontStyle: "italic" },
   empty: { display: "flex", flexDirection: "column", alignItems: "center", gap: 12, textAlign: "center", color: T.muted, fontSize: 12.5, lineHeight: 1.55, padding: "34px 20px", maxWidth: 460, margin: "0 auto" },
 
   tabs: { display: "flex", gap: 4, marginBottom: 18, borderBottom: `1px solid ${T.line}`, paddingBottom: 0, overflowX: "auto", scrollbarWidth: "none" },
