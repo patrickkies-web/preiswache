@@ -1,21 +1,21 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import {
-  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Cell, ReferenceLine, ComposedChart, Area, Scatter,
-} from "recharts";
-import {
   Gauge, Plus, Trash2, Check, X, TrendingDown, TrendingUp, Minus, Car,
-  AlertTriangle, Upload, Star, MapPin, Store, User, Wrench, Search, Filter, ShieldCheck, Download,
+  AlertTriangle, Upload, MapPin, Store, User, Wrench, Filter, ShieldCheck, Download,
   Camera, CalendarClock, Archive, RotateCcw, Clock, ChevronRight, FileUp,
   Cloud, CloudOff, RefreshCw, ArrowUp, ArrowDown, Link2,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
- *  PREISWACHE — Fahrzeug-Tracker mit Analyse & Suche
- *  - Import: JSON-Block, den Claude aus dem Inserat erstellt
+ *  PREISWACHE — Fahrzeug-Tracker
+ *  - Import: JSON-Block, den eine KI aus dem Inserat erstellt
  *  - Pro Auto: "+" für Preis-Updates mit Datum -> Preisverlauf
- *  - Analyse: Suche/Filter über alle Kategorien + Vergleich nach Begriffen
- *  Die App analysiert NICHT selbst. Claude liefert die definierten Begriffe.
+ *  - Beobachtung: erstmals/zuletzt gesehen, verschwunden, Preisstufen mit Dauer
+ *  Die App bewertet NICHT selbst. Die KI liefert die definierten Begriffe,
+ *  die vier Einschätzungen zu Zustand und Reparaturen machst du.
+ *
+ *  Die Schaubilder wurden bewusst entfernt, um sie neu aufzubauen. Was hier
+ *  steht, ist die Erfassung samt Beobachtung — die Datengrundlage dafür.
  * ------------------------------------------------------------------ */
 
 const STORE_KEY = "garage-v3";
@@ -31,7 +31,7 @@ const TEXT_FIELDS = [
   "accidentRepaired",
   "note", "url",
   // Von dir selbst beurteilt, nicht von der KI:
-  "exterieur", "interieur", "repairKind", "showcase",
+  "exterieur", "interieur", "repairKind",
   // Lebenslauf des Inserats:
   "listingStatus", "listedSince", "closedDate",
   // Datum, an dem du den Eintrag durchgesehen hast (leer = noch offen):
@@ -74,13 +74,6 @@ const TRIMLINE_HILFE = {
 /* Die vierzehn Ausstattungsmerkmale, die den S204 aufwerten. Was die KI davon
    im Inserat findet, wird gezählt: eins oder zwei ergeben eine besondere,
    drei oder mehr eine exzellente Ausstattung. */
-const AUSSTATTUNG_LISTE = [
-  "AMG Sport-Paket", "Panorama-Schiebedach", "Lederausstattung", "designo-Lederausstattung",
-  "Standheizung", "Sitzklimatisierung", "Memory-Paket", "Fahrassistenz-Paket Plus",
-  "Intelligent Light System", "Anhängerkupplung", "KEYLESS-GO", "Harman Kardon Logic 7",
-  "Glasschiebedach", "Spur-Paket",
-];
-const AUSSTATTUNG_OPTS = ["Serienausstattung", "Besondere Ausstattung", "Exzellente Ausstattung"];
 const ausstattungsStufe = (anzahl) =>
   anzahl >= 3 ? "Exzellente Ausstattung" : anzahl >= 1 ? "Besondere Ausstattung" : "Serienausstattung";
 
@@ -238,53 +231,11 @@ function normalizeUrl(s) {
   return /^https?:\/\//i.test(t) ? t : `https://${t.replace(/^\/+/, "")}`;
 }
 
-// Alter in Jahren seit der Erstzulassung. Fehlt der Monat, wird Jahresmitte
-// angenommen — genauer als Januar und im Schnitt richtig.
-function alterJahre(v) {
-  if (!v.year) return null;
-  const d = parseISO(`${v.year}-${(v.month || "06")}-15`);
-  if (!d || isNaN(d.getTime())) return null;
-  const jahre = (Date.now() - d.getTime()) / (365.25 * TAG_MS);
-  return jahre >= 0 ? jahre : null;
-}
 
 /* --- Erwarteter Preis aus Kilometerstand und Alter ---
    Kleinste Quadrate mit zwei Einflussgrößen:
        preis ≈ b0 + b1·km + b2·alter
    Über die zentrierten Größen wird daraus ein 2x2-Gleichungssystem. */
-function regression(punkte) {
-  const n = punkte.length;
-  const mx1 = mittel(punkte.map((p) => p.km));
-  const mx2 = mittel(punkte.map((p) => p.alter));
-  const my = mittel(punkte.map((p) => p.preis));
-  let S11 = 0, S22 = 0, S12 = 0, S1y = 0, S2y = 0;
-  punkte.forEach((p) => {
-    const a = p.km - mx1, b = p.alter - mx2, y = p.preis - my;
-    S11 += a * a; S22 += b * b; S12 += a * b; S1y += a * y; S2y += b * y;
-  });
-  const det = S11 * S22 - S12 * S12;
-  let b1, b2;
-  if (Math.abs(det) < 1e-6) {
-    // Kilometer und Alter laufen gleich — dann nur über die Kilometer rechnen.
-    b1 = S11 ? S1y / S11 : 0;
-    b2 = 0;
-  } else {
-    b1 = (S22 * S1y - S12 * S2y) / det;
-    b2 = (S11 * S2y - S12 * S1y) / det;
-  }
-  const b0 = my - b1 * mx1 - b2 * mx2;
-  const erwartet = (km, alter) => b0 + b1 * km + b2 * alter;
-  let ssRes = 0, ssTot = 0;
-  punkte.forEach((p) => {
-    ssRes += (p.preis - erwartet(p.km, p.alter)) ** 2;
-    ssTot += (p.preis - my) ** 2;
-  });
-  // Wie stark laufen Kilometer und Alter miteinander? Bei alten Autos mit
-  // vielen Kilometern ist das fast immer so — dann lässt sich der Preis nicht
-  // sauber auf die beiden Größen aufteilen, und die Einzelwerte täuschen.
-  const kopplung = S11 && S22 ? Math.abs(S12 / Math.sqrt(S11 * S22)) : 0;
-  return { b0, b1, b2, erwartet, mx2, kopplung, r2: ssTot ? 1 - ssRes / ssTot : 0, n };
-}
 
 // Erstzulassung als "MM/JJJJ", sonst nur das Jahr.
 const erstzulassung = (v) => (v.month && v.year ? `${v.month}/${v.year}` : v.year || "");
@@ -322,9 +273,6 @@ const INTERIEUR_HILFE = {
 /* Vorzeigefahrzeug: das Inserat macht optisch den Eindruck, dass sein Preis
    die obere Kante markiert — ein Bezugspunkt, an dem sich die anderen messen
    lassen. Deine Einschätzung, nicht die der KI. */
-const SHOWCASE_OPTS = ["Vorzeigefahrzeug", "Normal"];
-const SHOWCASE_FRAGE = "Vorzeigefahrzeug?";
-const SHOWCASE_HILFE = "Makelloser Auftritt auf den Fotos — der Preis taugt als oberer Bezugspunkt.";
 
 /* --- Qualitätssicherung ---
    Ein Eintrag gilt erst als geprüft, wenn er einmal bestätigt wurde. Alte
@@ -338,7 +286,6 @@ const PRUEF_FELDER = [
   { feld: "interieur", label: INTERIEUR_FRAGE, opts: INTERIEUR_OPTS },
   { feld: "repairKind", label: REPAIR_KIND_FRAGE, opts: REPAIR_KIND_OPTS },
   { feld: "accidentRepaired", label: "Reparierter Unfallschaden angegeben?", opts: ACCIDENT_OPTS },
-  { feld: "showcase", label: SHOWCASE_FRAGE, opts: SHOWCASE_OPTS },
 ];
 
 function offenePunkte(v) {
@@ -363,95 +310,14 @@ function offenePunkte(v) {
    Reparaturbedarf. Start bei 100, jedes Signal zieht ab; ein Stern gibt einen
    kleinen Bonus. Kilometerstand und Alter stecken bewusst NICHT drin — die
    gehören auf die Preisseite, nicht in den Zustand. */
-const ZUSTAND_ABZUG = {
-  exterieur: {
-    "Keine sichtbaren Schäden": 0, "Leichte Gebrauchsspuren": 6,
-    "Leichte Schäden": 14, "Leichte Schäden an mehreren Stellen": 24,
-  },
-  interieur: {
-    "Wie neu": 0, "Leichte Spuren vereinzelt": 5,
-    "Durchgehend leicht abgenutzt": 12, "Deutliche Verbrauchsspuren": 20,
-  },
-  repairKind: {
-    "Keine genannt": 0, "Verschleißteile": 3,
-    "Kernfahrzeugteile": 14, "Gesamte Prozessteile": 26,
-  },
-  accidentRepaired: { "Nein": 0, "Ja": 18 },
-};
-const ZUSTAND_LABEL = {
-  exterieur: "Exterieur", interieur: "Interieur",
-  repairKind: "Reparaturen", accidentRepaired: "Unfallschaden",
-};
-const STERN_BONUS = 8;
-// Sonderausstattung hebt den Zustand nicht, aber den Wert — deshalb ein
-// Zuschlag statt eines Abzugs.
-const AUSSTATTUNG_BONUS = { "Serienausstattung": 0, "Besondere Ausstattung": 5, "Exzellente Ausstattung": 10 };
 
-function zustandsPunkte(v) {
-  const abzuege = [];
-  let punkte = 100;
-  Object.entries(ZUSTAND_ABZUG).forEach(([feld, tabelle]) => {
-    const wert = v[feld];
-    const ab = wert ? tabelle[wert] : null;
-    if (!ab) return;                       // unbeantwortet oder ohne Abzug
-    punkte -= ab;
-    abzuege.push({ label: ZUSTAND_LABEL[feld], wert, ab });
-  });
-  const bonus = (v.showcase === "Vorzeigefahrzeug" ? STERN_BONUS : 0)
-    + (AUSSTATTUNG_BONUS[v.ausstattung] || 0);
-  return { punkte: Math.max(0, Math.min(100, punkte + bonus)), abzuege, bonus };
-}
 
 /* --- Kleinste Quadrate mit beliebig vielen Einflussgrößen --------------
    Die Größen werden vorher zentriert und auf gleiche Streuung gebracht,
    sonst erdrückt der Kilometerstand (Zehntausender) die Zustandspunkte
    (Zweistellige) und das Gleichungssystem wird numerisch unbrauchbar.
    Zurück kommen die Koeffizienten in den ursprünglichen Einheiten. */
-function kleinsteQuadrate(zeilen, y) {
-  const n = zeilen.length, k = zeilen[0].length;
-  const mx = [], sx = [];
-  for (let c = 0; c < k; c++) {
-    const spalte = zeilen.map((z) => z[c]);
-    const m = mittel(spalte);
-    const s = Math.sqrt(mittel(spalte.map((w) => (w - m) ** 2))) || 1;
-    mx.push(m); sx.push(s);
-  }
-  const my = mittel(y);
-  const Z = zeilen.map((z) => z.map((w, c) => (w - mx[c]) / sx[c]));
-  const yz = y.map((w) => w - my);
 
-  // Normalgleichungen (Z'Z)b = Z'y, gelöst per Gauß mit Spaltenpivot.
-  const A = Array.from({ length: k }, () => new Array(k + 1).fill(0));
-  Z.forEach((z, i) => {
-    for (let r = 0; r < k; r++) {
-      for (let c = 0; c < k; c++) A[r][c] += z[r] * z[c];
-      A[r][k] += z[r] * yz[i];
-    }
-  });
-  for (let s = 0; s < k; s++) {
-    let p = s;
-    for (let r = s + 1; r < k; r++) if (Math.abs(A[r][s]) > Math.abs(A[p][s])) p = r;
-    if (Math.abs(A[p][s]) < 1e-8) return null;      // Größen laufen gleich, nicht lösbar
-    [A[s], A[p]] = [A[p], A[s]];
-    for (let r = 0; r < k; r++) {
-      if (r === s) continue;
-      const f = A[r][s] / A[s][s];
-      for (let c = s; c <= k; c++) A[r][c] -= f * A[s][c];
-    }
-  }
-  const bz = A.map((zeile, r) => zeile[k] / A[r][r]);
-
-  const b = bz.map((w, c) => w / sx[c]);
-  const b0 = my - b.reduce((sum, w, c) => sum + w * mx[c], 0);
-  const vorhersage = (werte) => b0 + b.reduce((sum, w, c) => sum + w * werte[c], 0);
-
-  let ssRes = 0, ssTot = 0;
-  zeilen.forEach((z, i) => { ssRes += (y[i] - vorhersage(z)) ** 2; ssTot += (y[i] - my) ** 2; });
-  return { b0, b, vorhersage, r2: ssTot ? 1 - ssRes / ssTot : 0, n };
-}
-
-// Prozent mit einer Nachkommastelle, deutsches Komma.
-const fmtPct = (w) => `${String(Math.abs(w)).replace(".", ",")} %`;
 
 /* --- Preisformel für eine Auswahl ------------------------------------
    Zwei Formen werden angepasst und gegeneinander gestellt:
@@ -465,117 +331,7 @@ const fmtPct = (w) => `${String(Math.abs(w)).replace(".", ",")} %`;
    Laufleistung kleiner. Welche Form besser passt, entscheiden die Daten.
    Gemessen wird beides auf der Euro-Skala, sonst wären die Werte nicht
    vergleichbar. */
-function ausgleichsgerade(x, y) {
-  const mx = mittel(x), my = mittel(y);
-  let sxx = 0, sxy = 0;
-  x.forEach((w, i) => { const a = w - mx; sxx += a * a; sxy += a * (y[i] - my); });
-  if (!(sxx > 0)) return null;
-  const b = sxy / sxx;
-  return { a: my - b * mx, b };
-}
 
-function preisformel(punkte) {
-  if (punkte.length < 6) return null;
-  const km = punkte.map((p) => p.km), preis = punkte.map((p) => p.preis);
-  if (preis.some((w) => !(w > 0))) return null;
-
-  const my = mittel(preis);
-  const ssTot = preis.reduce((s, w) => s + (w - my) ** 2, 0);
-  const guete = (f) => (ssTot ? 1 - preis.reduce((s, w, i) => s + (w - f(km[i])) ** 2, 0) / ssTot : 0);
-
-  const g = ausgleichsgerade(km, preis);
-  const d = ausgleichsgerade(km, preis.map(Math.log));
-  if (!g && !d) return null;
-  const fGerade = g ? (k) => g.a + g.b * k : null;
-  const fDegressiv = d ? (k) => Math.exp(d.a + d.b * k) : null;
-  const r2Gerade = fGerade ? guete(fGerade) : -Infinity;
-  const r2Degressiv = fDegressiv ? guete(fDegressiv) : -Infinity;
-
-  const degressiv = r2Degressiv > r2Gerade;
-  const vorhersage = degressiv ? fDegressiv : fGerade;
-  const mkm = mittel(km);
-
-  // Streuung als Verhältnis, damit sie bei beiden Formen dasselbe bedeutet.
-  const verhaeltnis = punkte.map((p, i) => preis[i] / vorhersage(km[i])).sort((a, b) => a - b);
-  const q = (t) => verhaeltnis[Math.min(verhaeltnis.length - 1, Math.round(t * (verhaeltnis.length - 1)))];
-
-  // Kennzahlen jeweils in beiden Einheiten, ausgewertet beim mittleren
-  // Kilometerstand — dort sind sie am aussagekräftigsten.
-  const proZehntausend = vorhersage(mkm + 10000) - vorhersage(mkm);
-  const prozent = vorhersage(mkm) ? (proZehntausend / vorhersage(mkm)) * 100 : 0;
-
-  /* Drei Stützstellen zum Nachrechnen ohne Formel: die Fahrzeuge nach
-     Laufleistung in drei gleich große Gruppen teilen und je Gruppe den
-     Durchschnitt von Kilometern und Preis bilden. Zwischen den Punkten
-     lässt sich direkt ablesen, ob der Kilometer am Anfang mehr kostet als
-     am Ende. Geteilt wird ausdrücklich nach Laufleistung und nicht nach
-     Preisnähe — sonst wählt man die Punkte danach aus, was man messen
-     will, und bekommt das Ergebnis heraus, das man hineingesteckt hat. */
-  const sortiert = punkte.slice().sort((a, b) => a.km - b.km);
-  const grenze = Math.floor(sortiert.length / 3);
-  const rest = sortiert.length % 3;
-  const groessen = [grenze + (rest > 0 ? 1 : 0), grenze + (rest > 1 ? 1 : 0), grenze];
-  let ab = 0;
-  const stuetzstellen = ["unteres", "mittleres", "oberes"].map((name, i) => {
-    const teil = sortiert.slice(ab, ab + groessen[i]);
-    ab += groessen[i];
-    return {
-      name, n: teil.length,
-      km: Math.round(mittel(teil.map((p) => p.km))),
-      preis: Math.round(mittel(teil.map((p) => p.preis))),
-    };
-  });
-  const zwischen = (a, b) => (b.km === a.km ? null : Math.round(((b.preis - a.preis) / (b.km - a.km)) * 10000));
-  const s12 = zwischen(stuetzstellen[0], stuetzstellen[1]);
-  const s23 = zwischen(stuetzstellen[1], stuetzstellen[2]);
-  let verlauf = "unklar";
-  if (s12 != null && s23 != null && s12 < 0) {
-    const anteil = Math.abs(s23) / Math.abs(s12);
-    verlauf = anteil < 0.75 ? "flacht ab" : anteil > 1.33 ? "wird steiler" : "gleichmäßig";
-  }
-
-  // Jedes Fahrzeug mit seinem Sollpreis, für Punkte und Karteikarte.
-  const fahrzeuge = punkte.map((p) => {
-    const soll = Math.round(vorhersage(p.km));
-    return { ...p, soll, abweichung: Math.round(p.preis - soll) };
-  });
-
-  /* Eine einzige Reihe fürs Schaubild — Kurve, Streuband, Fahrzeuge und
-     Stützstellen. Getrennte Datensätze je Serie bringen den gemeinsamen
-     Tooltip von recharts durcheinander: die senkrechte Linie steht dann
-     woanders als die Karte, und über weite Strecken erscheint gar keine.
-     Die degressive Form ist gebogen, deshalb kommen zwischen den Fahrzeugen
-     noch Stützpunkte dazu, damit die Kurve rund bleibt. */
-  const kmMin = Math.min(...km), kmMax = Math.max(...km);
-  const schritte = 40;
-  const gitter = Array.from({ length: schritte + 1 },
-    (_, i) => ({ km: Math.round(kmMin + ((kmMax - kmMin) * i) / schritte) }));
-  const reihe = [
-    ...gitter,
-    ...fahrzeuge,
-    ...stuetzstellen.map((s) => ({ km: s.km, stuetz: s.preis, stuetzName: s.name })),
-  ].map((z) => {
-    const soll = vorhersage(z.km);
-    return {
-      ...z, kurve: Math.round(soll),
-      band: [Math.round(soll * q(0.1)), Math.round(soll * q(0.9))],
-    };
-  }).sort((a, b) => a.km - b.km);
-  const alleWerte = [...preis, ...reihe.map((z) => z.band[0]), ...reihe.map((z) => z.band[1])];
-
-  return {
-    degressiv, vorhersage, n: punkte.length,
-    stuetzstellen, s12, s23, verlauf, reihe, fahrzeuge,
-    yMin: Math.min(...alleWerte), yMax: Math.max(...alleWerte),
-    r2: degressiv ? r2Degressiv : r2Gerade, r2Gerade, r2Degressiv,
-    grundwert: Math.round(vorhersage(0)),
-    proZehntausend: Math.round(proZehntausend),
-    prozent: Math.round(prozent * 10) / 10,
-    faktor: degressiv ? Math.exp(d.b * 10000) : null,
-    unten: q(0.1), oben: q(0.9),
-    kmMin, kmMax, kmMittel: Math.round(mkm),
-  };
-}
 
 /* Die Zustandspunkte sind eine ganze Zahl, und sie entstehen aus vier
    Einordnungen — viele Fahrzeuge landen dadurch auf demselben Wert und liegen
@@ -583,29 +339,7 @@ function preisformel(punkte) {
    ansehen noch anklicken. Gleichstände werden deshalb waagerecht aufgefächert,
    höchstens um eine halbe Punktbreite. Die Karteikarte nennt weiter den echten
    Wert; nur die Zeichenposition weicht ab. */
-function schaubildPunkte(liste) {
-  const gruppen = new Map();
-  liste.forEach((p) => {
-    const g = gruppen.get(p.zustand) || [];
-    g.push(p); gruppen.set(p.zustand, g);
-  });
-  const raus = [];
-  gruppen.forEach((g) => {
-    g.sort((a, b) => a.vorteilPct - b.vorteilPct);
-    g.forEach((p, i) => {
-      const versatz = g.length > 1 ? (i / (g.length - 1) - 0.5) * 0.9 : 0;
-      raus.push({ ...p, zustandX: Math.round((p.zustand + versatz) * 100) / 100 });
-    });
-  });
-  return raus.sort((a, b) => a.zustandX - b.zustandX);
-}
 
-// Rangplatz in Prozent: 0 = schlechtester Wert, 100 = bester.
-function perzentil(werte, wert) {
-  if (werte.length < 2) return 100;
-  const kleiner = werte.filter((w) => w < wert).length;
-  return Math.round((kleiner / (werte.length - 1)) * 100);
-}
 
 /* --- Lebenslauf des Inserats --- */
 
@@ -638,7 +372,6 @@ const inseriertSeit = (v) => v.listedSince || v.priceHistory?.[0]?.date || "";
      legacy — das Inserat lief schon, als es in die App kam
    Bei "legacy" fehlt der Anfang: frühe Senkungen sind unsichtbar, und die
    Standzeit ist länger als das, was hier beobachtet wurde. */
-const istOffline = (v) => !!(v.disappearedAt || (v.listingStatus && v.listingStatus !== "Aktiv"));
 const verschwundenAm = (v) => v.disappearedAt || (v.listingStatus && v.listingStatus !== "Aktiv" ? v.closedDate : "") || "";
 
 /* Preisstufen: aufeinanderfolgende gleiche Preise gehören zu EINER Stufe.
@@ -724,22 +457,7 @@ function laufzeitText(tage) {
   if (tage < 70) return `${Math.round(tage / 7)} Wochen`;
   return `${Math.round((tage / 365) * 12)} Monate`;
 }
-const median = (zahlen) => {
-  if (!zahlen.length) return null;
-  const s = [...zahlen].sort((a, b) => a - b);
-  const m = Math.floor(s.length / 2);
-  return s.length % 2 ? s[m] : Math.round((s[m - 1] + s[m]) / 2);
-};
-const mittel = (zahlen) => (zahlen.length ? zahlen.reduce((a, b) => a + b, 0) / zahlen.length : null);
 
-// Fächer für „nach wie vielen Tagen kam die erste Senkung"
-const FAECHER = [
-  { label: "bis 1 Woche", bis: 7 },
-  { label: "1–2 Wochen", bis: 14 },
-  { label: "2–4 Wochen", bis: 28 },
-  { label: "4–8 Wochen", bis: 56 },
-  { label: "über 8 Wochen", bis: Infinity },
-];
 
 /* --- Sortierung im Verzeichnis --- */
 // "zahl" wird numerisch verglichen, "text" nach deutschem Alphabet.
@@ -825,33 +543,7 @@ function dublettenIndizien(neu, alt) {
   return indizien;
 }
 
-// Feste Auswahllisten je Feld, sofern vorhanden
-const FIXED_OPTS = {
-  accidentRepaired: ACCIDENT_OPTS, repairKind: REPAIR_KIND_OPTS,
-  trimline: TRIMLINE_OPTS, ausstattung: AUSSTATTUNG_OPTS,
-  fuel: FUEL_OPTS, gearbox: GEARBOX_OPTS, sellerType: SELLER_OPTS,
-  color: COLOR_OPTS, exterieur: EXTERIEUR_OPTS, interieur: INTERIEUR_OPTS,
-  showcase: SHOWCASE_OPTS, listingStatus: STATUS_OPTS,
-};
 
-// Kategorien, die als Filter-Dropdown auswählbar sind
-const FILTER_FIELDS = [
-  ["trimline", "Ausstattungslinie"], ["ausstattung", "Sonderausstattung"],
-  ["exterieur", "Exterieur"], ["interieur", "Interieur"],
-  ["repairKind", "Reparaturen"], ["accidentRepaired", "Unfallschaden"],
-  ["year", "Baujahr"], ["model", "Modell"],
-  ["fuel", "Kraftstoff"], ["gearbox", "Getriebe"],
-  ["color", "Farbe"], ["sellerType", "Anbieter"],
-  ["showcase", "Vorzeigefahrzeug"], ["listingStatus", "Inserat"],
-];
-// Dimensionen zum Gruppieren/Vergleichen
-const GROUP_FIELDS = [
-  ["trimline", "Ausstattungslinie"], ["ausstattung", "Sonderausstattung"],
-  ["exterieur", "Exterieur"], ["interieur", "Interieur"],
-  ["repairKind", "Reparaturen"], ["accidentRepaired", "Unfallschaden"],
-  ["showcase", "Vorzeigefahrzeug"], ["listingStatus", "Inserat"],
-  ["model", "Modell"], ["fuel", "Kraftstoff"], ["gearbox", "Getriebe"], ["sellerType", "Anbieter"],
-];
 
 const COLORS = [
   "#F5B301", "#35C46B", "#4EA8F4", "#F4544E", "#C77DFF",
@@ -863,11 +555,6 @@ const T = {
   text: "#E6E9EE", muted: "#8A93A0", accent: "#F5B301", good: "#35C46B", bad: "#F4544E",
 };
 
-// Zustände der Synchronisierung, jeweils kurz für den Kopf und ausführlich im Bereich.
-const leereAuswahl = () => ({ q: "", filters: {}, priceMax: "", kmMax: "" });
-// Ein Filterwert ist eine Liste. Einzelne Werte aus früheren Ständen
-// werden mitgenommen, damit nichts kaputtgeht.
-const filterWerte = (val) => (Array.isArray(val) ? val : val ? [val] : []);
 /* --- Preis gegen Standzeit ---------------------------------------------
    Was ein Auto kostet, sagt für sich genommen nichts. Interessant ist, was
    der Markt damit macht: Ein Inserat, das nach einer Woche verschwindet,
@@ -880,20 +567,7 @@ const filterWerte = (val) => (Array.isArray(val) ? val : val ? [val] : []);
      eingestelltes Auto aus wie ein Schnellverkauf.
    - Verschwunden heißt nicht verkauft. Der Verkäufer kann zurückgezogen
      oder neu eingestellt haben. */
-const STANDZEIT_STUFEN = [
-  { bis: 7, label: "bis 7 Tage", farbe: T.good },
-  { bis: 30, label: "8 bis 30 Tage", farbe: "#E9C34A" },
-  { bis: 60, label: "31 bis 60 Tage", farbe: "#EF8B3C" },
-  { bis: Infinity, label: "über 60 Tage", farbe: T.bad },
-];
-const standzeitStufe = (tage) => STANDZEIT_STUFEN.find((s) => tage <= s.bis) || STANDZEIT_STUFEN[3];
 
-const AUSWAHL_FARBE = ["#F5B301", "#4EA8F4"];   // A gelb, B blau
-const AUSWAHL_NAME = ["Auswahl A", "Auswahl B"];
-// Eigene Palette für die Einzellinien — bewusst ohne Gelb und Blau,
-// damit sie sich von den Durchschnittslinien der Auswahlen abheben.
-const LINIEN_FARBEN = ["#35C46B", "#C77DFF", "#F4544E", "#2DD4BF", "#FB923C",
-  "#E879A9", "#A3E635", "#22D3EE", "#F97316", "#94A3B8"];
 
 const SYNC_INFO = {
   lokal:      { kurz: "nur lokal",   farbe: "#8A93A0", lang: "Die Daten liegen nur in diesem Browser." },
@@ -943,7 +617,6 @@ function tagColor(field, value) {
   if (field === "accidentRepaired") return value === "Ja" ? T.bad : T.good;
   if (field === "ausstattung") return value === "Exzellente Ausstattung" ? T.accent : value === "Besondere Ausstattung" ? T.text : T.muted;
   if (field === "trimline") return value === "Avantgarde" ? T.accent : T.text;
-  if (field === "showcase") return value === "Vorzeigefahrzeug" ? T.accent : T.muted;
   if (field === "listingStatus") return value === "Aktiv" ? T.good : value === "Verkauft" ? T.muted : T.accent;
   return T.text;
 }
@@ -985,7 +658,6 @@ function normalizeVehicle(v) {
     const p = coerceNum(v.price);
     if (p != null) out.priceHistory = [{ date: v.date ? String(v.date).slice(0, 10) : todayISO(), price: p }];
   }
-  out.showcase = normalizeChoice(v.showcase, "showcase", SHOWCASE_OPTS) || "Normal";
   // Bleibt leer, wenn nichts mitgeliefert wurde — daran erkennt der Import,
   // ob ein Abschluss gemeint ist oder nur ein Preis-Update.
   out.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS);
@@ -1157,7 +829,7 @@ function migrate(vehicles) {
     v.month = normalizeMonth(v.month);
     v.equipment = Array.isArray(v.equipment) ? v.equipment : [];
     v.ausstattung = ausstattungsStufe(v.equipment.length);
-    v.showcase = normalizeChoice(v.showcase, "showcase", SHOWCASE_OPTS) || "Normal";
+    delete v.showcase;
     v.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS) || "Aktiv";
     v.listedSince = v.listedSince || v.priceHistory?.[0]?.date || "";
 
@@ -1209,7 +881,6 @@ export default function App() {
   const [closeStatus, setCloseStatus] = useState("Verkauft");
   const [closeDate, setCloseDate] = useState(todayISO());
   // Preisverlauf nach Datum oder nach Tagen seit Inserat
-  const [chartMode, setChartMode] = useState("datum");
   // Reiter und aufgeklappte Zeilen im Verzeichnis
   const [tab, setTab] = useState("erfassen");
   const aktiv = tab === "analyseB" ? 1 : 0;
@@ -1228,32 +899,6 @@ export default function App() {
   const [showSync, setShowSync] = useState(false);
   const [keyInput, setKeyInput] = useState(readKey());
   const toggleRow = useCallback((id) => setOpenRows((p) => ({ ...p, [id]: !p[id] })), []);
-
-  // Analyse & Suche
-  // Zwei getrennte Filtersätze, damit sich zwei Auswahlen vergleichen lassen.
-  const [auswahlen, setAuswahlen] = useState([leereAuswahl(), leereAuswahl()]);
-  const [vergleich, setVergleich] = useState(false);
-  const [glaettung, setGlaettung] = useState(0);   // Fenster in Tagen, 0 = aus
-  const [einheit, setEinheit] = useState("euro");  // "euro" oder "prozent"
-  const [zeitfenster, setZeitfenster] = useState(0); // Tage, 0 = alles
-  const [nullpunkt, setNullpunkt] = useState("inserat"); // "inserat" oder "erfassung"
-  const [reiheSort, setReiheSort] = useState("preis"); // Reihenfolge der Preisleiter
-  // Preis gegen Standzeit: alle Inserate oder nur die abgeschlossenen
-  const [standNur, setStandNur] = useState("alle");
-  const [ankerKm, setAnkerKm] = useState("");          // Kilometerstand für den Sternrechner
-  const [formelKm, setFormelKm] = useState("");        // Kilometerstand für den Preisrechner
-  const [masterBezug, setMasterBezug] = useState(0);   // Masterchart: Bezugsgruppe A oder B
-  const [masterSchwelle, setMasterSchwelle] = useState("haelfte");
-
-  const A = auswahlen[aktiv];
-  const { q, filters, priceMax, kmMax } = A;
-  const aendere = (feld, wert) =>
-    setAuswahlen((prev) => prev.map((a, i) => (i === aktiv ? { ...a, [feld]: wert } : a)));
-  const setQ = (v) => aendere("q", v);
-  const setPriceMax = (v) => aendere("priceMax", v);
-  const setKmMax = (v) => aendere("kmMax", v);
-  const [moreFilters, setMoreFilters] = useState(false);
-  const [groupBy, setGroupBy] = useState("exterieur");
 
   /* ---- Speichern: lokal sofort, auf dem Server sobald möglich ---- */
   const baseRef = useRef(null);        // Stand, auf dem unsere Änderungen aufsetzen
@@ -1381,8 +1026,6 @@ export default function App() {
         exterieur: v.exterieur || alt?.exterieur || "",
         interieur: v.interieur || alt?.interieur || "",
         repairKind: v.repairKind || alt?.repairKind || (v.repairNote ? "" : "Keine genannt"),
-        showcase: v.showcase === "Vorzeigefahrzeug" || alt?.showcase === "Vorzeigefahrzeug"
-          ? "Vorzeigefahrzeug" : "Normal",
         // Gleich geradegezogen, damit im Feld steht, was später gespeichert wird.
         url: normalizeUrl(v.url) || normalizeUrl(alt?.url) || ausDemText,
       };
@@ -1472,14 +1115,6 @@ export default function App() {
     updateVehicle(id, (v) => ({ ...v, [feld]: wert, updatedAt: new Date().toISOString() }));
   }, [updateVehicle]);
 
-  // Vorzeigefahrzeug direkt im Verzeichnis an- und abschalten.
-  const toggleStern = useCallback((id) => {
-    updateVehicle(id, (v) => ({
-      ...v,
-      showcase: v.showcase === "Vorzeigefahrzeug" ? "Normal" : "Vorzeigefahrzeug",
-      updatedAt: new Date().toISOString(),
-    }));
-  }, [updateVehicle]);
 
   function alleBestaetigen() {
     const heute = todayISO();
@@ -1557,536 +1192,39 @@ export default function App() {
     }
   }
 
-  /* ---- Chart Preisverlauf ---- */
-  const chart = useMemo(() => {
-    const withHistory = list.filter((v) => v.priceHistory?.length);
-    if (chartMode === "tage") {
-      // Alle Inserate beginnen bei Tag 0 und liegen dadurch übereinander.
-      const proAuto = withHistory.map((v) => {
-        const start = inseriertSeit(v);
-        return { v, punkte: v.priceHistory.map((p) => ({ tag: tageZwischen(start, p.date) ?? 0, price: p.price })) };
-      });
-      const tage = [...new Set(proAuto.flatMap((a) => a.punkte.map((p) => p.tag)))].sort((a, b) => a - b);
-      const rows = tage.map((tag) => {
-        const row = { tag };
-        proAuto.forEach(({ v, punkte }) => { const pt = punkte.find((p) => p.tag === tag); row[v.id] = pt ? pt.price : null; });
-        return row;
-      });
-      return { rows, series: withHistory, xKey: "tag" };
-    }
-    const dates = [...new Set(withHistory.flatMap((v) => v.priceHistory.map((p) => p.date)))].sort();
-    const rows = dates.map((date) => { const row = { date }; withHistory.forEach((v) => { const pt = v.priceHistory.find((p) => p.date === date); row[v.id] = pt ? pt.price : null; }); return row; });
-    return { rows, series: withHistory, xKey: "date" };
-  }, [list, chartMode]);
   const totalDrop = useMemo(() => list.reduce((s, v) => { const h = v.priceHistory; if (!h || h.length < 2) return s; const d = h[0].price - h[h.length - 1].price; return s + (d > 0 ? d : 0); }, 0), [list]);
-  const colorFor = (id) => { const i = chart.series.findIndex((s) => s.id === id); return COLORS[(i < 0 ? Object.keys(vehicles).indexOf(id) : i) % COLORS.length]; };
+  // Farbstreifen je Fahrzeug im Verzeichnis — richtet sich nach der Stelle
+  // im Bestand und bleibt damit für ein Fahrzeug gleich.
+  const colorFor = (id) => COLORS[Math.max(0, Object.keys(vehicles).indexOf(id)) % COLORS.length];
 
-  /* ---- Analyse: Filter + Vergleich ---- */
-  const searchable = (v) => [v.title, v.subtitle, v.make, v.model, v.series, v.trimline, v.year, erstzulassung(v), v.fuel, v.gearbox, v.color, v.location, v.sellerType, v.dealerName, v.note, v.repairNote, ...(v.equipment || [])].join(" ").toLowerCase();
 
-  const filtereMit = (a) => list.filter((v) => {
-    if (a.q.trim() && !searchable(v).includes(a.q.trim().toLowerCase())) return false;
-    // Je Feld sind mehrere Werte erlaubt; ausgewählte Werte gelten als "oder".
-    // Nichts ausgewählt heißt: dieses Feld schränkt nicht ein.
-    for (const [f, val] of Object.entries(a.filters)) {
-      const werte = filterWerte(val);
-      if (werte.length && !werte.includes(v[f] || "")) return false;
-    }
-    const pmax = coerceNum(a.priceMax); if (pmax != null) { const lp = lastPrice(v); if (lp == null || lp > pmax) return false; }
-    const kmax = coerceNum(a.kmMax); if (kmax != null) { if (v.mileage == null || v.mileage > kmax) return false; }
-    return true;
-  });
-  const trefferA = useMemo(() => filtereMit(auswahlen[0]), [list, auswahlen]);
-  const trefferB = useMemo(() => filtereMit(auswahlen[1]), [list, auswahlen]);
-  const filtered = aktiv === 0 ? trefferA : trefferB;
-  // Der Masterchart hat eine eigene Seite und wählt selbst, auf welche
-  // Bezugsgruppe er schaut — verglichen wird immer nur innerhalb einer.
-  const masterBasis = masterBezug === 0 ? trefferA : trefferB;
 
-  const distinct = (field) => [...new Set(list.map((v) => v[field]).filter(Boolean))].sort();
 
-  const groups = useMemo(() => {
-    const m = {};
-    filtered.forEach((v) => { const key = v[groupBy] || "—"; (m[key] = m[key] || []).push(v); });
-    return Object.entries(m).map(([group, vs]) => {
-      const prices = vs.map(lastPrice).filter((x) => x != null);
-      const kms = vs.map((v) => v.mileage).filter((x) => x != null);
-      const avg = prices.length ? Math.round(prices.reduce((a, b) => a + b, 0) / prices.length) : null;
-      const avgKm = kms.length ? Math.round(kms.reduce((a, b) => a + b, 0) / kms.length) : null;
-      return { group, count: vs.length, avg, avgKm };
-    }).sort((a, b) => (b.avg || 0) - (a.avg || 0));
-  }, [filtered, groupBy]);
 
-  /* ---- Preisentwicklung ab Inserat (folgt den Filtern oben) ---- */
-  const bauVerlauf = (fahrzeuge) => {
-    const reihen = [];
-    fahrzeuge.forEach((v) => {
-      const h = (v.priceHistory || []).slice().sort((a, b) => a.date.localeCompare(b.date));
-      if (!h.length) return;
-      // Tag 0 ist entweder der Tag, an dem der Verkäufer inseriert hat, oder
-      // der Tag, an dem du das Fahrzeug erstmals erfasst hast. Ersteres zeigt
-      // die echte Standzeit — jede Linie ist dann so lang, wie das Inserat
-      // schon läuft. Letzteres zeigt nur, was du selbst beobachtet hast.
-      const start = (nullpunkt === "inserat" ? inseriertSeit(v) : "") || h[0].date;
-      const startPreis = h[0].price;
-      if (!startPreis) return;
-      const punkte = h.map((p) => ({ tag: Math.max(0, tageZwischen(start, p.date) ?? 0), price: p.price }));
-      // Ab welchem Tag der Standzeit liegt überhaupt eine Beobachtung vor?
-      const abTag = punkte[0].tag;
-      // Jede Linie beginnt bei Tag 0, dem Tag des Inserierens. Für die Zeit
-      // davor gibt es keine Beobachtung, also gilt der erste bekannte Preis
-      // rückwärts weiter — dieselbe Annahme wie vorwärts: ein Preis steht,
-      // bis der Verkäufer ihn ändert. Was daran geschätzt ist, steht als
-      // Hinweis über dem Schaubild.
-      if (abTag > 0) punkte.unshift({ tag: 0, price: punkte[0].price, ergaenzt: true });
-      // Bis wann ist das Inserat beobachtet? Danach endet die Linie.
-      const geschlossen = v.listingStatus && v.listingStatus !== "Aktiv" && v.closedDate;
-      const ende = Math.max(tageZwischen(start, geschlossen ? v.closedDate : todayISO()) ?? 0,
-        punkte[punkte.length - 1].tag);
-      reihen.push({ id: v.id, title: v.title || v.id, punkte, startPreis, ende, abTag });
-    });
-    if (!reihen.length) return null;
 
-    const maxTag = Math.max(...reihen.map((r) => r.ende), 1);
 
-    // Ein Preis gilt weiter, bis der Verkäufer ihn ändert. Liefert Euro;
-    // die Umrechnung auf Prozent passiert erst bei der Darstellung.
-    const wertBei = (r, tag) => {
-      if (tag > r.ende) return null;
-      let letzter = null;
-      for (const p of r.punkte) { if (p.tag <= tag) letzter = p; else break; }
-      return letzter ? letzter.price : null;
-    };
-
-    // Kennzahlen
-    const bisSenkung = [], gesamtSenkung = [], abstaende = [];
-    let mitSenkung = 0;
-    reihen.forEach((r) => {
-      const erste = r.punkte.find((p) => p.price < r.startPreis);
-      if (erste) { bisSenkung.push(erste.tag); mitSenkung++; }
-      const letzter = r.punkte[r.punkte.length - 1];
-      if (letzter.price < r.startPreis) gesamtSenkung.push((1 - letzter.price / r.startPreis) * 100);
-      const stufen = r.punkte.filter((p, i) => i > 0 && p.price < r.punkte[i - 1].price);
-      for (let i = 1; i < stufen.length; i++) abstaende.push(stufen[i].tag - stufen[i - 1].tag);
-    });
-
-    // Fächer müssen sich lückenlos, aber überschneidungsfrei aneinanderreihen.
-    const faecher = FAECHER.map((f, i) => {
-      const von = i === 0 ? 0 : FAECHER[i - 1].bis + 1;
-      return { label: f.label, anzahl: bisSenkung.filter((t) => t >= von && t <= f.bis).length };
-    });
-
-    const abTage = reihen.map((r) => r.abTag);
-    return {
-      reihen, maxTag, wertBei,
-      anzahl: reihen.length,
-      medianAbTag: median(abTage),
-      maxAbTag: Math.max(...abTage),
-      blindAnzahl: abTage.filter((t) => t > 0).length,
-      beobachtet: reihen.filter((r) => r.punkte.length > 1).length,
-      mitSenkung,
-      medianTage: median(bisSenkung),
-      schnittTage: mittel(bisSenkung) == null ? null : Math.round(mittel(bisSenkung)),
-      schnittSenkung: mittel(gesamtSenkung) == null ? null : Math.round(mittel(gesamtSenkung) * 10) / 10,
-      schnittAbstand: mittel(abstaende) == null ? null : Math.round(mittel(abstaende)),
-      faecher,
-    };
-  };
-
-  const verlauf0 = useMemo(() => bauVerlauf(trefferA), [trefferA, nullpunkt]);
-  const verlauf1 = useMemo(() => bauVerlauf(trefferB), [trefferB, nullpunkt]);
-  const primaer = aktiv === 1 ? verlauf1 : verlauf0;
-  const sekundaer = vergleich ? (aktiv === 1 ? verlauf0 : verlauf1) : null;
-  const abInserat = primaer;
-
-  // Gemeinsame Zeitachse, Durchschnitt und Streuungsband je Auswahl.
-  // "P" ist die Auswahl dieses Reiters, "S" die eingeblendete zum Vergleich.
-  const verlaufRows = useMemo(() => {
-    const saetze = [["P", primaer], ["S", sekundaer]].filter(([, v]) => v);
-    if (!saetze.length) return [];
-    const vorhanden = Math.max(...saetze.map(([, v]) => v.maxTag), 1);
-    const maxTag = zeitfenster ? Math.min(vorhanden, zeitfenster) : vorhanden;
-    const schritt = maxTag > 240 ? 21 : maxTag > 120 ? 14 : maxTag > 45 ? 7 : maxTag > 20 ? 2 : 1;
-    const tage = new Set([0, maxTag]);
-    saetze.forEach(([, v]) => v.reihen.forEach((r) => r.punkte.forEach((p) => tage.add(p.tag))));
-    // Jedes Inserat endet auf der Achse, damit seine Linie dort sichtbar ausläuft.
-    saetze.forEach(([, v]) => v.reihen.forEach((r) => tage.add(r.ende)));
-    for (let t = 0; t <= maxTag; t += schritt) tage.add(t);
-    const achse = [...tage].filter((t) => t <= maxTag).sort((a, b) => a - b);
-
-    // Euro oder auf den eigenen Startpreis bezogene Prozent
-    const zeige = (r, preis) => (preis == null ? null
-      : einheit === "prozent" ? (preis / r.startPreis) * 100 : preis);
-
-    const roh = achse.map((tag) => {
-      const row = { tag };
-      saetze.forEach(([name, v]) => {
-        const werte = v.reihen.map((r) => zeige(r, v.wertBei(r, tag))).filter((w) => w != null);
-        if (!werte.length) return;
-        // Der Durchschnitt läuft über die Inserate, die an diesem Tag noch
-        // liefen. Zum Ende hin sind das immer weniger — der Tooltip nennt
-        // deshalb zu jedem Tag die Anzahl.
-        if (werte.length < 2) return;
-        const m = mittel(werte);
-        // Streuung über die Inserate: wie weit liegen sie an diesem Tag auseinander
-        const sd = werte.length > 1 ? Math.sqrt(mittel(werte.map((w) => (w - m) ** 2))) : 0;
-        row["schnitt" + name] = m;
-        row["sd" + name] = sd;
-        row["n" + name] = werte.length;
-      });
-      // Einzellinien nur, solange nichts eingeblendet ist — sonst wird es unlesbar
-      if (!sekundaer) primaer.reihen.forEach((r) => { row[r.id] = zeige(r, primaer.wertBei(r, tag)); });
-      return row;
-    });
-
-    // Gleitender Durchschnitt über ein Zeitfenster in Tagen
-    const geglaettet = !glaettung ? roh : roh.map((r) => {
-      const out = { ...r };
-      ["P", "S"].forEach((n) => {
-        const fenster = roh.filter((x) => Math.abs(x.tag - r.tag) <= glaettung / 2 && x["schnitt" + n] != null);
-        if (fenster.length) {
-          out["schnitt" + n] = mittel(fenster.map((x) => x["schnitt" + n]));
-          out["sd" + n] = mittel(fenster.map((x) => x["sd" + n]));
-        }
-      });
-      return out;
-    });
-
-    // Euro auf ganze Beträge, Prozent auf eine Nachkommastelle
-    const r1 = (x) => (x == null ? null : einheit === "euro" ? Math.round(x) : Math.round(x * 10) / 10);
-    return geglaettet.map((r) => {
-      const out = { ...r };
-      ["P", "S"].forEach((n) => {
-        const m = r["schnitt" + n], sd = r["sd" + n];
-        out["schnitt" + n] = r1(m);
-        out["band" + n] = m == null ? null : [r1(m - sd), r1(m + sd)];
-      });
-      Object.keys(out).forEach((k) => { if (!/^(tag|schnitt|band|sd|n)[PS]?$/.test(k)) out[k] = r1(out[k]); });
-      return out;
-    });
-  }, [primaer, sekundaer, glaettung, einheit, zeitfenster, nullpunkt]);
 
   /* ---- Masterchart: Zustand gegen Preisvorteil ----
      Zwei Fragen in einem Bild. Erstens: wie gut ist das Auto gemessen an
      allem, was du erfasst hast? Zweitens: was müsste es bei diesem Zustand,
      dieser Laufleistung und diesem Alter kosten — und was kostet es? Interessant
      ist nur, wer bei der ersten Frage vorn liegt und bei der zweiten darunter. */
-  const master = useMemo(() => {
-    const roh = masterBasis.map((v) => {
-      const z = zustandsPunkte(v);
-      return {
-        v, id: v.id, title: v.title || v.id, marke: [v.make, v.model].filter(Boolean).join(" "),
-        preis: lastPrice(v), km: v.mileage, alter: alterJahre(v),
-        zustand: z.punkte, abzuege: z.abzuege, bonus: z.bonus,
-        stern: v.showcase === "Vorzeigefahrzeug", url: v.url,
-        ez: erstzulassung(v), ort: v.location, rep: v.repairKind, fotos: v.exterieur,
-      };
-    }).filter((p) => p.preis != null && p.km != null);
-    if (roh.length < 6) return { zuWenig: true, anzahl: roh.length };
 
-    // Alter nur mitnehmen, wenn es überall bekannt ist und genug Fahrzeuge da
-    // sind — mehr Einflussgrößen als Daten macht das Modell wackelig.
-    const mitAlter = roh.every((p) => p.alter != null) && roh.length >= 10;
-    let felder = mitAlter ? ["km", "alter", "zustand"] : ["km", "zustand"];
-    let modell = kleinsteQuadrate(roh.map((p) => felder.map((f) => p[f])), roh.map((p) => p.preis));
-    if (!modell && felder.length > 2) {
-      felder = ["km", "zustand"];
-      modell = kleinsteQuadrate(roh.map((p) => felder.map((f) => p[f])), roh.map((p) => p.preis));
-    }
-    if (!modell) {
-      felder = ["km"];
-      modell = kleinsteQuadrate(roh.map((p) => [p.km]), roh.map((p) => p.preis));
-    }
-    if (!modell) return { zuWenig: true, anzahl: roh.length };
-
-    const bewertet = roh.map((p) => {
-      const erwartet = modell.vorhersage(felder.map((f) => p[f]));
-      const vorteil = erwartet - p.preis;                    // positiv = günstiger als verdient
-      return {
-        ...p, erwartet: Math.round(erwartet), vorteil: Math.round(vorteil),
-        vorteilPct: erwartet > 0 ? Math.round((vorteil / erwartet) * 1000) / 10 : 0,
-      };
-    });
-
-    const zWerte = bewertet.map((p) => p.zustand);
-    const vWerte = bewertet.map((p) => p.vorteilPct);
-    const mitRang = bewertet.map((p) => ({
-      ...p,
-      zRang: perzentil(zWerte, p.zustand),
-      vRang: perzentil(vWerte, p.vorteilPct),
-    }));
-
-    // Schwelle: ab welchen Zustandspunkten zählt ein Auto als "gut"?
-    const sortiertZ = zWerte.slice().sort((a, b) => a - b);
-    const quantil = (q) => sortiertZ[Math.min(sortiertZ.length - 1, Math.floor(q * (sortiertZ.length - 1)))];
-    const schwellen = { alle: 0, haelfte: quantil(0.5), drittel: quantil(2 / 3), viertel: quantil(0.75) };
-    const schwelle = schwellen[masterSchwelle] ?? 0;
-
-    const kandidaten = mitRang.filter((p) => p.zustand >= schwelle).sort((a, b) => b.vorteil - a.vorteil);
-    const bester = kandidaten.find((p) => p.vorteil > 0) || null;
-
-    return {
-      zuWenig: false, anzahl: roh.length, felder, schwelle, schwellen,
-      r2: modell.r2,
-      jeZehntausendKm: Math.round(modell.b[felder.indexOf("km")] * 10000),
-      jeZustandspunkt: felder.includes("zustand") ? Math.round(modell.b[felder.indexOf("zustand")]) : null,
-      jeJahr: felder.includes("alter") ? Math.round(modell.b[felder.indexOf("alter")]) : null,
-      punkte: schaubildPunkte(mitRang), kandidaten, bester,
-      teuerste: mitRang.slice().sort((a, b) => a.vorteil - b.vorteil).slice(0, 3),
-    };
-  }, [masterBasis, masterSchwelle]);
-
-  /* ---- Preisformel für die aktuelle Auswahl ---- */
-  const formel = useMemo(() => preisformel(
-    filtered.map((v) => ({
-      preis: lastPrice(v), km: v.mileage, id: v.id, title: v.title || v.id,
-      marke: [v.make, v.model].filter(Boolean).join(" "), url: v.url,
-      ez: erstzulassung(v), rep: v.repairKind, fotos: v.exterieur,
-      stern: v.showcase === "Vorzeigefahrzeug",
-    })).filter((p) => p.preis != null && p.km != null)
-  ), [filtered]);
 
   /* ---- Sternniveau: die Vorzeigefahrzeuge als Messlatte ----
      Die Sterne hast du nach dem Erscheinungsbild vergeben, unabhängig vom
      Kilometerstand. Genau deshalb taugen sie als Anker: sie sagen, was ein
      Auto in Vorzeigezustand bei dieser Laufleistung kostet. Alles ohne Stern
      muss darunter liegen — sonst zahlst du Vorzeigepreis für weniger Auto. */
-  const sternAnker = useMemo(() => {
-    const basis = filtered
-      .map((v) => ({
-        v, id: v.id, title: v.title || v.id, preis: lastPrice(v), km: v.mileage,
-        stern: v.showcase === "Vorzeigefahrzeug", url: v.url, rep: v.repairKind,
-        fotos: v.exterieur, ez: erstzulassung(v), marke: [v.make, v.model].filter(Boolean).join(" "),
-        ort: v.location, anbieter: v.dealerName || v.sellerType, stand: v.listingStatus || "Aktiv",
-      }))
-      .filter((p) => p.preis != null && p.km != null);
-    const sterne = basis.filter((p) => p.stern);
-    const andere = basis.filter((p) => !p.stern);
-    if (!sterne.length) return { keineSterne: true, anzahl: basis.length };
 
-    // Steigung je Kilometer. Ab vier Sternen aus ihnen selbst — darunter wäre
-    // das reines Rauschen, dann wird die Steigung aller Fahrzeuge geliehen und
-    // die Linie nur in der Höhe auf das Sternniveau gelegt.
-    const steigung = (punkte) => {
-      if (punkte.length < 2) return null;
-      const mx = mittel(punkte.map((p) => p.km)), my = mittel(punkte.map((p) => p.preis));
-      let sxx = 0, sxy = 0;
-      punkte.forEach((p) => { const a = p.km - mx; sxx += a * a; sxy += a * (p.preis - my); });
-      return sxx > 0 ? sxy / sxx : null;
-    };
-    const eigene = sterne.length >= 4 ? steigung(sterne) : null;
-    const b1 = eigene != null ? eigene : (steigung(basis) ?? 0);
-    const b0 = mittel(sterne.map((p) => p.preis - b1 * p.km));
-    const anker = (km) => b0 + b1 * km;
 
-    const bewertet = andere.map((p) => {
-      const soll = anker(p.km);
-      return { ...p, anker: Math.round(soll), abstand: Math.round(p.preis - soll) };
-    }).sort((a, b) => a.abstand - b.abstand);
 
-    const kmWerte = basis.map((p) => p.km);
-    const kmMin = Math.min(...kmWerte), kmMax = Math.max(...kmWerte);
-
-    // Eine Reihe fürs Schaubild: Sterne, übrige Fahrzeuge und die Messlatte
-    // in derselben, nach Kilometern sortierten Liste. Getrennte Datensätze je
-    // Serie lassen den gemeinsamen Tooltip von recharts ins Leere greifen.
-    const alle = basis
-      .map((p) => {
-        const soll = anker(p.km);
-        return { ...p, anker: Math.round(soll), abstand: Math.round(p.preis - soll), niveau: Math.round(soll) };
-      })
-      .sort((a, b) => a.km - b.km);
-
-    // Ein C 180 Benziner ist keine Messlatte für einen C 250 Diesel. Wenn die
-    // Sternfahrzeuge dieser Auswahl in einem tragenden Merkmal auseinanderlaufen,
-    // wird die Linie stumpf — dann muss der Filter enger.
-    const mischung = [["model", "Modell"], ["fuel", "Kraftstoff"], ["gearbox", "Getriebe"],
-      ["series", "Baureihe"], ["category", "Kategorie"]]
-      .map(([feld, label]) => {
-        const werte = [...new Set(sterne.map((p) => p.v[feld]).filter(Boolean))];
-        return werte.length > 1 ? { label, werte } : null;
-      }).filter(Boolean);
-
-    return {
-      keineSterne: false, anzahl: basis.length, mischung,
-      sterne: sterne.map((p) => ({ ...p, anker: Math.round(anker(p.km)), abstand: Math.round(p.preis - anker(p.km)) })),
-      andere: bewertet,
-      jeZehntausend: Math.round(b1 * 10000),
-      eigeneSteigung: eigene != null,
-      anker, alle, kmMin, kmMax,
-      ueberNiveau: bewertet.filter((p) => p.abstand >= 0),
-      guenstigstes: bewertet[0],
-    };
-  }, [filtered]);
-
-  /* ---- Erwarteter Preis: Regression über Kilometer und Alter ---- */
-  const fairValue = useMemo(() => {
-    const basis = filtered
-      .map((v) => ({ v, id: v.id, title: v.title || v.id, preis: lastPrice(v), km: v.mileage, alter: alterJahre(v), url: v.url, rep: v.repairKind }))
-      .filter((p) => p.preis != null && p.km != null && p.alter != null);
-    if (basis.length < 5) return { zuWenig: true, anzahl: basis.length };
-
-    const m = regression(basis);
-    const mitAbweichung = basis.map((p) => {
-      const erwartet = m.erwartet(p.km, p.alter);
-      return { ...p, erwartet: Math.round(erwartet), abweichung: Math.round(p.preis - erwartet) };
-    });
-
-    // Rangfolge: je weiter unter Erwartung, desto günstiger
-    const sortiert = mitAbweichung.slice().sort((a, b) => a.abweichung - b.abweichung);
-    const mitRang = sortiert.map((p, i) => ({
-      ...p, nr: i + 1,
-      guenstigerAls: Math.round(((sortiert.length - 1 - i) / Math.max(1, sortiert.length - 1)) * 100),
-    }));
-    const nachId = Object.fromEntries(mitRang.map((p) => [p.id, p]));
-
-    // Alles in EINER nach Kilometern aufsteigenden Reihe: Punkte und Linie.
-    // Bringt eine Serie ihre eigenen Daten mit, greift der gemeinsame Tooltip
-    // von recharts daneben und zeigt beim Überfahren immer dasselbe Fahrzeug.
-    // Die Erwartungslinie wird deshalb je Fahrzeug mitgerechnet — bei
-    // durchschnittlichem Alter ausgewertet ergibt das dieselbe Gerade.
-    const streu = basis
-      .map((p) => ({ ...p, ...nachId[p.id], linieErwartet: Math.round(m.erwartet(p.km, m.mx2)) }))
-      .sort((a, b) => a.km - b.km);
-
-    return {
-      zuWenig: false, anzahl: basis.length, r2: m.r2, kopplung: m.kopplung,
-      jeZehntausendKm: Math.round(m.b1 * 10000),
-      jeJahr: Math.round(m.b2),
-      streu, balken: mitRang,
-      bestes: mitRang[0], teuerstes: mitRang[mitRang.length - 1],
-    };
-  }, [filtered]);
-
-  /* ---- Preisleiter: ein Punkt je Fahrzeug, nebeneinander ---- */
-  const preisReihe = useMemo(() => {
-    const punkte = filtered
-      .map((v) => ({
-        id: v.id, title: v.title || v.id, preis: lastPrice(v),
-        marke: [v.make, v.model].filter(Boolean).join(" "),
-        ez: erstzulassung(v), km: v.mileage, ort: v.location,
-        rep: v.repairKind, fotos: v.exterieur, innen: v.interieur, linie: v.trimline,
-        extras: v.ausstattung, anbieter: v.dealerName || v.sellerType,
-        stand: v.listingStatus || "Aktiv", url: v.url,
-      }))
-      .filter((p) => p.preis != null);
-    if (!punkte.length) return null;
-    const sortiert = reiheSort === "preis"
-      ? punkte.slice().sort((a, b) => a.preis - b.preis)
-      : punkte;
-    const rows = sortiert.map((p, i) => ({ ...p, nr: i + 1 }));
-    return { rows, mittelwert: median(rows.map((r) => r.preis)) };
-  }, [filtered, reiheSort]);
-
-  /* ---- Inserate über Zeit: ein Punkt je Inserat am Tag der Erfassung ---- */
-  const inserateUeberZeit = useMemo(() => {
-    const punkte = filtered.map((v) => {
-      const datum = inseriertSeit(v);
-      const preis = v.priceHistory?.[0]?.price;
-      if (!datum || preis == null) return null;
-      const d = parseISO(datum);
-      return d ? { t: d.getTime(), datum, preis, id: v.id, title: v.title || v.id, url: v.url,
-        stern: v.showcase === "Vorzeigefahrzeug" } : null;
-    }).filter(Boolean).sort((a, b) => a.t - b.t);
-    if (!punkte.length) return null;
-
-    // Ausgleichsgerade nach kleinsten Quadraten über die Tage
-    const tage = punkte.map((p) => p.t / TAG_MS);
-    const mx = mittel(tage), my = mittel(punkte.map((p) => p.preis));
-    let zaehler = 0, nenner = 0;
-    tage.forEach((x, i) => { zaehler += (x - mx) * (punkte[i].preis - my); nenner += (x - mx) ** 2; });
-    const steigung = nenner ? zaehler / nenner : 0;   // Euro je Tag
-
-    const rows = punkte.map((p, i) => ({ ...p, trend: nenner ? Math.round(my + steigung * (tage[i] - mx)) : Math.round(my) }));
-    const spanne = tage[tage.length - 1] - tage[0];
-    return {
-      rows, anzahl: punkte.length, spanne: Math.round(spanne),
-      von: punkte[0].datum, bis: punkte[punkte.length - 1].datum,
-      proMonat: nenner && spanne >= 7 ? Math.round(steigung * 30) : null,
-      schnitt: Math.round(my),
-    };
-  }, [filtered]);
 
   /* ---- Preis gegen Standzeit ----
      Waagerecht der Preis, senkrecht wie lange das Inserat schon läuft.
      Unten links steht das, was günstig war und schnell weg; oben rechts,
      was zu teuer ist und deshalb steht. Der eigentliche Ertrag ist der
      Punkt dazwischen: ab welchem Preis die Standzeit kippt. */
-  const standzeit = useMemo(() => {
-    const alle = filtered.map((v) => {
-      const preis = lastPrice(v);
-      const tage = laufzeitTage(v);
-      if (preis == null || tage == null) return null;
-      const laeuft = !(v.listingStatus && v.listingStatus !== "Aktiv");
-      return {
-        id: v.id, title: v.title || v.id, preis, tage, laeuft,
-        stand: v.listingStatus || "Aktiv", km: v.mileage, ez: erstzulassung(v),
-        url: v.url, stern: v.showcase === "Vorzeigefahrzeug", rep: v.repairKind,
-        fotos: v.exterieur, marke: [v.make, v.model].filter(Boolean).join(" "),
-        seit: inseriertSeit(v), closedDate: v.closedDate || "",
-      };
-    }).filter(Boolean);
-
-    const basis = standNur === "fertig" ? alle.filter((p) => !p.laeuft) : alle;
-    if (basis.length < 4) return { zuWenig: true, anzahl: basis.length, gesamt: alle.length };
-
-    // Eine Reihe, nach dem Preis aufsteigend — daran hängen Punkte und Stufenlinie.
-    const punkte = basis.slice().sort((a, b) => a.preis - b.preis);
-
-    /* Preisbänder mit jeweils gleich vielen Fahrzeugen. Gleich viele statt
-       gleich breit, weil sonst bei wenigen Autos Bänder leer bleiben und die
-       Linie Löcher bekommt. Je Band der Median der Standzeit — der Median,
-       weil ein einziger Dauerläufer einen Durchschnitt sonst allein trägt. */
-    const anzahlBaender = Math.max(2, Math.min(4, Math.floor(punkte.length / 3)));
-    const baender = [];
-    let ab = 0;
-    for (let i = 0; i < anzahlBaender; i++) {
-      const bis = Math.round(((i + 1) * punkte.length) / anzahlBaender);
-      const teil = punkte.slice(ab, bis);
-      ab = bis;
-      if (!teil.length) continue;
-      baender.push({
-        vonPreis: teil[0].preis, bisPreis: teil[teil.length - 1].preis, n: teil.length,
-        medianTage: median(teil.map((p) => p.tage)),
-        offen: teil.filter((p) => p.laeuft).length,
-        ids: teil.map((p) => p.id),
-      });
-    }
-    // Jeder Punkt trägt den Median seines Bandes mit, damit die Stufenlinie
-    // aus derselben Reihe kommt wie die Punkte.
-    const nachBand = {};
-    baender.forEach((b) => b.ids.forEach((id) => { nachBand[id] = b.medianTage; }));
-    const reihe = punkte.map((p) => ({ ...p, bandTage: nachBand[p.id] ?? null }));
-
-    /* Der Kipppunkt: das erste Band, dessen Median deutlich über dem
-       vorherigen liegt. "Deutlich" heißt mindestens die Hälfte mehr UND
-       mindestens zehn Tage — sonst gilt schon Rauschen als Kippen. */
-    let kipp = null;
-    for (let i = 1; i < baender.length; i++) {
-      const vor = baender[i - 1].medianTage, jetzt = baender[i].medianTage;
-      if (vor != null && jetzt != null && jetzt >= vor * 1.5 && jetzt - vor >= 10) {
-        kipp = { band: baender[i], vorher: baender[i - 1] };
-        break;
-      }
-    }
-
-    const medianPreis = median(punkte.map((p) => p.preis));
-    const medianTage = median(punkte.map((p) => p.tage));
-    // Trotz gutem Preis lange stehen — genau die Ausreißer, die interessieren.
-    const zaeh = punkte.filter((p) => p.preis <= medianPreis && p.tage > medianTage)
-      .sort((a, b) => b.tage - a.tage);
-    // Abgeschlossen und innerhalb einer Woche weg: der Beleg dafür, was geht.
-    const schnell = punkte.filter((p) => !p.laeuft && p.tage <= 7).sort((a, b) => a.preis - b.preis);
-
-    return {
-      zuWenig: false, reihe, punkte, anzahl: punkte.length, gesamt: alle.length,
-      fertigAnzahl: punkte.filter((p) => !p.laeuft).length,
-      baender, kipp, medianPreis, medianTage, zaeh, schnell,
-      stufen: STANDZEIT_STUFEN.map((s) => ({
-        ...s, anzahl: punkte.filter((p) => standzeitStufe(p.tage) === s).length,
-      })),
-    };
-  }, [filtered, standNur]);
 
   /* ---- Doppelte / neu eingestellte Inserate ---- */
   // Beim Import: gegen den gesamten Bestand prüfen, ausdrücklich auch
@@ -2140,25 +1278,6 @@ export default function App() {
     .filter((e) => e.punkte.length > 0)
     .sort((a, b) => (!!a.v.geprueft - !!b.v.geprueft) || (b.punkte.length - a.punkte.length)), [list]);
 
-  const activeFilterCount = Object.values(filters).filter((v) => filterWerte(v).length).length
-    + (priceMax ? 1 : 0) + (kmMax ? 1 : 0) + (q.trim() ? 1 : 0);
-  const resetFilters = () => setAuswahlen((prev) => prev.map((a, i) => (i === aktiv ? leereAuswahl() : a)));
-  const gewaehlt = (f) => filterWerte(filters[f]);
-  const toggleFilter = (f, o) => {
-    const w = gewaehlt(f);
-    aendere("filters", { ...filters, [f]: w.includes(o) ? w.filter((x) => x !== o) : [...w, o] });
-  };
-  const leereFilter = (f) => aendere("filters", { ...filters, [f]: [] });
-
-  // Wie viele Fahrzeuge kämen je Wert dazu? Gezählt wird gegen alle anderen
-  // Filter, dieses Feld selbst ausgenommen — sonst zeigt jede Zahl nur noch
-  // die eigene Auswahl.
-  const zaehleFuer = (feld) => {
-    const menge = filtereMit({ ...A, filters: { ...filters, [feld]: [] } });
-    const m = {};
-    menge.forEach((v) => { const k = v[feld]; if (k) m[k] = (m[k] || 0) + 1; });
-    return m;
-  };
 
   const S = styles;
 
@@ -2169,7 +1288,7 @@ export default function App() {
       <header style={S.header} className="pw-header">
         <div style={S.brandRow}>
           <div style={S.logo}><Gauge size={22} color={T.bg} strokeWidth={2.5} /></div>
-          <div><div style={S.brandName}>PREISWACHE</div><div style={S.brandSub}>Tracken · Analysieren · Vergleichen</div></div>
+          <div><div style={S.brandName}>PREISWACHE</div><div style={S.brandSub}>Erfassen · Beobachten · Vergleichen</div></div>
         </div>
         <div style={S.stats}>
           <Stat label="Fahrzeuge" value={fmtNum(list.length)} />
@@ -2185,20 +1304,6 @@ export default function App() {
       <nav style={S.tabs}>
         <button style={tab === "erfassen" ? S.tabOn : S.tabOff} onClick={() => setTab("erfassen")}>
           <Upload size={14} /> Erfassen
-        </button>
-        {[0, 1].map((i) => {
-          const name = i === 0 ? "analyseA" : "analyseB";
-          const treffer = (i === 0 ? trefferA : trefferB).length;
-          return (
-            <button key={i} onClick={() => setTab(name)}
-              style={tab === name ? { ...S.tabOn, color: AUSWAHL_FARBE[i] } : S.tabOff}>
-              <TrendingDown size={14} /> Analyse {i === 0 ? "A" : "B"}
-              {treffer > 0 && <span style={tab === name ? { ...S.tabCountOn, background: AUSWAHL_FARBE[i] } : S.tabCount}>{treffer}</span>}
-            </button>
-          );
-        })}
-        <button style={tab === "master" ? S.tabOn : S.tabOff} onClick={() => setTab("master")}>
-          <TrendingUp size={14} /> Masterchart
         </button>
         <button style={tab === "verzeichnis" ? S.tabOn : S.tabOff} onClick={() => setTab("verzeichnis")}>
           <Car size={14} /> Verzeichnis
@@ -2300,16 +1405,6 @@ export default function App() {
                 <div style={S.askBlock}>
                   <div style={S.askIntro}>Deine Einschätzung — das kann dir keine KI abnehmen:</div>
                   <FotoHinweis v={v} />
-                  <div style={S.askItem}>
-                    <button
-                      onClick={() => setAnswer(v.id, "showcase",
-                        answers[v.id]?.showcase === "Vorzeigefahrzeug" ? "Normal" : "Vorzeigefahrzeug")}
-                      style={answers[v.id]?.showcase === "Vorzeigefahrzeug" ? S.sternAn : S.sternAus}>
-                      <Star size={14} fill={answers[v.id]?.showcase === "Vorzeigefahrzeug" ? T.bg : "none"} />
-                      {SHOWCASE_FRAGE}
-                    </button>
-                    <div style={S.askHilfe}>{SHOWCASE_HILFE}</div>
-                  </div>
                   <ChoiceQuestion frage={TRIMLINE_FRAGE} options={TRIMLINE_OPTS} hilfe={TRIMLINE_HILFE}
                     value={answers[v.id]?.trimline || ""} onChange={(w) => setAnswer(v.id, "trimline", w)} />
                   <ChoiceQuestion frage={EXTERIEUR_FRAGE} options={EXTERIEUR_OPTS} hilfe={EXTERIEUR_HILFE}
@@ -2394,1071 +1489,9 @@ export default function App() {
         </section>
       )}
 
-      {/* Preisverlauf */}
-      <section style={S.panel}>
-        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><TrendingDown size={15} /> Preisverlauf aller Fahrzeuge</span>
-          <span style={S.toggleGroup}>
-            <button style={chartMode === "datum" ? S.toggleOn : S.toggleOff} onClick={() => setChartMode("datum")}>Nach Datum</button>
-            <button style={chartMode === "tage" ? S.toggleOn : S.toggleOff} onClick={() => setChartMode("tage")}
-              title="Alle Inserate starten bei Tag 0 — so lassen sich die Verläufe direkt übereinanderlegen">Tage seit Inserat</button>
-          </span>
-        </div>
-        {chart.rows.length === 0 ? (
-          <div style={S.empty}><Car size={30} color={T.line} /><span>Noch keine Preisdaten. Importiere ein Fahrzeug oder trage über „+ Preis-Update" einen Preis mit Datum ein.</span></div>
-        ) : (
-          <div style={{ width: "100%", height: 320 }}>
-            <ResponsiveContainer>
-              <LineChart data={chart.rows} margin={{ top: 8, right: 12, left: 4, bottom: 4 }}>
-                <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                <XAxis dataKey={chart.xKey} type={chartMode === "tage" ? "number" : "category"}
-                  domain={chartMode === "tage" ? [0, "dataMax"] : undefined}
-                  tickFormatter={chartMode === "tage" ? (t) => `${t} T` : fmtDate}
-                  stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} />
-                <YAxis tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} width={44} />
-                <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }} labelFormatter={(d) => (chartMode === "tage" ? `Tag ${d}` : fmtDate(d))} formatter={(val, key) => [fmtEUR(val), vehicles[key]?.title?.slice(0, 28) || key]} />
-                {chart.series.map((v) => (<Line key={v.id} type="monotone" dataKey={v.id} name={v.id} stroke={colorFor(v.id)} strokeWidth={2} connectNulls dot={{ r: 3 }} activeDot={{ r: 5 }} />))}
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
-        )}
-      </section>
 
       </>)}
 
-      {(tab === "analyseA" || tab === "analyseB") && (<>
-
-      {/* Analyse & Suche */}
-      <section style={{ ...S.panel, borderTop: `3px solid ${AUSWAHL_FARBE[aktiv]}` }}>
-        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8, color: AUSWAHL_FARBE[aktiv] }}>
-            <Search size={15} /> Filter für {AUSWAHL_NAME[aktiv]}
-          </span>
-          <button onClick={() => setVergleich((v) => !v)} style={vergleich ? S.toggleOn : S.toggleOff}
-            title={`Die Durchschnittslinie von ${AUSWAHL_NAME[andere]} zusätzlich einblenden`}>
-            {vergleich ? `${AUSWAHL_NAME[andere]} ausblenden` : `${AUSWAHL_NAME[andere]} einblenden`}
-          </button>
-        </div>
-
-        <div style={{ ...S.searchWrap, borderColor: vergleich ? AUSWAHL_FARBE[aktiv] + "77" : T.line }}>
-          <Search size={15} color={T.muted} />
-          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Volltext: Marke, Modell, Notiz, Schäden …" style={S.searchInput} />
-          {activeFilterCount > 0 && <button style={S.resetBtn} onClick={resetFilters}><X size={13} /> {activeFilterCount}</button>}
-        </div>
-
-        <div style={S.mfListe}>
-          {[["showcase", "Vorzeigefahrzeug", SHOWCASE_OPTS],
-            ["trimline", "Ausstattungslinie", TRIMLINE_OPTS],
-            ["ausstattung", "Sonderausstattung", AUSSTATTUNG_OPTS],
-            ["exterieur", "Exterieur", EXTERIEUR_OPTS],
-            ["interieur", "Interieur", INTERIEUR_OPTS],
-            ["repairKind", "Reparaturen", REPAIR_KIND_OPTS],
-            ["accidentRepaired", "Unfallschaden", ACCIDENT_OPTS],
-            ["model", "Modell", distinct("model")],
-            ["year", "Baujahr", distinct("year")]].map(([f, label, opts]) => (
-              opts.length ? (
-                <MehrfachFilter key={f} label={label} options={opts} werte={gewaehlt(f)} zahlen={zaehleFuer(f)}
-                  farbe={AUSWAHL_FARBE[aktiv]} onToggle={(o) => toggleFilter(f, o)} onClear={() => leereFilter(f)} />
-              ) : null
-            ))}
-        </div>
-        <div style={S.filterGrid}>
-          <div style={S.rangeField}><span style={S.fieldLabel}>Preis max (€)</span><input inputMode="decimal" value={priceMax} onChange={(e) => setPriceMax(e.target.value)} style={S.input} placeholder="z. B. 15000" /></div>
-          <div style={S.rangeField}><span style={S.fieldLabel}>km max</span><input inputMode="decimal" value={kmMax} onChange={(e) => setKmMax(e.target.value)} style={S.input} placeholder="z. B. 150000" /></div>
-        </div>
-
-        <button style={S.moreBtn} onClick={() => setMoreFilters((m) => !m)}>
-          <Filter size={13} /> {moreFilters ? "Weniger Filter" : "Mehr Filter"}
-        </button>
-        {moreFilters && (
-          <div style={S.mfListe}>
-            {FILTER_FIELDS.filter(([f]) => !["showcase", "trimline", "ausstattung", "exterieur", "interieur", "repairKind", "accidentRepaired", "model", "year"].includes(f)).map(([f, label]) => {
-              const vorhanden = distinct(f);
-              const opts = FIXED_OPTS[f] ? FIXED_OPTS[f].filter((o) => vorhanden.includes(o)) : vorhanden;
-              if (!opts.length) return null;
-              return (
-                <MehrfachFilter key={f} label={label} options={opts} werte={gewaehlt(f)} zahlen={zaehleFuer(f)}
-                  farbe={AUSWAHL_FARBE[aktiv]} onToggle={(o) => toggleFilter(f, o)} onClear={() => leereFilter(f)} />
-              );
-            })}
-          </div>
-        )}
-
-        {/* Vergleich */}
-        <div style={S.compareHead}>
-          <span style={S.compareTitle}>Vergleich — Ø Preis nach</span>
-          <select value={groupBy} onChange={(e) => setGroupBy(e.target.value)} style={S.selectInline}>
-            {GROUP_FIELDS.map(([f, label]) => <option key={f} value={f}>{label}</option>)}
-          </select>
-          <span style={S.resultCount}>{filtered.length} Treffer</span>
-        </div>
-        {groups.length === 0 ? (
-          <div style={S.emptySmall}>Keine Treffer für die aktuelle Auswahl.</div>
-        ) : (
-          <>
-            <div style={{ width: "100%", height: Math.max(120, groups.length * 46 + 30) }}>
-              <ResponsiveContainer>
-                <BarChart data={groups} layout="vertical" margin={{ top: 4, right: 16, left: 4, bottom: 4 }}>
-                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" horizontal={false} />
-                  <XAxis type="number" tickFormatter={(v) => (v >= 1000 ? `${Math.round(v / 1000)}k` : v)} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} />
-                  <YAxis type="category" dataKey="group" width={92} stroke={T.muted} tick={{ fontSize: 11, fill: T.text }} />
-                  <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }}
-                    formatter={(val, n, p) => [`${fmtEUR(val)}  ·  ${p.payload.count} Auto(s)  ·  Ø ${fmtNum(p.payload.avgKm)} km`, "Ø Preis"]} />
-                  <Bar dataKey="avg" radius={[0, 4, 4, 0]}>
-                    {groups.map((g, i) => <Cell key={i} fill={tagColor(groupBy, g.group) === T.muted ? COLORS[i % COLORS.length] : tagColor(groupBy, g.group)} />)}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={S.groupTable}>
-              {groups.map((g) => (
-                <div key={g.group} style={S.groupRow}>
-                  <span style={{ ...S.groupTag, color: tagColor(groupBy, g.group) }}>{g.group}</span>
-                  <span style={S.groupCount}>{g.count}×</span>
-                  <span style={S.groupAvg}>Ø {fmtEUR(g.avg)}</span>
-                  <span style={S.groupKm}>Ø {fmtNum(g.avgKm)} km</span>
-                </div>
-              ))}
-            </div>
-          </>
-        )}
-
-        {/* Trefferliste */}
-        {activeFilterCount > 0 && (
-          <div style={S.resultList}>
-            {filtered.map((v) => (
-              <div key={v.id} style={S.resultRow}>
-                <span style={S.resultTitle}>{v.title}</span>
-                <span style={S.resultTags}>
-                  {v.trimline && <em style={{ ...S.miniTag, color: tagColor("trimline", v.trimline) }}>{v.trimline}</em>}
-                  {v.exterieur && <em style={{ ...S.miniTag, color: tagColor("exterieur", v.exterieur) }}>{v.exterieur}</em>}
-                  <em style={S.resultPrice}>{fmtEUR(lastPrice(v))}</em>
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </section>
-
-      {/* Preisentwicklung ab Inserat */}
-      <section style={S.panel}>
-        <div style={S.panelTitle}><TrendingDown size={15} /> Preisentwicklung ab Inserat</div>
-        <p style={S.hint}>
-          Senkrecht der Fahrzeugpreis, waagerecht die Tage seit Tag 0.
-          {nullpunkt === "inserat"
-            ? <> <b style={{ color: T.text }}>Tag 0 ist der Tag, an dem der Verkäufer inseriert hat</b> — jede Linie
-              beginnt links bei null, aber sie sind verschieden lang: ein Inserat, das seit 30 Tagen läuft, reicht
-              bis Tag 30, ein frisches nur bis Tag 6. So siehst du die echte Standzeit.</>
-            : <> <b style={{ color: T.text }}>Tag 0 ist deine erste Erfassung</b> — jedes Auto beginnt links bei null,
-              unabhängig davon, wie lange das Inserat vorher schon lief. So lassen sich die Verläufe direkt
-              übereinanderlegen.</>}
-          {sekundaer
-            ? <> Eingeblendet ist zusätzlich <b style={{ color: AUSWAHL_FARBE[andere] }}>{AUSWAHL_NAME[andere]}</b> mit {(andere === 0 ? trefferA : trefferB).length} Fahrzeugen.</>
-            : <> Diese Auswahl umfasst <b style={{ color: AUSWAHL_FARBE[aktiv] }}>{filtered.length}</b> von {list.length} Fahrzeugen.</>}
-        </p>
-        <div style={S.steuerung}>
-          <span style={S.steuerBlock}>
-            <span style={S.fieldLabel}>Tag 0 ist</span>
-            <span style={S.toggleGroup}>
-              <button onClick={() => setNullpunkt("inserat")} style={nullpunkt === "inserat" ? S.toggleOn : S.toggleOff}
-                title="Der Tag, an dem der Verkäufer inseriert hat — zeigt die echte Standzeit">das Inserat</button>
-              <button onClick={() => setNullpunkt("erfassung")} style={nullpunkt === "erfassung" ? S.toggleOn : S.toggleOff}
-                title="Der Tag deiner ersten Erfassung — legt alle Verläufe übereinander">meine Erfassung</button>
-            </span>
-          </span>
-          <span style={S.steuerBlock}>
-            <span style={S.fieldLabel}>Zeitraum</span>
-            <span style={S.toggleGroup}>
-              {[[14, "14 Tage"], [30, "30 Tage"], [60, "60 Tage"], [90, "90 Tage"], [0, "alles"]].map(([t, label]) => (
-                <button key={t} onClick={() => setZeitfenster(t)} style={zeitfenster === t ? S.toggleOn : S.toggleOff}
-                  title="Ausschnitt der Zeitachse — alle Fahrzeuge werden von Tag 0 an bis hierher gezeigt">{label}</button>
-              ))}
-            </span>
-          </span>
-          <span style={S.steuerBlock}>
-            <span style={S.fieldLabel}>Y-Achse</span>
-            <span style={S.toggleGroup}>
-              <button onClick={() => setEinheit("euro")} style={einheit === "euro" ? S.toggleOn : S.toggleOff}
-                title="Tatsächlicher Fahrzeugpreis">Euro</button>
-              <button onClick={() => setEinheit("prozent")} style={einheit === "prozent" ? S.toggleOn : S.toggleOff}
-                title="Jedes Auto startet bei 100 % — vergleichbar auch bei sehr unterschiedlichen Preisen">Prozent</button>
-            </span>
-          </span>
-          <span style={S.steuerBlock}>
-            <span style={S.fieldLabel}>Glättung</span>
-            <span style={S.toggleGroup}>
-              {[[0, "aus"], [7, "1 Wo"], [14, "2 Wo"], [28, "4 Wo"]].map(([w, label]) => (
-                <button key={w} onClick={() => setGlaettung(w)} style={glaettung === w ? S.toggleOn : S.toggleOff}
-                  title="Gleitender Durchschnitt über dieses Zeitfenster — glättet Ausreißer bei wenigen Daten">{label}</button>
-              ))}
-            </span>
-          </span>
-        </div>
-
-        {!abInserat ? (
-          <div style={S.emptySmall}>Für die aktuelle Auswahl gibt es keine Preisdaten.</div>
-        ) : (
-          <>
-            {abInserat.beobachtet === 0 && (
-              <div style={S.hinweisZeile}>
-                <Clock size={13} />
-                <span>
-                  Zu keinem dieser Fahrzeuge ist bisher eine Preisänderung erfasst — die Linien laufen deshalb
-                  waagerecht. Sobald du am Fahrzeug über „+ Preis-Update" einen weiteren Preis mit Datum
-                  nachträgst, entstehen Stufen.
-                </span>
-              </div>
-            )}
-            <div style={{ width: "100%", height: 330 }}>
-              <ResponsiveContainer>
-                <ComposedChart data={verlaufRows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}>
-                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  <XAxis dataKey="tag" type="number" domain={[0, "dataMax"]} allowDecimals={false}
-                    tickFormatter={(t) => `${t} T`} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} />
-                  <YAxis domain={einheit === "euro" ? ["dataMin - 300", "dataMax + 300"] : ["dataMin - 2", "dataMax + 1"]}
-                    tickFormatter={(w) => (einheit === "euro" ? fmtNum(Math.round(w)) : `${Math.round(w)} %`)}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={einheit === "euro" ? 58 : 48} />
-                  <Tooltip contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }}
-                    labelFormatter={(t) => `Tag ${t} nach Inserat`}
-                    formatter={(w, key, eintrag) => {
-                      const zeig = (x) => (einheit === "euro" ? fmtEUR(x) : `${x} %`);
-                      if (key === "bandP" || key === "bandS")
-                        return [Array.isArray(w) ? `${zeig(w[0])} – ${zeig(w[1])}` : zeig(w),
-                          `Streuung ${AUSWAHL_NAME[key === "bandP" ? aktiv : andere]}`];
-                      if (key === "schnittP" || key === "schnittS") {
-                        // Anzahl mit ausweisen: Fällt ein Fahrzeug aus der Beobachtung,
-                        // verschiebt sich der Durchschnitt allein dadurch.
-                        const n = eintrag?.payload?.[key === "schnittP" ? "nP" : "nS"];
-                        return [`${zeig(w)}${n ? ` (aus ${n} Fahrzeug${n === 1 ? "" : "en"})` : ""}`,
-                          `Ø ${AUSWAHL_NAME[key === "schnittP" ? aktiv : andere]}`];
-                      }
-                      return [zeig(w), vehicles[key]?.title?.slice(0, 26) || key];
-                    }} />
-                  {einheit === "prozent" && <ReferenceLine y={100} stroke={T.muted} strokeDasharray="3 3" />}
-                  <Area type="monotone" dataKey="bandP" stroke="none" fill={AUSWAHL_FARBE[aktiv]} fillOpacity={0.13}
-                    connectNulls isAnimationActive={false} activeDot={false} />
-                  {sekundaer && (
-                    <Area type="monotone" dataKey="bandS" stroke="none" fill={AUSWAHL_FARBE[andere]} fillOpacity={0.13}
-                      connectNulls isAnimationActive={false} activeDot={false} />
-                  )}
-                  {!sekundaer && abInserat.reihen.map((r, i) => (
-                    <Line key={r.id} type="stepAfter" dataKey={r.id} stroke={LINIEN_FARBEN[i % LINIEN_FARBEN.length]}
-                      strokeWidth={1.7} strokeOpacity={0.85} dot={false} connectNulls={false} isAnimationActive={false} />
-                  ))}
-                  <Line type="monotone" dataKey="schnittP" stroke={AUSWAHL_FARBE[aktiv]}
-                    strokeWidth={3.5} dot={{ r: 2.5 }} connectNulls isAnimationActive={false} />
-                  {sekundaer && (
-                    <Line type="monotone" dataKey="schnittS" stroke={AUSWAHL_FARBE[andere]}
-                      strokeWidth={3.5} strokeDasharray="6 3" dot={{ r: 2.5 }} connectNulls isAnimationActive={false} />
-                  )}
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={S.legendHint}>
-              {sekundaer
-                ? <>Durchgezogen: {AUSWAHL_NAME[aktiv]} · gestrichelt: {AUSWAHL_NAME[andere]} · getönte Flächen: Streuung</>
-                : <>Je Inserat eine Linie von Tag 0 bis heute · dicke Linie: Durchschnitt · getönte Fläche: Streuung</>}
-              {glaettung > 0 && <> · geglättet über {glaettung} Tage</>}
-              {zeitfenster > 0 && <> · Ausschnitt bis Tag {zeitfenster}</>}
-            </div>
-
-            {nullpunkt === "inserat" && abInserat.blindAnzahl > 0 && (
-              <div style={S.hinweisKlein}>
-                <b style={{ color: T.accent }}>Woher der Anfang der Linien kommt:</b>{" "}
-                {abInserat.blindAnzahl} von {abInserat.anzahl} Inseraten liefen schon, bevor du sie aufgenommen hast —
-                im Mittel <b style={{ color: T.text }}>{abInserat.medianAbTag} Tage</b>, im Höchstfall {abInserat.maxAbTag}.
-                Für diese Zeit gilt der erste Preis, den du gesehen hast, rückwärts weiter. Hat der Verkäufer vorher
-                schon gesenkt, ist dieser Anfang <b style={{ color: T.text }}>zu niedrig gezeichnet</b> und die erste
-                Senkung fällt <b style={{ color: T.text }}>später aus, als sie war</b> — die Kennzahlen unten messen,
-                was du gesehen hast. Mit Tag 0 auf „meine Erfassung" enthält das Schaubild nur Beobachtetes.
-              </div>
-            )}
-
-            {sekundaer && (
-              <div style={S.abTable}>
-                <div style={{ ...S.abRow, ...S.abHead }}>
-                  <span>Kennzahl</span>
-                  <span style={{ color: AUSWAHL_FARBE[aktiv] }}>{AUSWAHL_NAME[aktiv]}</span>
-                  <span style={{ color: AUSWAHL_FARBE[andere] }}>{AUSWAHL_NAME[andere]}</span>
-                </div>
-                {[
-                  ["Fahrzeuge", `${primaer.anzahl}`, `${sekundaer.anzahl}`],
-                  ["auswertbar", `${primaer.beobachtet}`, `${sekundaer.beobachtet}`],
-                  ["1. Senkung (Median)", primaer.medianTage == null ? "—" : `${primaer.medianTage} Tage`, sekundaer.medianTage == null ? "—" : `${sekundaer.medianTage} Tage`],
-                  ["Ø Senkung", primaer.schnittSenkung == null ? "—" : `${primaer.schnittSenkung} %`, sekundaer.schnittSenkung == null ? "—" : `${sekundaer.schnittSenkung} %`],
-                  ["mit Senkung", `${primaer.mitSenkung}`, `${sekundaer.mitSenkung}`],
-                ].map(([label, a, b]) => (
-                  <div key={label} style={S.abRow}>
-                    <span style={{ color: T.muted }}>{label}</span>
-                    <span style={S.abWert}>{a}</span>
-                    <span style={S.abWert}>{b}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-
-            {sekundaer && (
-              <div style={{ ...S.compareHead, marginBottom: 0 }}>
-                <span style={{ ...S.compareTitle, color: AUSWAHL_FARBE[aktiv] }}>
-                  Einzelheiten zu {AUSWAHL_NAME[aktiv]}
-                </span>
-                <span style={S.resultCount}>für die andere in den Reiter wechseln</span>
-              </div>
-            )}
-            <div style={S.kennzahlen}>
-              <Kennzahl label="Inserate im Bild" wert={`${abInserat.anzahl}`}
-                zusatz={`${abInserat.beobachtet} mit Preisänderung`} />
-              <Kennzahl label="davon mit Senkung" wert={`${abInserat.mitSenkung}`}
-                zusatz={abInserat.beobachtet ? `${Math.round((abInserat.mitSenkung / abInserat.beobachtet) * 100)} % der auswertbaren` : "noch keine erfasst"} />
-              <Kennzahl label="1. Senkung im Mittel" wert={abInserat.medianTage == null ? "—" : `${abInserat.medianTage} Tage`}
-                zusatz={abInserat.schnittTage == null ? "" : `Durchschnitt ${abInserat.schnittTage} Tage`} accent />
-              <Kennzahl label="Ø Senkung insgesamt" wert={abInserat.schnittSenkung == null ? "—" : `${abInserat.schnittSenkung} %`}
-                zusatz={abInserat.schnittAbstand == null ? "" : `nächste nach ~${abInserat.schnittAbstand} Tagen`} />
-            </div>
-
-            {abInserat.mitSenkung > 0 && (
-              <>
-                <div style={S.compareHead}>
-                  <span style={S.compareTitle}>Wann kam die erste Senkung</span>
-                </div>
-                <div style={{ width: "100%", height: 150 }}>
-                  <ResponsiveContainer>
-                    <BarChart data={abInserat.faecher} margin={{ top: 4, right: 12, left: 4, bottom: 4 }}>
-                      <CartesianGrid stroke={T.line} strokeDasharray="2 4" vertical={false} />
-                      <XAxis dataKey="label" stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} interval={0} />
-                      <YAxis allowDecimals={false} stroke={T.muted} tick={{ fontSize: 11, fill: T.muted }} width={28} />
-                      <Tooltip cursor={{ fill: T.line + "44" }}
-                        contentStyle={{ background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, fontSize: 12, color: T.text }}
-                        formatter={(w) => [`${w} Inserat${w === 1 ? "" : "e"}`, "erste Senkung"]} />
-                      <Bar dataKey="anzahl" radius={[4, 4, 0, 0]}>
-                        {abInserat.faecher.map((f, i) => (
-                          <Cell key={i} fill={f.anzahl === Math.max(...abInserat.faecher.map((x) => x.anzahl)) && f.anzahl > 0 ? T.accent : T.line} />
-                        ))}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-                <div style={S.schluss}>
-                  <b style={{ color: T.accent }}>Was das für dich heißt:</b>{" "}
-                  {abInserat.medianTage == null ? "Noch keine Senkung beobachtet." : (
-                    <>
-                      Die Hälfte der Verkäufer hat den Preis innerhalb von <b style={{ color: T.text }}>{abInserat.medianTage} Tagen</b> gesenkt
-                      {abInserat.schnittSenkung != null && <> — im Schnitt um <b style={{ color: T.text }}>{abInserat.schnittSenkung} %</b></>}.
-                      {" "}Wer kurz vor diesem Punkt anschreibt, trifft den Verkäufer, während er ohnehin über den Preis nachdenkt:
-                      also etwa ab <b style={{ color: T.text }}>Tag {Math.max(1, Math.round(abInserat.medianTage * 0.8))}</b>.
-                    </>
-                  )}
-                </div>
-              </>
-            )}
-            <div style={S.hinweisKlein}>
-              {nullpunkt === "inserat"
-                ? <>Tag 0 kommt aus dem Feld „inseriert seit". Liefert das Inserat kein Datum, nimmt die App
-                  ersatzweise deine erste Erfassung — die Standzeit dieses Fahrzeugs ist dann eher zu kurz
-                  gemessen als zu lang. Wie weit eine Linie nach rechts reicht, sagt, wie lange das Inserat
-                  schon läuft; Durchschnitt und Streuung enden dort, wo nur noch ein Inserat übrig ist.</>
-                : <>Tag 0 ist der erste Preis, den du erfasst hast — nicht der Inseratsbeginn.
-                  Für die echte Standzeit stell oben auf „das Inserat".</>}
-              {" "}Die Kurve ist nur so genau wie deine Preis-Updates: Trägst du wöchentlich nach, liegt die
-              Auflösung bei einer Woche.
-              {einheit === "euro" && (
-                <> Zur Durchschnittslinie in Euro: Sie kann steigen, ohne dass ein Verkäufer den Preis erhöht hat —
-                  nämlich dann, wenn ein günstiges Inserat aus der Beobachtung fällt und der Durchschnitt nur noch
-                  aus den teureren gebildet wird. Der Tooltip nennt deshalb die Anzahl der Fahrzeuge je Tag.
-                  Für den reinen Verlaufsvergleich ist die Ansicht <b style={{ color: T.text }}>Prozent</b> geeigneter,
-                  weil dort jedes Auto bei 100 % startet.</>
-              )}
-            </div>
-          </>
-        )}
-      </section>
-
-      {/* Erwarteter Preis */}
-      <section style={S.panel}>
-        <div style={S.panelTitle}><Gauge size={15} /> Preis gegen Kilometer und Alter</div>
-        <p style={S.hint}>
-          Aus allen Fahrzeugen dieser Auswahl wird berechnet, was ein Auto mit diesem Kilometerstand
-          und diesem Alter üblicherweise kostet. Wer darunter liegt, ist gemessen an den eigenen Daten
-          zu günstig — das ist die interessante Frage, nicht der absolute Preis.
-        </p>
-
-        {fairValue.zuWenig ? (
-          <div style={S.emptySmall}>
-            Dafür braucht es mindestens fünf Fahrzeuge mit Preis, Kilometerstand und Erstzulassung —
-            in dieser Auswahl {fairValue.anzahl === 0 ? "ist keines" : `sind es erst ${fairValue.anzahl}`}.
-          </div>
-        ) : (
-          <>
-            <div style={S.kennzahlen}>
-              <Kennzahl label="je 10.000 km" wert={`${fairValue.jeZehntausendKm > 0 ? "+" : ""}${fmtEUR(fairValue.jeZehntausendKm)}`}
-                zusatz="bei gleichem Baujahr" accent />
-              <Kennzahl label="je Jahr Alter" wert={`${fairValue.jeJahr > 0 ? "+" : ""}${fmtEUR(fairValue.jeJahr)}`}
-                zusatz="bei gleichem Kilometerstand" />
-              <Kennzahl label="Erklärungskraft" wert={`${Math.round(fairValue.r2 * 100)} %`}
-                zusatz={fairValue.r2 >= 0.5 ? "Kilometer und Alter erklären den Preis gut"
-                  : fairValue.r2 >= 0.25 ? "andere Merkmale spielen stark mit"
-                    : "Preis kommt überwiegend woanders her"} />
-              <Kennzahl label="ausgewertet" wert={`${fairValue.anzahl}`} zusatz={`von ${filtered.length} in der Auswahl`} />
-            </div>
-
-            {fairValue.kopplung > 0.8 && (
-              <div style={S.hinweisKlein}>
-                In dieser Auswahl haben die alten Fahrzeuge fast durchweg auch die meisten Kilometer.
-                Dann lässt sich nicht sauber trennen, wie viel davon an den Kilometern und wie viel am
-                Alter liegt — <b style={{ color: T.text }}>die beiden Einzelwerte oben bitte nicht wörtlich nehmen</b>.
-                Der erwartete Preis und die Abweichung darunter stimmen trotzdem.
-              </div>
-            )}
-
-            <div style={{ width: "100%", height: 300, marginTop: 6 }}>
-              <ResponsiveContainer>
-                <ComposedChart data={fairValue.streu} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
-                  onClick={chartKlick(fairValue.streu, "km")}>
-                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  <XAxis dataKey="km" type="number" domain={["dataMin - 5000", "dataMax + 5000"]}
-                    tickFormatter={(k) => `${Math.round(k / 1000)}k`}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
-                  <YAxis dataKey="preis" domain={["dataMin - 500", "dataMax + 500"]}
-                    tickFormatter={(w) => fmtNum(Math.round(w))}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
-                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    const p = active && aktivesFahrzeug(payload, fairValue.streu, "km");
-                    return p ? <Erwartungskarte p={p} /> : null;
-                  }} />
-                  <Line dataKey="linieErwartet" type="linear" stroke={T.text}
-                    strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false} />
-                  <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
-                    shape={<Fahrzeugpunkt farbe={(p) => (p.abweichung < 0 ? T.good : T.bad)} />}
-                    onClick={punktKlick} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={S.legendHint}>
-              Waagerecht Kilometer, senkrecht Preis · gestrichelt der erwartete Preis ·
-              <span style={{ color: T.good }}> grün darunter</span> ·
-              <span style={{ color: T.bad }}> rot darüber</span>
-            </div>
-
-            <div style={{ ...S.compareHead, marginTop: 16 }}>
-              <span style={S.compareTitle}>Abweichung vom erwarteten Preis</span>
-              <span style={S.resultCount}>günstigste zuerst</span>
-            </div>
-            <div style={{ width: "100%", height: Math.max(180, Math.min(420, fairValue.balken.length * 15 + 40)) }}>
-              <ResponsiveContainer>
-                <BarChart data={fairValue.balken} margin={{ top: 4, right: 14, left: 4, bottom: 4 }}>
-                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" vertical={false} />
-                  <XAxis dataKey="nr" tick={false} stroke={T.muted} height={8} />
-                  <YAxis tickFormatter={(w) => fmtNum(Math.round(w))} stroke={T.muted}
-                    tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
-                  <Tooltip cursor={{ fill: T.line + "55" }} content={({ active, payload }) => {
-                    const p = active && payload?.[0]?.payload;
-                    return p ? <Erwartungskarte p={p} /> : null;
-                  }} />
-                  <ReferenceLine y={0} stroke={T.muted} />
-                  <Bar dataKey="abweichung" radius={[3, 3, 0, 0]} isAnimationActive={false} cursor="pointer"
-                    onClick={oeffneInserat}>
-                    {fairValue.balken.map((p) => (
-                      <Cell key={p.id} fill={p.abweichung < 0 ? T.good : T.bad} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-
-            {fairValue.bestes && fairValue.bestes.abweichung < 0 && (
-              <div style={S.schluss}>
-                <b style={{ color: T.accent }}>Größter Abstand nach unten:</b>{" "}
-                <b style={{ color: T.text }}>{fairValue.bestes.title}</b> — {fmtEUR(fairValue.bestes.preis)} statt
-                erwarteter {fmtEUR(fairValue.bestes.erwartet)}, also <b style={{ color: T.good }}>{fmtEUR(Math.abs(fairValue.bestes.abweichung))} darunter</b>.
-                {fairValue.r2 < 0.25 && <> Vorsicht: Kilometer und Alter erklären hier nur einen kleinen Teil der Preise — der Abstand kann auch am Zustand liegen.</>}
-              </div>
-            )}
-            <div style={S.hinweisKlein}>
-              Der erwartete Preis stammt aus deinen eigenen Fahrzeugen, nicht aus einer Tabelle — er beschreibt
-              also, was <b style={{ color: T.text }}>in dieser Auswahl</b> üblich ist. Je enger du filterst, desto
-              schärfer wird er. Ausstattung, Zustand und Wartung stecken nicht in der Rechnung; ein Auto weit
-              unter Erwartung kann ein Fund sein oder einen Grund haben.
-            </div>
-          </>
-        )}
-      </section>
-
-      {/* Preisleiter */}
-      <section style={S.panel}>
-        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Filter size={15} /> Einzelpreise im Vergleich</span>
-          <span style={S.toggleGroup}>
-            <button onClick={() => setReiheSort("preis")} style={reiheSort === "preis" ? S.toggleOn : S.toggleOff}>nach Preis</button>
-            <button onClick={() => setReiheSort("erfassung")} style={reiheSort === "erfassung" ? S.toggleOn : S.toggleOff}>nach Erfassung</button>
-          </span>
-        </div>
-        <p style={S.hint}>
-          Jedes Fahrzeug ein Punkt, der Reihe nach nebeneinander — so siehst du jeden Einzelpreis
-          und erkennst Ausreißer sofort. Zeig auf einen Punkt, dann erscheint die Karteikarte;
-          ein Klick öffnet das Inserat. Die Farbe zeigt, was schon repariert wurde.
-        </p>
-        {!preisReihe ? (
-          <div style={S.emptySmall}>Für die aktuelle Auswahl gibt es keine Preise.</div>
-        ) : (
-          <>
-            <div style={{ width: "100%", height: 320 }}>
-              <ResponsiveContainer>
-                <ComposedChart data={preisReihe.rows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
-                  onClick={chartKlick(preisReihe.rows, "nr")}>
-                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  <XAxis dataKey="nr" type="number" domain={[0, preisReihe.rows.length + 1]} allowDecimals={false}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
-                  <YAxis dataKey="preis" domain={["dataMin - 500", "dataMax + 500"]}
-                    tickFormatter={(w) => fmtNum(Math.round(w))}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
-                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    const p = active && aktivesFahrzeug(payload, preisReihe.rows, "nr");
-                    return p ? <Karteikarte p={p} /> : null;
-                  }} />
-                  {preisReihe.mittelwert != null && (
-                    <ReferenceLine y={preisReihe.mittelwert} stroke={T.muted} strokeDasharray="4 4"
-                      label={{ value: `Median ${fmtEUR(preisReihe.mittelwert)}`, position: "insideTopLeft", fill: T.muted, fontSize: 10 }} />
-                  )}
-                  <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
-                    shape={<Fahrzeugpunkt farbe={(p) => repFarbe(p.rep)} deckkraft={() => 1} />}
-                    onClick={punktKlick} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={S.repLegende}>
-              {REPAIR_KIND_OPTS.map((s) => (
-                <span key={s} style={S.repLegendeEintrag}>
-                  <span style={{ ...S.repPunkt, background: repFarbe(s) }} />{s}
-                </span>
-              ))}
-            </div>
-          </>
-        )}
-      </section>
-
-      {/* Inserate über Zeit */}
-      <section style={S.panel}>
-        <div style={S.panelTitle}><CalendarClock size={15} /> Inserate über Zeit</div>
-        <p style={S.hint}>
-          Ein Punkt je Inserat: waagerecht das Datum, an dem du es erfasst hast, senkrecht der Preis,
-          zu dem es damals stand. So siehst du über die Monate, ob die Angebote für deine Auswahl
-          teurer oder günstiger werden.
-        </p>
-        {!inserateUeberZeit ? (
-          <div style={S.emptySmall}>Für die aktuelle Auswahl gibt es keine Inserate mit Datum und Preis.</div>
-        ) : (
-          <>
-            <div style={{ width: "100%", height: 300 }}>
-              <ResponsiveContainer>
-                <ComposedChart data={inserateUeberZeit.rows} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
-                  onClick={chartKlick(inserateUeberZeit.rows, "t")}>
-                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  <XAxis dataKey="t" type="number" domain={["dataMin", "dataMax"]} scale="time"
-                    tickFormatter={(t) => { const d = new Date(t); return `${String(d.getMonth() + 1).padStart(2, "0")}/${String(d.getFullYear()).slice(2)}`; }}
-                    minTickGap={44} tickCount={6}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
-                  <YAxis dataKey="preis" domain={["dataMin - 500", "dataMax + 500"]}
-                    tickFormatter={(w) => fmtNum(Math.round(w))}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
-                  {/* Eigener Tooltip: die Standardausgabe zeigte den Zeitstempel
-                      der X-Achse als Geldbetrag mit an. */}
-                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    if (!active || !payload?.length) return null;
-                    const punkt = aktivesFahrzeug(payload, inserateUeberZeit.rows, "t");
-                    if (!punkt) return null;
-                    const trend = punkt.trend;
-                    return (
-                      <div style={S.zeitTooltip}>
-                        <div style={S.zeitTooltipDatum}>{fmtDate(punkt.datum)}</div>
-                        <div style={S.zeitTooltipTitel}>{punkt.title}</div>
-                        <div style={S.zeitTooltipPreis}>{fmtEUR(punkt.preis)}</div>
-                        {trend != null && <div style={S.zeitTooltipTrend}>Trend an diesem Tag: {fmtEUR(trend)}</div>}
-                      </div>
-                    );
-                  }} />
-                  <Scatter dataKey="preis" fill={AUSWAHL_FARBE[aktiv]} isAnimationActive={false}
-                    cursor="pointer" shape={<Fahrzeugpunkt deckkraft={() => 1} />} onClick={punktKlick} />
-                  {inserateUeberZeit.proMonat != null && (
-                    <Line type="linear" dataKey="trend" stroke={T.text} strokeWidth={2} strokeDasharray="6 4"
-                      dot={false} isAnimationActive={false} />
-                  )}
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={S.legendHint}>
-              {inserateUeberZeit.anzahl} Inserate von {fmtDate(inserateUeberZeit.von)} bis {fmtDate(inserateUeberZeit.bis)}
-              {inserateUeberZeit.proMonat != null && <> · gestrichelt die Trendgerade</>}
-            </div>
-            <div style={S.kennzahlen}>
-              <Kennzahl label="Inserate" wert={`${inserateUeberZeit.anzahl}`} zusatz={`über ${laufzeitText(inserateUeberZeit.spanne)}`} />
-              <Kennzahl label="Ø Angebotspreis" wert={fmtEUR(inserateUeberZeit.schnitt)} />
-              <Kennzahl label="Trend je Monat"
-                wert={inserateUeberZeit.proMonat == null ? "—" : `${inserateUeberZeit.proMonat > 0 ? "+" : ""}${fmtEUR(inserateUeberZeit.proMonat)}`}
-                zusatz={inserateUeberZeit.proMonat == null ? "zu kurzer Zeitraum" : inserateUeberZeit.proMonat > 0 ? "Angebote werden teurer" : inserateUeberZeit.proMonat < 0 ? "Angebote werden günstiger" : "unverändert"}
-                accent />
-            </div>
-            {inserateUeberZeit.proMonat != null && (
-              <div style={S.schluss}>
-                <b style={{ color: T.accent }}>Was das für dich heißt:</b>{" "}
-                {inserateUeberZeit.proMonat < 0
-                  ? <>Neue Angebote in dieser Auswahl kommen im Schnitt <b style={{ color: T.text }}>{fmtEUR(Math.abs(inserateUeberZeit.proMonat))} je Monat günstiger</b> auf den Markt. Warten kostet dich also nichts — im Gegenteil.</>
-                  : inserateUeberZeit.proMonat > 0
-                    ? <>Neue Angebote werden im Schnitt <b style={{ color: T.text }}>{fmtEUR(inserateUeberZeit.proMonat)} je Monat teurer</b>. Wer wartet, zahlt tendenziell mehr — ein Grund, bei einem guten Fund zügig zu handeln.</>
-                    : <>Das Preisniveau der neuen Angebote bleibt über den beobachteten Zeitraum stabil.</>}
-              </div>
-            )}
-            <div style={S.hinweisKlein}>
-              Gezeigt wird der Preis beim ersten Erfassen, nicht der heutige. Der Trend beschreibt also,
-              wie sich das <b style={{ color: T.text }}>Niveau neuer Angebote</b> entwickelt — nicht, wie
-              einzelne Verkäufer ihre Preise senken. Dafür ist der Abschnitt darüber zuständig.
-            </div>
-          </>
-        )}
-      </section>
-
-      {/* Preis gegen Standzeit */}
-      <section style={S.panel}>
-        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <Clock size={15} /> Preis gegen Standzeit
-          </span>
-          <span style={S.toggleGroup}>
-            <button onClick={() => setStandNur("alle")} style={standNur === "alle" ? S.toggleOn : S.toggleOff}>alle</button>
-            <button onClick={() => setStandNur("fertig")} style={standNur === "fertig" ? S.toggleOn : S.toggleOff}>nur abgeschlossene</button>
-          </span>
-        </div>
-        <p style={S.hint}>
-          Waagerecht der Preis, senkrecht wie lange das Inserat läuft. <b style={{ color: T.text }}>Unten links</b> steht,
-          was günstig war und schnell weg — <b style={{ color: T.text }}>oben rechts</b>, was zu teuer ist und deshalb
-          steht. Interessant ist der Punkt dazwischen: ab welchem Preis die Standzeit kippt.
-        </p>
-        {standzeit.zuWenig ? (
-          <div style={S.emptySmall}>
-            Für diese Auswertung braucht es mindestens vier Fahrzeuge mit Preis und Inseratsdatum
-            {standNur === "fertig" ? " — abgeschlossene sind es erst " : " — es sind erst "}
-            {standzeit.anzahl}.
-            {standNur === "fertig" && standzeit.gesamt > standzeit.anzahl &&
-              <> Stell oben auf <b style={{ color: T.text }}>alle</b>, dann sind es {standzeit.gesamt}.</>}
-          </div>
-        ) : (
-          <>
-            <div style={S.kennzahlen}>
-              <Kennzahl label="Ausgewertet" wert={`${standzeit.anzahl}`}
-                zusatz={`${standzeit.fertigAnzahl} abgeschlossen, ${standzeit.anzahl - standzeit.fertigAnzahl} laufen noch`} />
-              <Kennzahl label="Median Standzeit" wert={laufzeitText(standzeit.medianTage)}
-                zusatz={`Median-Preis ${fmtEUR(standzeit.medianPreis)}`} />
-              <Kennzahl label="Kippt ab" accent
-                wert={standzeit.kipp ? fmtEUR(standzeit.kipp.band.vonPreis) : "kein Sprung"}
-                zusatz={standzeit.kipp
-                  ? `von ${laufzeitText(standzeit.kipp.vorher.medianTage)} auf ${laufzeitText(standzeit.kipp.band.medianTage)}`
-                  : "die Standzeit steigt gleichmäßig"} />
-            </div>
-
-            <div style={{ width: "100%", height: 320, marginTop: 6 }}>
-              <ResponsiveContainer>
-                <ComposedChart data={standzeit.reihe} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
-                  onClick={chartKlick(standzeit.reihe, "preis")}>
-                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  <XAxis dataKey="preis" type="number" domain={["dataMin - 400", "dataMax + 400"]}
-                    tickFormatter={(w) => fmtNum(Math.round(w))}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
-                  <YAxis dataKey="tage" type="number" domain={[0, "dataMax + 4"]}
-                    tickFormatter={(t) => `${t} T`}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={48} />
-                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    const p = active && aktivesFahrzeug(payload, standzeit.reihe, "preis");
-                    return p ? <Standzeitkarte p={p} /> : null;
-                  }} />
-                  <ReferenceLine y={standzeit.medianTage} stroke={T.muted} strokeDasharray="4 4"
-                    label={{ value: `Median ${laufzeitText(standzeit.medianTage)}`, position: "insideTopLeft", fill: T.muted, fontSize: 10 }} />
-                  {standzeit.kipp && (
-                    <ReferenceLine x={standzeit.kipp.band.vonPreis} stroke={T.accent} strokeDasharray="4 4"
-                      label={{ value: "kippt", position: "insideTopRight", fill: T.accent, fontSize: 10 }} />
-                  )}
-                  {/* Die Stufenlinie sitzt in derselben Reihe wie die Punkte —
-                      eigene Daten je Serie bringen den Tooltip durcheinander. */}
-                  <Line dataKey="bandTage" type="stepAfter" stroke={T.text} strokeWidth={2}
-                    strokeDasharray="6 4" dot={false} isAnimationActive={false} />
-                  <Scatter dataKey="tage" isAnimationActive={false} cursor="pointer"
-                    shape={<Fahrzeugpunkt farbe={(p) => standzeitStufe(p.tage).farbe} ring={(p) => p.laeuft} />}
-                    onClick={punktKlick} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-
-            <div style={S.standLegende}>
-              {standzeit.stufen.map((s) => (
-                <span key={s.label} style={S.standLegendeEintrag}>
-                  <span style={{ ...S.standPunkt, background: s.farbe }} />
-                  {s.label}
-                  <span style={S.standAnzahl}>{s.anzahl}</span>
-                </span>
-              ))}
-              <span style={S.standLegendeEintrag}>
-                <span style={{ ...S.standPunkt, background: "transparent", border: `2px solid ${T.muted}` }} />
-                Ring = läuft noch
-              </span>
-            </div>
-            <div style={S.legendHint}>
-              Waagerecht Preis, senkrecht Tage seit dem Inserieren · gestrichelt waagerecht der Median aller,
-              die Stufenlinie der Median je Preisband
-            </div>
-
-            {standzeit.kipp ? (
-              <div style={S.schluss}>
-                <b style={{ color: T.accent }}>Wo es kippt:</b>{" "}
-                Bis <b style={{ color: T.text }}>{fmtEUR(standzeit.kipp.vorher.bisPreis)}</b> stehen die Fahrzeuge
-                dieser Auswahl im Mittel <b style={{ color: T.text }}>{laufzeitText(standzeit.kipp.vorher.medianTage)}</b>.
-                Ab <b style={{ color: T.text }}>{fmtEUR(standzeit.kipp.band.vonPreis)}</b> springt das
-                auf <b style={{ color: T.bad }}>{laufzeitText(standzeit.kipp.band.medianTage)}</b>.
-                Dort hört der Markt auf mitzugehen — wer darüber inseriert, verhandelt früher oder später nach unten.
-                Für dich heißt das: Ein Auto über dieser Grenze ist kein Fund, sondern eine Verhandlung.
-              </div>
-            ) : (
-              <div style={S.schluss}>
-                <b style={{ color: T.accent }}>Kein Sprung erkennbar:</b>{" "}
-                Die Standzeit wächst mit dem Preis gleichmäßig oder gar nicht — in dieser Auswahl gibt es
-                keine Preisgrenze, ab der der Markt sichtbar aussteigt. Das kann am Filter liegen: je enger
-                die Auswahl, desto klarer wird die Grenze.
-              </div>
-            )}
-
-            {standzeit.zaeh.length > 0 && (
-              <>
-                <div style={{ ...S.compareHead, marginTop: 14 }}>
-                  <span style={S.compareTitle}>Günstig und steht trotzdem</span>
-                  <span style={S.resultCount}>längste Standzeit zuerst</span>
-                </div>
-                <div style={S.hinweisKlein}>
-                  Diese Fahrzeuge liegen <b style={{ color: T.text }}>unter dem Median-Preis</b> und stehen
-                  trotzdem <b style={{ color: T.text }}>länger als der Median</b>. Entweder stimmt am Auto etwas
-                  nicht, was du im Inserat noch nicht gesehen hast — oder der Markt hat es schlicht übersehen.
-                  Beides lohnt einen zweiten Blick.
-                </div>
-                <div style={S.ankerListe}>
-                {standzeit.zaeh.slice(0, 6).map((p) => (
-                  <a key={p.id} className="pw-stand" style={S.standZeile}
-                    href={p.url ? normalizeUrl(p.url) : undefined}
-                    target="_blank" rel="noreferrer">
-                    <span style={S.standTitel}>{p.stern ? "★ " : ""}{p.title}</span>
-                    <span style={{ ...S.standTage, color: standzeitStufe(p.tage).farbe }}>
-                      {laufzeitText(p.tage)}{p.laeuft ? " · läuft" : ` · ${p.stand}`}
-                    </span>
-                    <span style={S.standKm}>{p.km != null ? `${fmtNum(p.km)} km` : "—"}</span>
-                    <span style={S.standPreis}>{fmtEUR(p.preis)}</span>
-                  </a>
-                ))}
-                </div>
-              </>
-            )}
-
-            <div style={S.hinweisKlein}>
-              <b style={{ color: T.accent }}>Was dieses Bild nicht kann:</b>{" "}
-              Ein laufendes Inserat hat seine Standzeit noch vor sich — sein Punkt ist ein Ring und wandert
-              jeden Tag weiter nach oben. Ein gestern eingestelltes Auto sieht deshalb aus wie ein
-              Schnellverkauf, ist aber keiner. Für die ehrliche Antwort stell oben
-              auf <b style={{ color: T.text }}>nur abgeschlossene</b>: dort ist jede Standzeit endgültig.
-              Und: verschwunden heißt nicht verkauft. Ein Verkäufer kann zurückgezogen oder neu eingestellt
-              haben — deshalb steht in der Liste, mit welchem Abschluss du das Inserat geführt hast.
-            </div>
-          </>
-        )}
-      </section>
-
-      {/* Preisformel */}
-      <section style={S.panel}>
-        <div style={S.panelTitle}><Gauge size={15} /> Preisformel für diese Auswahl</div>
-        <p style={S.hint}>
-          Aus allen Fahrzeugen, die durch deinen Filter kommen, wird die Gleichung abgeleitet, nach
-          der der Preis mit der Laufleistung fällt. Damit kannst du für jedes neu gefundene Inserat,
-          das in dieselbe Auswahl passt, ausrechnen, was es kosten müsste.
-        </p>
-
-        {!formel ? (
-          <div style={S.emptySmall}>
-            Dafür braucht es mindestens sechs Fahrzeuge mit Preis und Kilometerstand in dieser
-            Auswahl. Filter weiter stellen oder mehr Inserate erfassen.
-          </div>
-        ) : (
-          <>
-            <div style={S.kennzahlen}>
-              <Kennzahl label="Form" wert={formel.degressiv ? "degressiv" : "gerade"} accent
-                zusatz={formel.degressiv ? "fester Prozentsatz je km" : "fester Eurobetrag je km"} />
-              <Kennzahl label="je 10.000 km" wert={fmtEUR(formel.proZehntausend)}
-                zusatz={formel.degressiv ? `bei ${fmtNum(formel.kmMittel)} km — darüber weniger` : "über den ganzen Bereich gleich"} />
-              <Kennzahl label="je 10.000 km" wert={`${String(formel.prozent).replace(".", ",")} %`}
-                zusatz={formel.degressiv ? "über den ganzen Bereich gleich" : `bei ${fmtNum(formel.kmMittel)} km`} />
-              <Kennzahl label="Erklärungskraft" wert={`${Math.round(formel.r2 * 100)} %`}
-                zusatz={`aus ${formel.n} Fahrzeugen`} />
-            </div>
-
-            <div style={{ ...S.compareHead, marginTop: 2 }}>
-              <span style={S.compareTitle}>Woher die Zahlen kommen</span>
-              <span style={S.resultCount}>drei Stützstellen, nach Laufleistung geteilt</span>
-            </div>
-            <div style={S.stuetzListe}>
-              {formel.stuetzstellen.map((s, i) => (
-                <div key={s.name}>
-                  <div className="pw-stuetz" style={S.stuetzZeile}>
-                    <span style={S.stuetzName}>{s.name} Drittel</span>
-                    <span style={S.stuetzAnzahl}>{s.n} {s.n === 1 ? "Fahrzeug" : "Fahrzeuge"}</span>
-                    <span style={S.stuetzKm}>Ø {fmtNum(s.km)} km</span>
-                    <span style={S.stuetzPreis}>Ø {fmtEUR(s.preis)}</span>
-                    <span style={S.stuetzFormel}>Formel: {fmtEUR(Math.round(formel.vorhersage(s.km)))}</span>
-                  </div>
-                  {i < 2 && (
-                    <div style={S.stuetzPfeil}>
-                      ↓ dazwischen {fmtEUR(i === 0 ? formel.s12 : formel.s23)} je 10.000 km
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
-            <div style={S.hinweisKlein}>
-              {formel.verlauf === "flacht ab" && (
-                <>Der Kilometer kostet im unteren Bereich <b style={{ color: T.text }}>{fmtEUR(Math.abs(formel.s12))} je 10.000 km</b>,
-                im oberen nur noch <b style={{ color: T.text }}>{fmtEUR(Math.abs(formel.s23))}</b> — der Verlust flacht ab.
-                Genau deshalb passt hier keine Gerade.</>
-              )}
-              {formel.verlauf === "gleichmäßig" && (
-                <>Unten {fmtEUR(Math.abs(formel.s12))} je 10.000 km, oben {fmtEUR(Math.abs(formel.s23))} — der Verlust läuft
-                <b style={{ color: T.text }}> gleichmäßig</b> durch. Eine Gerade beschreibt diese Auswahl gut.</>
-              )}
-              {formel.verlauf === "wird steiler" && (
-                <>Unten {fmtEUR(Math.abs(formel.s12))} je 10.000 km, oben {fmtEUR(Math.abs(formel.s23))} — der Verlust
-                <b style={{ color: T.accent }}> nimmt zu</b>. Das ist ungewöhnlich; meist steckt dahinter ein
-                Ausreißer oder eine gemischte Gruppe.</>
-              )}
-              {formel.verlauf === "unklar" && <>Die drei Stützstellen liegen zu dicht beieinander, um einen Verlauf abzulesen.</>}
-              {" "}Die Formel unten nutzt <b style={{ color: T.text }}>alle {formel.n} Fahrzeuge</b>, nicht nur diese
-              drei Punkte — die Stützstellen zeigen nur, ob sie in die richtige Richtung läuft.
-            </div>
-
-            <div style={S.formelBox}>
-              <span style={S.formelLabel}>Die Gleichung</span>
-              <code style={S.formelCode}>
-                {formel.degressiv
-                  ? `Preis ≈ ${fmtNum(formel.grundwert)} € × ${String(Math.round(formel.faktor * 10000) / 10000).replace(".", ",")} ^ (km ÷ 10.000)`
-                  : `Preis ≈ ${fmtNum(formel.grundwert)} € − ${fmtNum(Math.abs(formel.proZehntausend))} € × (km ÷ 10.000)`}
-              </code>
-              <span style={S.formelSatz}>
-                {formel.degressiv
-                  ? <>Ein Fahrzeug ohne Laufleistung läge bei {fmtEUR(formel.grundwert)}, und je 10.000 km fallen{" "}
-                    <b style={{ color: T.text }}>{String(Math.abs(formel.prozent)).replace(".", ",")} %</b> weg —
-                    am Anfang sind das mehr Euro als am Ende.</>
-                  : <>Ein Fahrzeug ohne Laufleistung läge bei {fmtEUR(formel.grundwert)}, und jede 10.000 km kosten{" "}
-                    <b style={{ color: T.text }}>{fmtEUR(Math.abs(formel.proZehntausend))}</b> — bei 60.000 km
-                    genauso viel wie bei 200.000.</>}
-              </span>
-            </div>
-
-            <div style={{ width: "100%", height: 320, marginTop: 6 }}>
-              <ResponsiveContainer>
-                <ComposedChart data={formel.reihe} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
-                  onClick={chartKlick(formel.fahrzeuge, "km")}>
-                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  {/* Etwas Luft an beiden Enden, sonst klebt der äußerste
-                      Punkt halb hinter der Achse. */}
-                  <XAxis dataKey="km" type="number" allowDataOverflow
-                    domain={[Math.round(formel.kmMin - (formel.kmMax - formel.kmMin) * 0.04),
-                      Math.round(formel.kmMax + (formel.kmMax - formel.kmMin) * 0.04)]}
-                    tickFormatter={(k) => `${Math.round(k / 1000)}k`}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
-                  <YAxis type="number" allowDataOverflow
-                    domain={[Math.floor(formel.yMin * 0.94), Math.ceil(formel.yMax * 1.05)]}
-                    tickFormatter={(w) => fmtNum(Math.round(w))}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
-                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    const p = active && aktivesFahrzeug(payload, formel.fahrzeuge, "km");
-                    return p ? <Formelkarte p={p} /> : null;
-                  }} />
-                  <Area dataKey="band" stroke="none" fill={T.accent} fillOpacity={0.09} isAnimationActive={false} />
-                  <Line dataKey="kurve" type="monotone" stroke={T.accent} strokeWidth={2} dot={false} isAnimationActive={false} />
-                  <Scatter dataKey="stuetz" shape="diamond" fill={T.text} isAnimationActive={false} />
-                  <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
-                    shape={<Fahrzeugpunkt farbe={(p) => (p.abweichung < 0 ? T.good : T.bad)} />}
-                    onClick={punktKlick} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={S.legendHint}>
-              Waagerecht Kilometer, senkrecht Preis · <span style={{ color: T.accent }}>gelbe Linie die Formel</span>,
-              das getönte Band die üblichen acht von zehn · <span style={{ color: T.text }}>Rauten die drei Stützstellen</span> ·
-              <span style={{ color: T.good }}> grün unter der Linie</span> ·
-              <span style={{ color: T.bad }}> rot darüber</span>
-            </div>
-
-            <div style={S.rechnerBox}>
-              <span style={S.rechnerLabel}>Ein Fahrzeug dieser Auswahl mit</span>
-              <input value={formelKm} onChange={(e) => setFormelKm(e.target.value)} inputMode="decimal"
-                placeholder="130000" style={S.rechnerInput} />
-              <span style={S.rechnerLabel}>km müsste kosten</span>
-              <span style={S.rechnerWert}>
-                {coerceNum(formelKm) != null ? fmtEUR(Math.round(formel.vorhersage(coerceNum(formelKm)))) : "—"}
-              </span>
-            </div>
-            {coerceNum(formelKm) != null && (
-              <div style={S.hinweisKlein}>
-                Acht von zehn vergleichbaren Fahrzeugen liegen zwischen{" "}
-                <b style={{ color: T.text }}>{fmtEUR(Math.round(formel.vorhersage(coerceNum(formelKm)) * formel.unten))}</b> und{" "}
-                <b style={{ color: T.text }}>{fmtEUR(Math.round(formel.vorhersage(coerceNum(formelKm)) * formel.oben))}</b>.
-                Was darunter liegt, ist entweder ein Fund oder hat einen Grund.
-                {(coerceNum(formelKm) < formel.kmMin || coerceNum(formelKm) > formel.kmMax) && (
-                  <> <b style={{ color: T.accent }}>Achtung:</b> {fmtNum(coerceNum(formelKm))} km liegt außerhalb
-                  deiner Daten ({fmtNum(formel.kmMin)} bis {fmtNum(formel.kmMax)} km) — die Formel wird dort geraten,
-                  nicht gemessen.</>
-                )}
-              </div>
-            )}
-
-            <div style={S.hinweisKlein}>
-              Beide Formen wurden angepasst und gegeneinander gestellt:{" "}
-              <b style={{ color: formel.degressiv ? T.muted : T.text }}>gerade {Math.round(formel.r2Gerade * 100)} %</b>{" "}
-              gegen{" "}
-              <b style={{ color: formel.degressiv ? T.text : T.muted }}>degressiv {Math.round(formel.r2Degressiv * 100)} %</b> —
-              verwendet wird die bessere. Gerechnet wird nur mit Laufleistung und Preis; Zustand, Alter und
-              Ausstattung stecken nicht darin. Wer die mitrechnen will, nimmt den Masterchart.
-            </div>
-          </>
-        )}
-      </section>
-
-      {/* Sternniveau */}
-      <section style={S.panel}>
-        <div style={S.panelTitle}><Star size={15} /> Sternniveau — was ein Vorzeigefahrzeug kosten darf</div>
-        <p style={S.hint}>
-          Deine Sternfahrzeuge sind die Messlatte: gute Erscheinung, egal bei welcher Laufleistung.
-          Daraus wird eine Linie gelegt, die sagt, was ein Auto <b style={{ color: T.text }}>in
-          Vorzeigezustand</b> bei einem bestimmten Kilometerstand kostet. Alles ohne Stern gehört
-          darunter — und zwar umso deutlicher, je schlechter es dagegen aussieht.
-          Gerechnet wird <b style={{ color: T.text }}>ausschließlich mit den Fahrzeugen dieser
-          Auswahl</b>: Filter enger stellen heißt schärfere Messlatte.
-        </p>
-
-        {sternAnker.keineSterne ? (
-          <div style={S.emptySmall}>
-            Noch kein Fahrzeug mit dem Stern markiert. Setz ihn beim Import oder im Verzeichnis
-            bei den Inseraten, die optisch den Ton angeben — dann entsteht hier die Messlatte.
-          </div>
-        ) : (
-          <>
-            <div style={S.kennzahlen}>
-              <Kennzahl label="Sternfahrzeuge" wert={`${sternAnker.sterne.length}`}
-                zusatz={`von ${sternAnker.anzahl} in der Auswahl`} accent />
-              <Kennzahl label="je 10.000 km" wert={`${sternAnker.jeZehntausend > 0 ? "+" : ""}${fmtEUR(sternAnker.jeZehntausend)}`}
-                zusatz={sternAnker.eigeneSteigung ? "aus den Sternfahrzeugen selbst" : "aus allen Fahrzeugen geliehen"} />
-              <Kennzahl label="unter Sternniveau" wert={`${sternAnker.andere.length - sternAnker.ueberNiveau.length}`}
-                zusatz={`von ${sternAnker.andere.length} ohne Stern`} />
-              <Kennzahl label="auf oder über Niveau" wert={`${sternAnker.ueberNiveau.length}`}
-                zusatz="ohne Stern zum Sternpreis" />
-            </div>
-
-            {sternAnker.mischung.length > 0 && (
-              <div style={S.mischBox}>
-                <div style={S.mischTitel}><AlertTriangle size={13} /> Die Messlatte mischt zu viel</div>
-                <div style={S.mischText}>
-                  Deine Sternfahrzeuge in dieser Auswahl unterscheiden sich in{" "}
-                  {sternAnker.mischung.map((m, i) => (
-                    <span key={m.label}>
-                      {i > 0 ? (i === sternAnker.mischung.length - 1 ? " und " : ", ") : ""}
-                      <b style={{ color: T.text }}>{m.label}</b> ({m.werte.join(", ")})
-                    </span>
-                  ))}. Ein Fahrzeug kann nur an seinesgleichen gemessen werden — stell den Filter oben
-                  enger, sonst steht hier eine Linie durch zwei verschiedene Märkte.
-                </div>
-              </div>
-            )}
-
-            <div style={S.rechnerBox}>
-              <span style={S.rechnerLabel}>Ein Vorzeigefahrzeug mit</span>
-              <input value={ankerKm} onChange={(e) => setAnkerKm(e.target.value)} inputMode="decimal"
-                placeholder="140000" style={S.rechnerInput} />
-              <span style={S.rechnerLabel}>km liegt bei</span>
-              <span style={S.rechnerWert}>
-                {coerceNum(ankerKm) != null ? fmtEUR(Math.round(sternAnker.anker(coerceNum(ankerKm)))) : "—"}
-              </span>
-            </div>
-            <div style={S.hinweisKlein}>
-              Jede 10.000 km mehr sind nach dieser Rechnung {fmtEUR(Math.abs(sternAnker.jeZehntausend))}{" "}
-              {sternAnker.jeZehntausend < 0 ? "weniger" : "mehr"} wert. Von 90.000 auf 140.000 km sind das{" "}
-              <b style={{ color: T.text }}>{fmtEUR(Math.abs(sternAnker.jeZehntausend * 5))}</b> Unterschied — und
-              das gilt für zwei Autos in <i>gleichem</i> Zustand. Sieht das zweite schlechter aus, muss noch mehr runter.
-            </div>
-
-            <div style={{ width: "100%", height: 300, marginTop: 10 }}>
-              <ResponsiveContainer>
-                <ComposedChart data={sternAnker.alle} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
-                  onClick={chartKlick(sternAnker.alle, "km")}>
-                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  <XAxis dataKey="km" type="number" domain={["dataMin - 5000", "dataMax + 5000"]}
-                    tickFormatter={(k) => `${Math.round(k / 1000)}k`}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} />
-                  <YAxis dataKey="preis" type="number" domain={["dataMin - 500", "dataMax + 500"]}
-                    tickFormatter={(w) => fmtNum(Math.round(w))}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
-                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    const p = active && aktivesFahrzeug(payload, sternAnker.alle, "km");
-                    return p ? <Ankerkarte p={p} /> : null;
-                  }} />
-                  <Line dataKey="niveau" type="linear" stroke={T.accent}
-                    strokeWidth={2} strokeDasharray="6 4" dot={false} isAnimationActive={false} />
-                  <Scatter dataKey="preis" isAnimationActive={false} cursor="pointer"
-                    shape={<Fahrzeugpunkt farbe={(p) => (p.stern ? T.accent : p.abstand < 0 ? T.good : T.bad)} />}
-                    onClick={punktKlick} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={S.legendHint}>
-              Waagerecht Kilometer, senkrecht Preis · <span style={{ color: T.accent }}>Sterne die Messlatte</span> ·
-              <span style={{ color: T.good }}> grün darunter</span> ·
-              <span style={{ color: T.bad }}> rot auf oder über Niveau</span>
-            </div>
-
-            {sternAnker.andere.length > 0 && (
-              <>
-                <div style={{ ...S.compareHead, marginTop: 16 }}>
-                  <span style={S.compareTitle}>Abstand zum Sternniveau</span>
-                  <span style={S.resultCount}>größter Abschlag zuerst</span>
-                </div>
-                <div style={S.ankerListe}>
-                  {sternAnker.andere.map((p) => (
-                    <a key={p.id} className="pw-anker" href={p.url ? normalizeUrl(p.url) : undefined}
-                      target="_blank" rel="noreferrer"
-                      style={{ ...S.ankerZeile, borderLeftColor: p.abstand < 0 ? T.good : T.bad }}>
-                      <span style={S.ankerTitel} title={p.title}>{p.title}</span>
-                      <span style={S.ankerKm}>{fmtNum(p.km)} km</span>
-                      <span style={S.ankerPreis}>{fmtEUR(p.preis)}</span>
-                      <span style={S.ankerSoll}>Sternniveau {fmtEUR(p.anker)}</span>
-                      <span style={{ ...S.ankerDelta, color: p.abstand < 0 ? T.good : T.bad }}>
-                        {p.abstand < 0 ? `${fmtEUR(Math.abs(p.abstand))} darunter` : `${fmtEUR(p.abstand)} darüber`}
-                      </span>
-                    </a>
-                  ))}
-                </div>
-              </>
-            )}
-
-            {sternAnker.ueberNiveau.length > 0 && (
-              <div style={S.schluss}>
-                <b style={{ color: T.bad }}>Ohne Stern zum Sternpreis:</b>{" "}
-                {sternAnker.ueberNiveau.length === 1
-                  ? <><b style={{ color: T.text }}>{sternAnker.ueberNiveau[0].title}</b> liegt bei {fmtNum(sternAnker.ueberNiveau[0].km)} km auf {fmtEUR(sternAnker.ueberNiveau[0].preis)} — ein Vorzeigefahrzeug mit dieser Laufleistung käme auf {fmtEUR(sternAnker.ueberNiveau[0].anker)}.</>
-                  : <>{sternAnker.ueberNiveau.length} Fahrzeuge kosten so viel wie ein Vorzeigefahrzeug ihrer Laufleistung, sehen aber nicht so aus. Für diese Preise gibt es in deiner eigenen Auswahl Besseres.</>}
-              </div>
-            )}
-            {sternAnker.sterne.length < 4 && (
-              <div style={S.hinweisKlein}>
-                Mit {sternAnker.sterne.length === 1 ? "einem einzigen Sternfahrzeug" : `${sternAnker.sterne.length} Sternfahrzeugen`} lässt
-                sich keine eigene Steigung berechnen — die Linie übernimmt den Kilometer-Verlauf aller Fahrzeuge
-                und wird nur in der Höhe auf dein Sternniveau gelegt. Ab vier Sternen rechnet sie eigenständig.
-              </div>
-            )}
-          </>
-        )}
-      </section>
-
-
-      </>)}
 
       {tab === "erfassen" && (<>
 
@@ -3502,145 +1535,6 @@ export default function App() {
 
       </>)}
 
-      {tab === "master" && (
-      <section style={S.panel}>
-        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <TrendingUp size={15} /> Masterchart — gut und trotzdem günstig
-          </span>
-          <span style={S.toggleGroup}>
-            {[0, 1].map((i) => (
-              <button key={i} onClick={() => setMasterBezug(i)}
-                style={masterBezug === i ? { ...S.toggleOn, background: AUSWAHL_FARBE[i] } : S.toggleOff}>
-                Bezugsgruppe {i === 0 ? "A" : "B"} · {(i === 0 ? trefferA : trefferB).length}
-              </button>
-            ))}
-          </span>
-        </div>
-        <p style={S.hint}>
-          Zwei Fragen in einem Bild. <b style={{ color: T.text }}>Waagerecht der Zustand</b> — aus allem,
-          was du erfasst hast: Exterieur, Interieur, erfolgte Reparaturen, Unfallschaden,
-          Sonderausstattung und der Stern.
-          <b style={{ color: T.text }}> Senkrecht der Preisvorteil</b> — wie weit das Auto unter dem liegt,
-          was es bei diesem Zustand, dieser Laufleistung und diesem Alter kosten müsste.
-          Interessant ist nur, wer <b style={{ color: T.accent }}>rechts oben</b> steht: gut und trotzdem billig.
-          Gerechnet wird ausschließlich innerhalb der gewählten Bezugsgruppe — der Filter der Analyseseite gilt.
-        </p>
-
-        {master.zuWenig ? (
-          <div style={S.emptySmall}>
-            Dafür braucht es mindestens sechs Fahrzeuge mit Preis und Kilometerstand in dieser
-            Bezugsgruppe — {master.anzahl === 0 ? "hier ist keines" : `hier sind es erst ${master.anzahl}`}.
-            Stell den Filter auf Analyse {masterBezug === 0 ? "A" : "B"} weiter, oder erfasse mehr Inserate.
-          </div>
-        ) : (
-          <>
-            <div style={S.kennzahlen}>
-              <Kennzahl label="je Zustandspunkt" accent
-                wert={master.jeZustandspunkt != null ? fmtEUR(master.jeZustandspunkt) : "—"}
-                zusatz="soviel ist ein Punkt am Markt wert" />
-              <Kennzahl label="je 10.000 km" wert={fmtEUR(master.jeZehntausendKm)} zusatz="bei gleichem Zustand" />
-              <Kennzahl label="Erklärungskraft" wert={`${Math.round(master.r2 * 100)} %`}
-                zusatz={master.r2 >= 0.6 ? "das Modell trägt" : master.r2 >= 0.3 ? "grobe Richtung, mehr nicht" : "Preise kommen überwiegend woanders her"} />
-              <Kennzahl label="ausgewertet" wert={`${master.anzahl}`} zusatz={`Fahrzeuge der Gruppe ${masterBezug === 0 ? "A" : "B"}`} />
-            </div>
-
-            <div style={{ ...S.compareHead, marginTop: 4 }}>
-              <span style={S.compareTitle}>Als „gut" zählt</span>
-              <span style={S.toggleGroup}>
-                {[["alle", "alle"], ["haelfte", "obere Hälfte"], ["drittel", "oberes Drittel"], ["viertel", "oberes Viertel"]].map(([k, label]) => (
-                  <button key={k} onClick={() => setMasterSchwelle(k)}
-                    style={masterSchwelle === k ? S.toggleOn : S.toggleOff}>{label}</button>
-                ))}
-              </span>
-              <span style={S.resultCount}>ab {master.schwelle} Punkten</span>
-            </div>
-
-            <div style={{ width: "100%", height: 340, marginTop: 6 }}>
-              <ResponsiveContainer>
-                <ComposedChart data={master.punkte} margin={{ top: 8, right: 14, left: 4, bottom: 4 }}
-                  onClick={chartKlick(master.punkte, "zustandX")}>
-                  <CartesianGrid stroke={T.line} strokeDasharray="2 4" />
-                  <XAxis dataKey="zustandX" type="number" domain={[(min) => Math.max(0, min - 5), 102]}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }}
-                    label={{ value: "Zustandspunkte", position: "insideBottom", offset: -2, fill: T.muted, fontSize: 10 }} />
-                  <YAxis dataKey="vorteilPct" type="number" tickFormatter={(w) => `${w > 0 ? "+" : ""}${w} %`}
-                    stroke={T.muted} tick={{ fontSize: 10.5, fill: T.muted }} width={58} />
-                  <Tooltip cursor={{ stroke: T.line }} content={({ active, payload }) => {
-                    const p = active && aktivesFahrzeug(payload, master.punkte, "zustandX", "vorteilPct");
-                    return p ? <Masterkarte p={p} schwelle={master.schwelle} /> : null;
-                  }} />
-                  <ReferenceLine y={0} stroke={T.muted} strokeDasharray="4 4"
-                    label={{ value: "Preis wie erwartet", position: "insideTopLeft", fill: T.muted, fontSize: 10 }} />
-                  {master.schwelle > 0 && (
-                    <ReferenceLine x={master.schwelle} stroke={T.accent} strokeDasharray="4 4" />
-                  )}
-                  <Scatter dataKey="vorteilPct" isAnimationActive={false} cursor="pointer"
-                    shape={<Fahrzeugpunkt
-                      farbe={(p) => (p.stern ? T.accent
-                        : p.zustand >= master.schwelle && p.vorteil > 0 ? T.good
-                          : p.vorteil < 0 ? T.bad : T.muted)}
-                      deckkraft={(p) => (p.zustand >= master.schwelle ? 0.95 : 0.4)} />}
-                    onClick={punktKlick} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </div>
-            <div style={S.legendHint}>
-              Rechts vom gelben Strich gilt als gut · über der Nulllinie günstiger als verdient ·
-              <span style={{ color: T.good }}> grün beides</span> ·
-              <span style={{ color: T.bad }}> rot teurer als verdient</span> ·
-              <span style={{ color: T.accent }}> Sterne die Vorzeigefahrzeuge</span>
-              <br />
-              Fahrzeuge mit gleicher Punktzahl stehen leicht nebeneinander statt übereinander,
-              damit jedes einzeln anzusehen und anzuklicken ist. Die Karteikarte nennt die echte Punktzahl.
-            </div>
-
-            {master.bester && (
-              <div style={S.schluss}>
-                <b style={{ color: T.accent }}>Bester Fund:</b>{" "}
-                <b style={{ color: T.text }}>{master.bester.title}</b> — {master.bester.zustand} von 100
-                Zustandspunkten (besser als {master.bester.zRang} % der Gruppe) und {fmtEUR(master.bester.preis)}{" "}
-                statt erwarteter {fmtEUR(master.bester.erwartet)}, also{" "}
-                <b style={{ color: T.good }}>{fmtEUR(master.bester.vorteil)} unter Wert</b>{" "}
-                ({fmtPct(master.bester.vorteilPct)}).
-              </div>
-            )}
-
-            <div style={{ ...S.compareHead, marginTop: 14 }}>
-              <span style={S.compareTitle}>Rangliste der guten Fahrzeuge</span>
-              <span style={S.resultCount}>{master.kandidaten.length} über der Schwelle · größter Vorteil zuerst</span>
-            </div>
-            <div style={S.ankerListe}>
-              {master.kandidaten.map((p, i) => (
-                <a key={p.id} className="pw-master" href={p.url ? normalizeUrl(p.url) : undefined}
-                  target="_blank" rel="noreferrer"
-                  style={{ ...S.masterZeile, borderLeftColor: p.vorteil > 0 ? T.good : T.bad }}>
-                  <span style={S.masterNr}>{i + 1}</span>
-                  <span style={S.ankerTitel} title={p.title}>
-                    {p.stern && <Star size={10} fill={T.accent} color={T.accent} style={{ marginRight: 4, verticalAlign: -1 }} />}
-                    {p.title}
-                  </span>
-                  <span style={S.masterZustand}>{p.zustand} Pkt</span>
-                  <span style={S.ankerKm}>{fmtNum(p.km)} km</span>
-                  <span style={S.ankerPreis}>{fmtEUR(p.preis)}</span>
-                  <span style={{ ...S.ankerDelta, color: p.vorteil > 0 ? T.good : T.bad }}>
-                    {p.vorteil > 0 ? `${fmtEUR(p.vorteil)} unter Wert` : `${fmtEUR(Math.abs(p.vorteil))} über Wert`}
-                  </span>
-                </a>
-              ))}
-            </div>
-
-            <div style={S.hinweisKlein}>
-              Die Zustandspunkte starten bei 100 und werden abgezogen: Exterieur bis −24, Reparaturen bis −26,
-              Interieur bis −20, Unfallschaden −18; die Sonderausstattung gibt +5 beziehungsweise +10,
-              ein Stern +{STERN_BONUS}. Was du nicht beantwortet hast, kostet nichts — dann ist die Bewertung aber auch
-              nur so gut wie deine Erfassung. Der erwartete Preis kommt aus deinen eigenen Fahrzeugen dieser
-              Gruppe, nicht aus einer Tabelle; Ausstattung und Wartungshistorie stecken nicht darin.
-            </div>
-          </>
-        )}
-      </section>
-      )}
 
       {tab === "pruefen" && (
       <section style={S.panel}>
@@ -3732,7 +1626,7 @@ export default function App() {
           )}
         </div>
         {!loaded ? (<div style={S.empty}><span>Lade Daten…</span></div>)
-          : list.length === 0 ? (<div style={S.empty}><span>Noch keine Fahrzeuge. Wechsle zu „Erfassen &amp; Analysieren" und füge dort deinen ersten JSON-Block ein.</span></div>)
+          : list.length === 0 ? (<div style={S.empty}><span>Noch keine Fahrzeuge. Wechsle zu „Erfassen" und füge dort deinen ersten JSON-Block ein.</span></div>)
             : (
               <>
                 <div style={S.sortZeile}>
@@ -3769,7 +1663,7 @@ export default function App() {
                       openAdd={openAdd} cancelAdd={() => setAddFor(null)} addPoint={addPoint} deletePoint={deletePoint} removeVehicle={removeVehicle}
                       closeFor={closeFor} closeStatus={closeStatus} closeDate={closeDate} setCloseStatus={setCloseStatus} setCloseDate={setCloseDate}
                       openClose={openClose} cancelClose={() => setCloseFor(null)} confirmClose={confirmClose} reopen={reopen}
-                      toggleStern={toggleStern} setzeFeld={setzeFeld} heuteGesehen={heuteGesehen} />
+                      setzeFeld={setzeFeld} heuteGesehen={heuteGesehen} />
                   ))}
                 </div>
               </>
@@ -3789,7 +1683,7 @@ export default function App() {
 /* --------------------------- Karte ------------------------------- */
 
 function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, setAddDate, setAddPrice, openAdd, cancelAdd, addPoint, deletePoint, removeVehicle,
-  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen, toggleStern, setzeFeld, heuteGesehen }) {
+  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen, setzeFeld, heuteGesehen }) {
   const S = styles;
   const h = v.priceHistory || [];
   const last = h[h.length - 1]?.price;
@@ -3824,11 +1718,6 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
           <Metric label="Ort" value={v.location || "—"} />
           <Metric label="Reparaturen" value={v.repairKind || "—"} color={tagColor("repairKind", v.repairKind)} />
         </span>
-        <button style={v.showcase === "Vorzeigefahrzeug" ? S.sternIconAn : S.iconBtn}
-          title={v.showcase === "Vorzeigefahrzeug" ? "Vorzeigefahrzeug — zum Aufheben klicken" : "Als Vorzeigefahrzeug markieren"}
-          onClick={() => toggleStern(v.id)}>
-          <Star size={14} fill={v.showcase === "Vorzeigefahrzeug" ? T.accent : "none"} />
-        </button>
         <button style={S.iconBtn} title="Fahrzeug entfernen" onClick={() => removeVehicle(v.id)}><Trash2 size={14} /></button>
       </div>
       {!open ? null : (
@@ -3844,7 +1733,6 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
 
         {/* Analyse-Begriffe */}
         <div style={S.tagRow}>
-          {v.showcase === "Vorzeigefahrzeug" && <StatusTag field="showcase" value="Vorzeigefahrzeug" icon={<Star size={11} />} />}
           {v.trimline && <StatusTag field="trimline" value={v.trimline} raw={v.trimline} />}
           {v.ausstattung && <StatusTag field="ausstattung" value={v.ausstattung} raw={v.ausstattung} />}
           {v.exterieur && <StatusTag field="exterieur" value={`Außen: ${v.exterieur}`} raw={v.exterieur} icon={<Camera size={11} />} />}
@@ -3864,8 +1752,7 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
 
         <div style={S.seller}>
           {isDealer ? <Store size={13} color={T.muted} /> : <User size={13} color={T.muted} />}
-          <span>{isDealer ? (v.dealerName || "Händler") : (v.sellerType || "Anbieter unbekannt")}
-            {v.stars && <span style={S.stars}> <Star size={11} fill={T.accent} color={T.accent} style={{ verticalAlign: -1 }} /> {v.stars}</span>}</span>
+          <span>{isDealer ? (v.dealerName || "Händler") : (v.sellerType || "Anbieter unbekannt")}</span>
           {isDealer && v.address && <span style={S.addr}>· {v.address}</span>}
         </div>
 
@@ -4220,53 +2107,8 @@ function ChoiceQuestion({ frage, options, hilfe, value, onChange }) {
     </div>
   );
 }
-// Filter mit Mehrfachauswahl: nichts angeklickt heißt "alle", mehrere
-// angeklickte Werte gelten nebeneinander. Die Zahl hinter jedem Wort sagt,
-// wie viele Fahrzeuge damit übrig blieben.
-function MehrfachFilter({ label, options, werte, zahlen, farbe, onToggle, onClear }) {
-  const S = styles;
-  return (
-    <div style={S.mfFeld}>
-      <div style={S.mfKopf}>
-        <span style={S.fieldLabel}>{label}</span>
-        {werte.length > 0
-          ? <button style={S.mfClear} onClick={onClear} title="Auswahl aufheben"><X size={10} /> {werte.length} gewählt</button>
-          : <span style={S.mfAlle}>alle</span>}
-      </div>
-      <div style={S.mfChips}>
-        {options.map((o) => {
-          const an = werte.includes(o);
-          const n = zahlen?.[o] || 0;
-          return (
-            <button key={o} onClick={() => onToggle(o)}
-              style={an ? { ...S.mfChipOn, background: farbe, borderColor: farbe }
-                : n === 0 ? S.mfChipLeer : S.mfChip}>
-              {o}<span style={an ? S.mfZahlOn : S.mfZahl}>{n}</span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
 
-// Farbe der Punkte nach der Art der erfolgten Reparaturen — bewusst deutlicher als die
-// zurückhaltenden Kennzeichnungen auf der Fahrzeugkarte.
-function repFarbe(rep) {
-  if (rep === "Keine genannt") return T.good;
-  if (rep === "Verschleißteile") return "#A3E635";
-  if (rep === "Kernfahrzeugteile") return T.accent;
-  if (rep === "Gesamte Prozessteile") return T.bad;
-  return T.muted;
-}
 
-// Klick auf einen Punkt oder Balken öffnet das Inserat. Recharts reicht dem
-// Klick nicht den Datensatz selbst, sondern die gezeichnete Form — der
-// Datensatz hängt darin unter "payload".
-function oeffneInserat(d) {
-  const daten = d && (d.payload || d);
-  if (daten && daten.url) window.open(normalizeUrl(daten.url), "_blank", "noreferrer");
-}
 
 /* --- Zeigen und Treffen in den Schaubildern ---------------------------
    Recharts sucht beim Überfahren die Zeile heraus, die waagerecht am
@@ -4276,309 +2118,16 @@ function oeffneInserat(d) {
    Deshalb: eine Liste je Schaubild — und hier wird aus der getroffenen
    Zeile das nächstgelegene Fahrzeug bestimmt. So ist überall etwas zu
    sehen, auch zwischen zwei Punkten. */
-function naechstesNach(liste, achse, x) {
-  if (!liste || !liste.length || x == null || isNaN(x)) return null;
-  let treffer = null, nah = Infinity;
-  liste.forEach((p) => {
-    const d = Math.abs(p[achse] - x);
-    if (d < nah) { nah = d; treffer = p; }
-  });
-  return treffer;
-}
-function aktivesFahrzeug(payload, liste, achse, wertFeld = "preis") {
-  const zeile = payload && payload.length ? payload[0].payload : null;
-  if (!zeile) return null;
-  if (zeile[wertFeld] != null && zeile.id) return zeile;
-  return naechstesNach(liste, achse, zeile[achse]);
-}
 
-/* Öffnen mit Maus und mit Finger sind zwei verschiedene Wege.
 
-   Mit der Maus zeigt die Karteikarte immer schon das Fahrzeug, das gemeint
-   ist — dort öffnet ein Klick irgendwo im Schaubild genau dieses Inserat.
-   Recharts reicht dem Klick am Schaubild keinen Datensatz mehr, sondern nur
-   den Wert der waagerechten Achse; das Fahrzeug wird daraus gesucht.
 
-   Auf dem Handy geht das nicht: dort setzt erst die Berührung den Zeiger,
-   und der Klick liest den Stand von davor — er würde regelmäßig das falsche
-   Inserat öffnen. Deshalb zählt beim Tippen nur der Punkt selbst, der seinen
-   Datensatz mitbringt. Getroffen wird er trotzdem, denn unter jedem Punkt
-   liegt eine unsichtbare Fläche von gut dreißig Pixeln. */
-const mitZeigegeraet = () => typeof window !== "undefined" && window.matchMedia
-  ? window.matchMedia("(hover: hover)").matches : true;
-const chartKlick = (liste, achse) => (zustand) => {
-  if (!mitZeigegeraet() || !zustand || !zustand.isTooltipActive) return;
-  const p = naechstesNach(liste, achse, Number(zustand.activeLabel));
-  if (p) oeffneInserat(p);
-};
-const punktKlick = (d) => { if (!mitZeigegeraet()) oeffneInserat(d); };
 
-// Fünfzackiger Stern als Pfad. Die eingebaute Form von recharts lässt sich
-// nicht mit einer vergrößerten Trefferfläche kombinieren.
-function sternPfad(cx, cy, aussen, innen) {
-  let d = "";
-  for (let i = 0; i < 10; i++) {
-    const r = i % 2 ? innen : aussen;
-    const w = (Math.PI / 5) * i - Math.PI / 2;
-    d += `${i ? "L" : "M"}${(cx + r * Math.cos(w)).toFixed(2)},${(cy + r * Math.sin(w)).toFixed(2)}`;
-  }
-  return `${d}Z`;
-}
 
-// Ein Punkt je Fahrzeug. Vorzeigefahrzeuge bekommen einen Stern. Darunter
-// liegt eine unsichtbare, viel größere Fläche — einen Kreis von fünf Pixeln
-// trifft auf dem Handy niemand mit dem Daumen.
-// Farbe und Deckkraft kommen als Funktion herein statt über <Cell>: Cells
-// hängen an der Reihenfolge der Daten, und in den Schaubildern stehen jetzt
-// auch Kurvenpunkte ohne Fahrzeug in derselben Liste.
-// "ring" macht aus dem vollen Punkt einen offenen Kreis. Gebraucht wird das
-// für Inserate, deren Standzeit noch nicht zu Ende ist: der Wert ist ein
-// Mindestwert, und das muss man sehen können.
-function Fahrzeugpunkt({ cx, cy, fill, fillOpacity, payload, farbe, deckkraft, ring }) {
-  if (cx == null || cy == null || isNaN(cx) || isNaN(cy)) return null;
-  const f = (payload && farbe ? farbe(payload) : null) || fill;
-  const eigen = payload && deckkraft ? deckkraft(payload) : null;
-  const stern = !!(payload && payload.stern);
-  const offen = !!(payload && ring && ring(payload));
-  const o = eigen != null ? eigen : (fillOpacity != null ? fillOpacity : (stern ? 1 : 0.85));
-  return (
-    <g>
-      <circle cx={cx} cy={cy} r={17} fill="transparent" />
-      {stern
-        ? <path d={sternPfad(cx, cy, 9.5, 4.4)} fill={offen ? "none" : f} fillOpacity={o}
-            stroke={f} strokeWidth={offen ? 1.7 : 0} />
-        : offen
-          ? <circle cx={cx} cy={cy} r={4.6} fill="none" stroke={f} strokeWidth={2} />
-          : <circle cx={cx} cy={cy} r={5} fill={f} fillOpacity={o} />}
-    </g>
-  );
-}
 
-// Die Karteikarte, die beim Zeigen auf einen Punkt erscheint.
-function Karteikarte({ p }) {
-  const S = styles;
-  const zeilen = [
-    ["Erstzulassung", p.ez],
-    ["Kilometer", p.km != null ? `${fmtNum(p.km)} km` : ""],
-    ["Ort", p.ort],
-    ["Anbieter", p.anbieter],
-    ["Linie", p.linie],
-    ["Exterieur", p.fotos],
-    ["Interieur", p.innen],
-    ["Ausstattung", p.extras],
-  ].filter(([, w]) => w);
-  return (
-    <div style={S.karte}>
-      <div style={S.karteKopf}>
-        <span style={S.karteNr}>#{p.nr}</span>
-        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparaturen offen"}</span>
-      </div>
-      <div style={S.karteTitel}>{p.title}</div>
-      {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
-      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
-      <div style={S.karteListe}>
-        {zeilen.map(([label, wert]) => (
-          <div key={label} style={S.karteZeile}>
-            <span style={S.karteLabel}>{label}</span>
-            <span style={S.karteWert}>{wert}</span>
-          </div>
-        ))}
-      </div>
-      {p.stand && p.stand !== "Aktiv" && (
-        <div style={{ ...S.karteHinweis, color: tagColor("listingStatus", p.stand) }}>{p.stand}</div>
-      )}
-      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
-    </div>
-  );
-}
 
-// Karte im Schaubild zur Preisformel: was das Auto kostet und was die
-// Formel an dieser Stelle sagt.
-function Formelkarte({ p }) {
-  const S = styles;
-  const drunter = p.abweichung < 0;
-  const farbe = p.abweichung === 0 ? T.muted : drunter ? T.good : T.bad;
-  return (
-    <div style={S.karte}>
-      <div style={S.karteKopf}>
-        {p.stern && <Star size={11} fill={T.accent} color={T.accent} />}
-        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparaturen offen"}</span>
-      </div>
-      <div style={S.karteTitel}>{p.title}</div>
-      {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
-      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
-      <div style={S.karteListe}>
-        <div style={S.karteZeile}><span style={S.karteLabel}>Kilometer</span><span style={S.karteWert}>{fmtNum(p.km)} km</span></div>
-        <div style={S.karteZeile}><span style={S.karteLabel}>laut Formel</span><span style={S.karteWert}>{fmtEUR(p.soll)}</span></div>
-        <div style={S.karteZeile}>
-          <span style={S.karteLabel}>Abstand</span>
-          <span style={{ ...S.karteWert, color: farbe }}>
-            {p.abweichung === 0 ? "genau auf der Linie" : `${fmtEUR(Math.abs(p.abweichung))} ${drunter ? "darunter" : "darüber"}`}
-          </span>
-        </div>
-        {p.ez && <div style={S.karteZeile}><span style={S.karteLabel}>Erstzulassung</span><span style={S.karteWert}>{p.ez}</span></div>}
-        {p.fotos && <div style={S.karteZeile}><span style={S.karteLabel}>Fotos</span><span style={S.karteWert}>{p.fotos}</span></div>}
-      </div>
-      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
-    </div>
-  );
-}
 
-// Karte im Masterchart: Zustand, erwarteter Preis, Vorteil — und woher
-// die Abzüge kommen, damit die Punktzahl nachvollziehbar bleibt.
-function Masterkarte({ p, schwelle }) {
-  const S = styles;
-  const gut = p.zustand >= schwelle;
-  const farbe = p.vorteil > 0 ? T.good : p.vorteil < 0 ? T.bad : T.muted;
-  return (
-    <div style={S.karte}>
-      <div style={S.karteKopf}>
-        {p.stern && <Star size={11} fill={T.accent} color={T.accent} />}
-        <span style={{ ...S.karteRep, color: gut ? T.good : T.muted }}>
-          {p.zustand} von 100 Punkten · besser als {p.zRang} %
-        </span>
-      </div>
-      <div style={S.karteTitel}>{p.title}</div>
-      {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
-      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
-      <div style={S.karteListe}>
-        <div style={S.karteZeile}><span style={S.karteLabel}>erwartet</span><span style={S.karteWert}>{fmtEUR(p.erwartet)}</span></div>
-        <div style={S.karteZeile}>
-          <span style={S.karteLabel}>Vorteil</span>
-          <span style={{ ...S.karteWert, color: farbe }}>
-            {p.vorteil > 0 ? `${fmtEUR(p.vorteil)} unter Wert` : p.vorteil < 0 ? `${fmtEUR(Math.abs(p.vorteil))} über Wert` : "genau auf Wert"}
-            {p.vorteil !== 0 && ` (${fmtPct(p.vorteilPct)})`}
-          </span>
-        </div>
-        <div style={S.karteZeile}><span style={S.karteLabel}>Kilometer</span><span style={S.karteWert}>{fmtNum(p.km)} km</span></div>
-        {p.ez && <div style={S.karteZeile}><span style={S.karteLabel}>Erstzulassung</span><span style={S.karteWert}>{p.ez}</span></div>}
-      </div>
-      <div style={S.karteAbzug}>
-        {p.bonus > 0 && <span style={{ color: T.accent }}>Stern +{p.bonus}</span>}
-        {p.abzuege.length === 0
-          ? <span style={{ color: T.good }}>keine Abzüge</span>
-          : p.abzuege.map((a) => <span key={a.label}>{a.label}: {a.wert} −{a.ab}</span>)}
-      </div>
-      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
-    </div>
-  );
-}
 
-// Karte im Sternchart: was das Auto kostet und was ein Vorzeigefahrzeug
-// derselben Laufleistung kosten würde.
-function Standzeitkarte({ p }) {
-  const S = styles;
-  const stufe = standzeitStufe(p.tage);
-  return (
-    <div style={S.karte}>
-      <div style={S.karteKopf}>
-        {p.stern && <Star size={11} fill={T.accent} color={T.accent} />}
-        <span style={{ ...S.karteRep, color: stufe.farbe }}>
-          {p.laeuft ? `läuft seit ${laufzeitDativ(p.tage)}` : `${p.stand} nach ${laufzeitDativ(p.tage)}`}
-        </span>
-      </div>
-      <div style={S.karteTitel}>{p.title}</div>
-      {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
-      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
-      <div style={S.karteListe}>
-        {p.seit && <div style={S.karteZeile}><span style={S.karteLabel}>inseriert seit</span><span style={S.karteWert}>{fmtDate(p.seit)}</span></div>}
-        {!p.laeuft && p.closedDate && (
-          <div style={S.karteZeile}><span style={S.karteLabel}>{p.stand}</span><span style={S.karteWert}>{fmtDate(p.closedDate)}</span></div>
-        )}
-        {p.km != null && <div style={S.karteZeile}><span style={S.karteLabel}>Kilometer</span><span style={S.karteWert}>{fmtNum(p.km)} km</span></div>}
-        {p.ez && <div style={S.karteZeile}><span style={S.karteLabel}>Erstzulassung</span><span style={S.karteWert}>{p.ez}</span></div>}
-        {p.fotos && <div style={S.karteZeile}><span style={S.karteLabel}>Exterieur</span><span style={S.karteWert}>{p.fotos}</span></div>}
-      </div>
-      {p.laeuft && <div style={S.karteHinweis}>Die Standzeit ist ein Mindestwert — das Inserat läuft noch.</div>}
-      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
-    </div>
-  );
-}
 
-function Ankerkarte({ p }) {
-  const S = styles;
-  const drunter = p.abstand < 0;
-  const farbe = p.stern ? T.accent : drunter ? T.good : T.bad;
-  return (
-    <div style={S.karte}>
-      <div style={S.karteKopf}>
-        {p.stern && <Star size={11} fill={T.accent} color={T.accent} />}
-        <span style={{ ...S.karteRep, color: p.stern ? T.accent : repFarbe(p.rep) }}>
-          {p.stern ? "Vorzeigefahrzeug" : p.rep || "Reparatur unbekannt"}
-        </span>
-      </div>
-      <div style={S.karteTitel}>{p.title}</div>
-      {p.marke && <div style={S.karteMarke}>{p.marke}</div>}
-      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
-      <div style={S.karteListe}>
-        <div style={S.karteZeile}><span style={S.karteLabel}>Kilometer</span><span style={S.karteWert}>{fmtNum(p.km)} km</span></div>
-        <div style={S.karteZeile}><span style={S.karteLabel}>Sternniveau</span><span style={S.karteWert}>{fmtEUR(p.anker)}</span></div>
-        <div style={S.karteZeile}>
-          <span style={S.karteLabel}>Abstand</span>
-          <span style={{ ...S.karteWert, color: farbe }}>
-            {p.abstand === 0 ? "genau auf Niveau" : `${fmtEUR(Math.abs(p.abstand))} ${drunter ? "darunter" : "darüber"}`}
-          </span>
-        </div>
-        {p.ez && <div style={S.karteZeile}><span style={S.karteLabel}>Erstzulassung</span><span style={S.karteWert}>{p.ez}</span></div>}
-        {p.fotos && <div style={S.karteZeile}><span style={S.karteLabel}>Fotos</span><span style={S.karteWert}>{p.fotos}</span></div>}
-      </div>
-      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
-    </div>
-  );
-}
-
-// Karte für die beiden Charts zum erwarteten Preis: was das Auto kostet,
-// was es nach Kilometern und Alter kosten müsste — und der Abstand dazwischen.
-function Erwartungskarte({ p }) {
-  const S = styles;
-  const guenstiger = p.abweichung < 0;
-  const farbe = p.abweichung === 0 ? T.muted : guenstiger ? T.good : T.bad;
-  const abstand = p.abweichung === 0
-    ? "genau wie erwartet"
-    : `${fmtEUR(Math.abs(p.abweichung))} ${guenstiger ? "darunter" : "darüber"}`;
-  return (
-    <div style={S.karte}>
-      <div style={S.karteKopf}>
-        <span style={S.karteNr}>#{p.nr}</span>
-        <span style={{ ...S.karteRep, color: repFarbe(p.rep) }}>{p.rep || "Reparaturen offen"}</span>
-      </div>
-      <div style={S.karteTitel}>{p.title}</div>
-      <div style={S.kartePreis}>{fmtEUR(p.preis)}</div>
-      <div style={S.karteListe}>
-        <div style={S.karteZeile}>
-          <span style={S.karteLabel}>erwartet</span>
-          <span style={S.karteWert}>{fmtEUR(p.erwartet)}</span>
-        </div>
-        <div style={S.karteZeile}>
-          <span style={S.karteLabel}>Abstand</span>
-          <span style={{ ...S.karteWert, color: farbe }}>{abstand}</span>
-        </div>
-        <div style={S.karteZeile}>
-          <span style={S.karteLabel}>Kilometer</span>
-          <span style={S.karteWert}>{p.km != null ? `${fmtNum(p.km)} km` : ""}</span>
-        </div>
-        <div style={S.karteZeile}>
-          <span style={S.karteLabel}>Alter</span>
-          <span style={S.karteWert}>{p.alter != null ? `${p.alter.toFixed(1).replace(".", ",")} Jahre` : ""}</span>
-        </div>
-      </div>
-      <div style={{ ...S.karteHinweis, color: farbe }}>
-        günstiger als {p.guenstigerAls} % der Fahrzeuge in dieser Auswahl
-      </div>
-      {p.url && <div style={S.karteHinweis}>Klicken öffnet das Inserat ↗</div>}
-    </div>
-  );
-}
-
-function Kennzahl({ label, wert, zusatz, accent }) {
-  return (
-    <div style={styles.kennzahl}>
-      <div style={styles.kennzahlLabel}>{label}</div>
-      <div style={{ ...styles.kennzahlWert, color: accent ? T.accent : T.text }}>{wert}</div>
-      {zusatz && <div style={styles.kennzahlZusatz}>{zusatz}</div>}
-    </div>
-  );
-}
 function Stat({ label, value, accent }) {
   return (<div style={styles.stat}><div style={{ ...styles.statValue, color: accent || styles.statValue.color }}>{value}</div><div style={styles.statLabel}>{label}</div></div>);
 }
@@ -4618,23 +2167,13 @@ const globalCss = `
     .pw-metrics { grid-column: 1 / -1; grid-row: 2; display: flex; flex-wrap: wrap; gap: 8px 18px; }
     .pw-mlabel { display: block; }
     /* Sternniveau-Zeilen: Titel oben, Zahlen darunter nebeneinander */
-    .pw-anker { grid-template-columns: 1fr auto !important; row-gap: 4px; }
     .pw-stufe { grid-template-columns: auto 1fr !important; row-gap: 2px; }
     .pw-stufe > span:nth-child(1) { grid-area: 1 / 1; }
     .pw-stufe > span:nth-child(4) { grid-area: 1 / 2; text-align: right; }
     .pw-stufe > span:nth-child(2) { grid-area: 2 / 1; }
     .pw-stufe > span:nth-child(3) { grid-area: 2 / 2; text-align: right; }
-    .pw-stand { grid-template-columns: 1fr auto !important; row-gap: 4px; }
-    .pw-stand > span:nth-child(1) { grid-column: 1 / -1; white-space: normal; }
-    .pw-stand > span:nth-child(4) { text-align: right; }
-    .pw-master { grid-template-columns: 26px 1fr auto !important; row-gap: 4px; }
     .pw-stuetz { grid-template-columns: 1fr auto !important; row-gap: 3px; }
     .pw-stuetz > span:nth-child(5) { grid-column: 1 / -1; text-align: left; }
-    .pw-master > span:nth-child(2) { grid-column: 2 / -1; }
-    .pw-master > span:nth-child(3) { grid-column: 2; }
-    .pw-master > span:nth-child(6) { text-align: right; }
-    .pw-anker > span:first-child { grid-column: 1 / -1; }
-    .pw-anker > span:nth-child(4) { text-align: right; }
   }
 `;
 
@@ -4678,45 +2217,12 @@ const styles = {
   askInput: { width: "100%", background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace" },
   askHint: { fontSize: 11.5, color: T.accent },
 
-  mischBox: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.bad}`, borderRadius: 9, padding: "10px 13px", marginTop: 4, marginBottom: 8 },
-  mischTitel: { display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: T.bad, marginBottom: 5 },
-  mischText: { fontSize: 11.5, color: T.muted, lineHeight: 1.6 },
 
-  stuetzListe: { display: "flex", flexDirection: "column", gap: 3, marginBottom: 8 },
-  stuetzZeile: { display: "grid", gridTemplateColumns: "minmax(96px, 1fr) 92px 108px 96px 132px", gap: 8, alignItems: "center", background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 11px" },
-  stuetzName: { fontSize: 12, fontWeight: 700 },
-  stuetzAnzahl: { fontSize: 10.5, color: T.muted },
-  stuetzKm: { fontSize: 11.5, fontFamily: "ui-monospace, Menlo, monospace", color: T.muted },
-  stuetzPreis: { fontSize: 12.5, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace" },
-  stuetzFormel: { fontSize: 10.5, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
-  stuetzPfeil: { fontSize: 11, color: T.accent, padding: "3px 0 3px 12px" },
 
-  formelBox: { display: "flex", flexDirection: "column", gap: 7, background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 9, padding: "11px 13px", marginTop: 4, marginBottom: 8 },
-  formelLabel: { fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 },
-  formelCode: { fontSize: 13, color: T.text, fontFamily: "ui-monospace, Menlo, monospace", overflowX: "auto", whiteSpace: "nowrap", paddingBottom: 2 },
-  formelSatz: { fontSize: 11.5, color: T.muted, lineHeight: 1.6 },
 
-  rechnerBox: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "10px 13px", marginTop: 4 },
-  rechnerLabel: { fontSize: 12.5, color: T.muted },
-  rechnerInput: { width: 100, background: T.surface2, color: T.text, border: `1px solid ${T.line}`, borderRadius: 7, padding: "6px 9px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace" },
-  rechnerWert: { fontSize: 17, fontWeight: 800, color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
 
-  masterZeile: { display: "grid", gridTemplateColumns: "26px minmax(120px, 2fr) 74px 92px 92px 150px", gap: 8, alignItems: "center", background: T.bg, border: `1px solid ${T.line}`, borderLeft: "3px solid", borderRadius: 8, padding: "8px 11px", textDecoration: "none", color: T.text },
-  masterNr: { fontSize: 11, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
-  masterZustand: { fontSize: 11.5, fontWeight: 700, color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
-  karteAbzug: { display: "flex", flexWrap: "wrap", gap: "2px 10px", fontSize: 10, color: T.muted, marginTop: 7, paddingTop: 6, borderTop: `1px solid ${T.line}` },
 
-  ankerListe: { display: "flex", flexDirection: "column", gap: 4 },
-  ankerZeile: { display: "grid", gridTemplateColumns: "minmax(120px, 2fr) 92px 92px 148px 140px", gap: 8, alignItems: "center", background: T.bg, border: `1px solid ${T.line}`, borderLeft: "3px solid", borderRadius: 8, padding: "8px 11px", textDecoration: "none", color: T.text },
-  ankerTitel: { fontSize: 12.5, fontWeight: 700, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  ankerKm: { fontSize: 11, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
-  ankerPreis: { fontSize: 12.5, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace" },
-  ankerSoll: { fontSize: 11, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
-  ankerDelta: { fontSize: 11.5, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
 
-  sternIconAn: { background: "transparent", color: T.accent, border: "none", padding: 4, borderRadius: 6, display: "inline-flex" },
-  sternAus: { display: "inline-flex", alignItems: "center", gap: 7, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "6px 13px", fontSize: 12, fontWeight: 600 },
-  sternAn: { display: "inline-flex", alignItems: "center", gap: 7, background: T.accent, color: T.bg, border: `1px solid ${T.accent}`, borderRadius: 20, padding: "6px 13px", fontSize: 12, fontWeight: 700 },
 
   pruefListe: { display: "flex", flexDirection: "column", gap: 12 },
   pruefBlock: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 10, padding: "12px 14px" },
@@ -4725,7 +2231,6 @@ const styles = {
   pruefMeta: { fontSize: 11, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
   pruefPunkte: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 },
   pruefPunkt: { fontSize: 10.5, color: T.accent, border: `1px solid ${T.accent}44`, borderRadius: 20, padding: "3px 9px" },
-  ghostLink: { fontSize: 11.5, color: T.muted, textDecoration: "none", alignSelf: "center" },
 
   fotoBox: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 9, padding: "10px 12px", marginBottom: 12 },
   fotoTitel: { display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700, color: T.accent, marginBottom: 6 },
@@ -4734,9 +2239,6 @@ const styles = {
   fotoLabel: { fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 },
   fotoText: { fontSize: 11.5, color: T.text, lineHeight: 1.5 },
 
-  toggleGroup: { display: "inline-flex", gap: 4, background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: 3 },
-  toggleOn: { background: T.accent, color: T.bg, border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 700, textTransform: "none", letterSpacing: 0 },
-  toggleOff: { background: "transparent", color: T.muted, border: "none", borderRadius: 6, padding: "5px 10px", fontSize: 11, fontWeight: 600, textTransform: "none", letterSpacing: 0 },
 
   laufTable: { display: "flex", flexDirection: "column", gap: 2, overflowX: "auto" },
   laufRow: { display: "grid", gridTemplateColumns: "minmax(140px,2fr) 74px 84px 84px 92px minmax(110px,1fr)", gap: 8, alignItems: "center", fontSize: 12, padding: "6px 8px", background: T.bg, borderRadius: 6, minWidth: 620 },
@@ -4778,79 +2280,13 @@ const styles = {
   updTag: { color: T.accent },
 
   /* Analyse */
-  searchWrap: { display: "flex", alignItems: "center", gap: 8, background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "0 10px", marginBottom: 12 },
-  searchInput: { flex: 1, background: "transparent", border: "none", color: T.text, padding: "10px 0", fontSize: 13 },
-  resetBtn: { display: "inline-flex", alignItems: "center", gap: 4, background: T.surface2, color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "3px 9px", fontSize: 11 },
-  filterGrid: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 12 },
 
-  mfListe: { display: "flex", flexDirection: "column", gap: 11, marginBottom: 12 },
-  mfFeld: { display: "flex", flexDirection: "column", gap: 6 },
-  mfKopf: { display: "flex", alignItems: "center", gap: 8 },
-  mfAlle: { fontSize: 10.5, color: T.line },
-  mfClear: { display: "inline-flex", alignItems: "center", gap: 3, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "1px 7px", fontSize: 10 },
-  mfChips: { display: "flex", gap: 6, flexWrap: "wrap" },
-  mfChip: { display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", color: T.text, border: `1px solid ${T.line}`, borderRadius: 20, padding: "4px 10px", fontSize: 11.5, fontWeight: 600 },
-  mfChipLeer: { display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 20, padding: "4px 10px", fontSize: 11.5, fontWeight: 600, opacity: 0.5 },
-  mfChipOn: { display: "inline-flex", alignItems: "center", gap: 5, color: T.bg, border: "1px solid", borderRadius: 20, padding: "4px 10px", fontSize: 11.5, fontWeight: 700 },
-  mfZahl: { fontSize: 10, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
-  mfZahlOn: { fontSize: 10, color: T.bg, opacity: 0.7, fontFamily: "ui-monospace, Menlo, monospace" },
   rangeField: { display: "flex", flexDirection: "column", gap: 5 },
   fieldLabel: { fontSize: 10.5, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em" },
-  input: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 13 },
-  select: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "9px 11px", fontSize: 13, cursor: "pointer" },
-  moreBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 8, padding: "7px 12px", fontSize: 12, marginBottom: 14 },
   exportBtn: { display: "inline-flex", alignItems: "center", gap: 5, background: "transparent", color: T.accent, border: `1px solid ${T.accent}55`, borderRadius: 8, padding: "6px 11px", fontSize: 11.5, fontWeight: 700, textTransform: "none", letterSpacing: 0 },
 
-  compareHead: { display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", borderTop: `1px solid ${T.line}`, paddingTop: 14, marginBottom: 10 },
-  compareTitle: { fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: T.muted },
   selectInline: { background: T.bg, color: T.accent, border: `1px solid ${T.line}`, borderRadius: 7, padding: "5px 9px", fontSize: 12, fontWeight: 600, cursor: "pointer" },
-  resultCount: { marginLeft: "auto", fontSize: 11.5, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
-  emptySmall: { color: T.muted, fontSize: 12, padding: "16px 4px" },
-  legendHint: { fontSize: 11, color: T.muted, textAlign: "center", marginTop: 4 },
-  karte: { background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", fontSize: 12, maxWidth: 260, boxShadow: "0 8px 24px rgba(0,0,0,.45)" },
-  karteKopf: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, marginBottom: 5 },
-  karteNr: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 10.5, color: T.muted },
-  karteRep: { fontSize: 10, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em" },
-  karteTitel: { fontWeight: 700, fontSize: 12.5, lineHeight: 1.35 },
-  karteMarke: { fontSize: 10.5, color: T.accent, fontWeight: 600, marginTop: 2 },
-  kartePreis: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 17, fontWeight: 700, margin: "7px 0" },
-  karteListe: { display: "flex", flexDirection: "column", gap: 2, borderTop: `1px solid ${T.line}`, paddingTop: 6 },
-  karteZeile: { display: "flex", justifyContent: "space-between", gap: 10, fontSize: 11 },
-  karteLabel: { color: T.muted },
-  karteWert: { fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
-  karteHinweis: { fontSize: 10, color: T.muted, marginTop: 6, fontStyle: "italic" },
-  standLegende: { display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", marginTop: 8, fontSize: 10.5, color: T.muted },
-  standLegendeEintrag: { display: "inline-flex", alignItems: "center", gap: 5 },
-  standPunkt: { width: 9, height: 9, borderRadius: "50%", display: "inline-block", boxSizing: "border-box" },
-  standAnzahl: { color: T.text, fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 700 },
-  standZeile: { display: "grid", gridTemplateColumns: "minmax(120px, 2fr) 128px 92px 92px", gap: 8, alignItems: "center", background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 11px", textDecoration: "none", color: T.text },
-  standTitel: { fontSize: 12.5, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
-  standTage: { fontSize: 11, fontFamily: "ui-monospace, Menlo, monospace" },
-  standKm: { fontSize: 11, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
-  standPreis: { fontSize: 12.5, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
-  repLegende: { display: "flex", gap: 14, flexWrap: "wrap", justifyContent: "center", marginTop: 8, fontSize: 10.5, color: T.muted },
-  repLegendeEintrag: { display: "inline-flex", alignItems: "center", gap: 5 },
-  repPunkt: { width: 8, height: 8, borderRadius: "50%", display: "inline-block" },
 
-  zeitTooltip: { background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 11px", fontSize: 12, maxWidth: 240 },
-  zeitTooltipDatum: { color: T.muted, fontSize: 10.5, fontFamily: "ui-monospace, Menlo, monospace" },
-  zeitTooltipTitel: { fontWeight: 600, margin: "3px 0", lineHeight: 1.3 },
-  zeitTooltipPreis: { fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 700, fontSize: 13 },
-  zeitTooltipTrend: { color: T.muted, fontSize: 10.5, marginTop: 3 },
-  steuerung: { display: "flex", gap: 16, flexWrap: "wrap", alignItems: "flex-end", margin: "4px 0 14px" },
-  steuerBlock: { display: "flex", flexDirection: "column", gap: 5 },
-  kennzahlen: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, margin: "16px 0 4px" },
-  kennzahl: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "10px 12px" },
-  kennzahlLabel: { fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700 },
-  kennzahlWert: { fontSize: 19, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace", marginTop: 4 },
-  kennzahlZusatz: { fontSize: 10.5, color: T.muted, marginTop: 2 },
-  schluss: { background: T.bg, border: `1px solid ${T.accent}44`, borderLeft: `3px solid ${T.accent}`, borderRadius: 8, padding: "11px 13px", fontSize: 12.5, lineHeight: 1.6, marginTop: 12 },
-  hinweisKlein: { fontSize: 10.5, color: T.muted, lineHeight: 1.6, marginTop: 12, paddingTop: 10, borderTop: `1px solid ${T.line}` },
-  hinweisZeile: { display: "flex", alignItems: "flex-start", gap: 8, background: T.bg, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 8, padding: "9px 12px", fontSize: 11.5, color: T.muted, lineHeight: 1.6, marginBottom: 12 },
-  abTable: { display: "flex", flexDirection: "column", gap: 2, marginTop: 14 },
-  abRow: { display: "grid", gridTemplateColumns: "1.4fr 1fr 1fr", gap: 8, alignItems: "center", fontSize: 12, padding: "6px 10px", background: T.bg, borderRadius: 6 },
-  abHead: { background: "transparent", fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, padding: "2px 10px", color: T.muted },
-  abWert: { fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 600 },
 
   dubletteBox: { background: T.bg, border: `1px solid ${T.line}`, borderLeft: "3px solid", borderRadius: 9, padding: "11px 13px", marginTop: 8 },
   dubletteTitel: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 700, marginBottom: 7 },
@@ -4866,18 +2302,6 @@ const styles = {
   dubletteTitelKlein: { fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   dubletteAngabe: { fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11, color: T.muted, whiteSpace: "nowrap" },
   dubletteSchluss: { fontSize: 11.5, color: T.muted, lineHeight: 1.6, marginTop: 9, paddingTop: 8, borderTop: `1px solid ${T.line}` },
-  groupTable: { display: "flex", flexDirection: "column", gap: 2, marginTop: 6 },
-  groupRow: { display: "flex", alignItems: "center", gap: 10, fontSize: 12, padding: "5px 8px", background: T.bg, borderRadius: 6 },
-  groupTag: { fontWeight: 700, minWidth: 96, fontSize: 11.5 },
-  groupCount: { color: T.muted, width: 34, fontFamily: "ui-monospace, Menlo, monospace" },
-  groupAvg: { flex: 1, fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 600 },
-  groupKm: { color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11 },
-  resultList: { display: "flex", flexDirection: "column", gap: 3, marginTop: 14, borderTop: `1px solid ${T.line}`, paddingTop: 12 },
-  resultRow: { display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10, padding: "6px 8px", background: T.bg, borderRadius: 6, fontSize: 12.5, flexWrap: "wrap" },
-  resultTitle: { fontWeight: 600, minWidth: 0 },
-  resultTags: { display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" },
-  miniTag: { fontStyle: "normal", fontSize: 11, fontWeight: 600 },
-  resultPrice: { fontStyle: "normal", fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 700 },
 
   empty: { display: "flex", flexDirection: "column", alignItems: "center", gap: 12, textAlign: "center", color: T.muted, fontSize: 12.5, lineHeight: 1.55, padding: "34px 20px", maxWidth: 460, margin: "0 auto" },
 
@@ -4887,7 +2311,6 @@ const styles = {
   tabCount: { background: T.surface2, color: T.muted, borderRadius: 20, padding: "1px 8px", fontSize: 11, fontFamily: "ui-monospace, Menlo, monospace" },
   tabCountOn: { background: T.accent, color: T.bg, borderRadius: 20, padding: "1px 8px", fontSize: 11, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace" },
 
-  listActions: { display: "flex", justifyContent: "flex-end", marginBottom: 8 },
   listHeadLabels: { padding: "0 12px 7px" },
   sortKopf: { display: "inline-flex", alignItems: "center", gap: 4, background: "transparent", border: "none", padding: 0, fontSize: 10, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, textAlign: "left", lineHeight: 1.3 },
   sortZeile: { display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginBottom: 10 },
@@ -4905,7 +2328,6 @@ const styles = {
   metricStark: { fontSize: 14, fontWeight: 700, fontFamily: "ui-monospace, Menlo, monospace", whiteSpace: "nowrap" },
 
   cardBody: { padding: "4px 14px 13px", minWidth: 0, borderTop: `1px solid ${T.line}` },
-  cardTitle: { fontSize: 14, fontWeight: 700, lineHeight: 1.3, overflow: "hidden", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" },
   cardSub: { fontSize: 11.5, color: T.muted, marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
   idRow: { display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", margin: "10px 0 8px" },
   makeTag: { fontSize: 11, fontWeight: 700, color: T.accent, letterSpacing: "0.02em" },
@@ -4918,7 +2340,6 @@ const styles = {
   chip: { background: T.bg, border: `1px solid ${T.line}`, color: T.muted, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontFamily: "ui-monospace, Menlo, monospace" },
   subMeta: { display: "flex", gap: 12, flexWrap: "wrap", color: T.muted, fontSize: 11, marginBottom: 8 },
   seller: { display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", fontSize: 12, marginBottom: 10 },
-  stars: { color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
   addr: { color: T.muted, fontSize: 11 },
   damageBox: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", marginBottom: 10 },
   damageLine: { display: "flex", gap: 8, fontSize: 11.5, padding: "2px 0", alignItems: "baseline" },
@@ -4938,7 +2359,6 @@ const styles = {
   histDate: { color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", width: 66 },
   histPrice: { flex: 1, fontFamily: "ui-monospace, Menlo, monospace", fontWeight: 600 },
   histDel: { background: "transparent", border: "none", color: T.muted, display: "grid", placeItems: "center", padding: 2, lineHeight: 0 },
-  link: { display: "inline-block", marginTop: 4, fontSize: 11.5, textDecoration: "none" },
   linkBox: { marginTop: 6 },
   linkTrenner: { marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.line}` },
   linkZeile: { display: "flex", alignItems: "center", gap: 8 },
