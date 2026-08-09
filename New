@@ -938,7 +938,10 @@ export default function App() {
   const [uebersichtSort, setUebersichtSort] = useState("preis");
   // Preisverläufe: Tag 0 und Maßeinheit der senkrechten Achse
   const [verlaufNull, setVerlaufNull] = useState("inserat");   // "inserat" oder "erfassung"
-  const [verlaufEinheit, setVerlaufEinheit] = useState("prozent");
+  /* Euro ist voreingestellt, nicht Prozent: in Prozent starten alle Linien
+     bei 100 % und man sieht zwar die Zeitpunkte, aber nicht mehr, auf
+     welcher Höhe sich der Markt trifft. Genau darum geht es hier. */
+  const [verlaufEinheit, setVerlaufEinheit] = useState("euro");
   // Orderbuch: aufgeklappte Preisstufe und der Preis im Rechner
   const [buchStufe, setBuchStufe] = useState(null);
   const [buchPreis, setBuchPreis] = useState("");
@@ -1441,6 +1444,23 @@ export default function App() {
 
     const mitSenkung = reihen.filter((r) => r.senkungen.length);
     const tageBis = mitSenkung.map((r) => r.ersteSenkung);
+
+    /* Die Zone, in der die Spuren abreißen: die mittlere Hälfte der Preise,
+       auf denen verschwundene Inserate zuletzt standen. Kein Rechenwerk,
+       sondern ein Streifen im Bild — man soll sehen, auf welche Höhe die
+       Linien zulaufen, bevor sie enden. Unter drei Abgängen wäre der
+       Streifen die Meinung eines einzelnen Verkäufers, deshalb erst ab drei. */
+    const ausstieg = reihen.filter((r) => r.offline).map((r) => r.letzterPreis).sort((a, b) => a - b);
+    const perzentil = (p) => {
+      if (!ausstieg.length) return null;
+      const i = (ausstieg.length - 1) * p;
+      const u = Math.floor(i), o = Math.ceil(i);
+      return u === o ? ausstieg[u] : ausstieg[u] + (ausstieg[o] - ausstieg[u]) * (i - u);
+    };
+    const zone = ausstieg.length >= 3
+      ? { von: perzentil(0.25), bis: perzentil(0.75), mitte: perzentil(0.5), n: ausstieg.length }
+      : null;
+
     const abstaende = [];
     reihen.forEach((r) => {
       for (let i = 1; i < r.senkungen.length; i++) abstaende.push(r.senkungen[i].tag - r.senkungen[i - 1].tag);
@@ -1456,6 +1476,7 @@ export default function App() {
       medianAbstand: mitte(abstaende),
       geraten: reihen.filter((r) => r.blindBis > 0).length,
       laengste: Math.max(...reihen.map((r) => r.ende)),
+      zone, abgaenge: ausstieg.length,
     };
   }, [list, verlaufNull]);
 
@@ -2109,6 +2130,8 @@ export default function App() {
           Ein Preis gilt, bis der Verkäufer ihn ändert — deshalb Treppe und nicht Gerade. Jede
           Stufe nach unten ist eine Senkung. <b style={{ color: T.text }}>Die Linien sind unterschiedlich lang</b>,
           und genau das ist die zweite Aussage: eine kurze war schnell wieder weg, eine lange steht immer noch.
+          Wo eine Linie mit Ring endet, ist das Inserat verschwunden — der grüne Streifen zeigt, auf welcher
+          Höhe das meistens passiert.
         </p>
 
         {!preisverlaeufe ? (
@@ -2157,15 +2180,27 @@ export default function App() {
               /* Keine Linie bei 100 %: Die Achse zeigt den Startpreis ohnehin, und
                  ein gestrichelter Strich quer durchs Bild sähe aus wie ein Inserat. */
               linien={[]}
+              /* Nur in Euro: in Prozent hat jede Linie ihren eigenen Nenner,
+                 ein gemeinsamer Preisstreifen wäre dort schlicht falsch. */
+              band={verlaufEinheit === "euro" && preisverlaeufe.zone
+                ? { von: preisverlaeufe.zone.von, bis: preisverlaeufe.zone.bis,
+                    farbe: T.good, label: "hier reißen die Spuren ab" }
+                : null}
               karte={(r, tag) => <Verlaufskarte r={r} tag={tag} einheit={verlaufEinheit} />}
               aufKlick={(r) => { if (r.url) window.open(normalizeUrl(r.url), "_blank", "noreferrer"); }}
             />
 
             <div style={S.feldLegende}>
               <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.text }} /> Punkt auf der Linie: eine Preisänderung</span>
-              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.text }} /> volles Ende: läuft noch</span>
-              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.bg, border: `2px solid ${T.text}` }} /> offenes Ende: nicht mehr online</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.text }} /> Ende mit Ring: nicht mehr online</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.bg, border: `2px solid ${T.text}` }} /> offenes Ende: läuft noch</span>
               <span style={S.legendeEintrag}><span style={S.legendeStrich} /> gestrichelt: vor deiner ersten Beobachtung</span>
+              {verlaufEinheit === "euro" && preisverlaeufe.zone && (
+                <span style={S.legendeEintrag}>
+                  <span style={{ ...S.legendePunkt, borderRadius: 2, width: 16, background: T.good, opacity: 0.4 }} />
+                  {" "}grüner Streifen: dort verschwanden die mittleren 50 %
+                </span>
+              )}
             </div>
 
             <div style={S.spanneSatz}>
@@ -2187,6 +2222,22 @@ export default function App() {
                   nachdenkt.
                 </>
               )}
+              {verlaufEinheit === "euro" && preisverlaeufe.zone && (
+                <>
+                  {" "}Der grüne Streifen liegt dort, wo die Spuren abreißen: Die mittlere Hälfte
+                  der <b style={{ color: T.text }}>{preisverlaeufe.zone.n}</b> verschwundenen Inserate stand zuletzt
+                  zwischen <b style={{ color: T.good }}>{fmtEUR(Math.round(preisverlaeufe.zone.von))}</b> und{" "}
+                  <b style={{ color: T.good }}>{fmtEUR(Math.round(preisverlaeufe.zone.bis))}</b>. Jede Linie, die
+                  noch deutlich darüber verläuft, hat ihren Weg nach unten also noch vor sich.
+                </>
+              )}
+              {verlaufEinheit === "euro" && !preisverlaeufe.zone && preisverlaeufe.abgaenge > 0 && (
+                <>
+                  {" "}Für einen Streifen fehlen die Abgänge: Bisher {preisverlaeufe.abgaenge === 1
+                    ? "ist erst ein Inserat" : `sind erst ${preisverlaeufe.abgaenge} Inserate`} verschwunden,
+                  ab dreien zeichne ich die Zone ein, in der die Spuren abreißen.
+                </>
+              )}
             </div>
 
             {preisverlaeufe.geraten > 0 && verlaufNull === "inserat" && (
@@ -2202,8 +2253,13 @@ export default function App() {
             <div style={S.kleinerHinweis}>
               Die Auflösung ist so fein wie deine Erfassung: Trägst du wöchentlich nach, kann eine Senkung bis zu
               sechs Tage früher passiert sein, als die Stufe zeigt.
-              {verlaufEinheit === "euro" && <> In Euro liegen die Linien auf verschiedenen Höhen und überdecken sich;
-                zum Vergleichen der Zeitpunkte ist <b style={{ color: T.text }}>Prozent</b> die klarere Ansicht.</>}
+              {verlaufEinheit === "euro"
+                ? <> In Euro siehst du, auf welche Höhe der Markt zuläuft — dafür liegen die Linien weit
+                  auseinander. Willst du nur die <i>Zeitpunkte</i> der Senkungen vergleichen, starte
+                  mit <b style={{ color: T.text }}>Prozent</b> alle Linien auf derselben Höhe.</>
+                : <> In Prozent startet jede Linie bei 100 %, die Zeitpunkte sind dadurch vergleichbar.
+                  Auf welcher Höhe die Inserate verschwinden, zeigt
+                  nur <b style={{ color: T.text }}>Euro</b>.</>}
             </div>
           </>
         )}
@@ -3300,7 +3356,7 @@ function Punktfeld({ punkte, hoehe = 330, yFormat, xFormat, xTitel, yTitel,
    dem kleinsten senkrechten Abstand. Bei einem Feld voller Linien ist das
    die einzige Art, eine einzelne davon zu greifen. */
 function Linienfeld({ reihen, hoehe = 360, yFormat, xFormat, xTitel, yTitel,
-  linien = [], karte, aufKlick, leer }) {
+  linien = [], band = null, karte, aufKlick, leer }) {
   const S = styles;
   const huelle = useRef(null);
   const breite = useBreite(huelle);
@@ -3316,7 +3372,9 @@ function Linienfeld({ reihen, hoehe = 360, yFormat, xFormat, xTitel, yTitel,
 
   if (!reihen.length) return <div style={S.leerFeld}>{leer || "Keine Daten."}</div>;
 
-  const alleY = reihen.flatMap((r) => r.punkte.map((p) => p.y)).concat(linien.map((l) => l.y));
+  const alleY = reihen.flatMap((r) => r.punkte.map((p) => p.y))
+    .concat(linien.map((l) => l.y))
+    .concat(band ? [band.von, band.bis] : []);
   let yMin = Math.min(...alleY), yMax = Math.max(...alleY);
   const luft = (yMax - yMin) * 0.08 || Math.max(1, Math.abs(yMax) * 0.05);
   yMin -= luft; yMax += luft;
@@ -3398,6 +3456,25 @@ function Linienfeld({ reihen, hoehe = 360, yFormat, xFormat, xTitel, yTitel,
             <text key={w} x={px(w)} y={hoehe - rand.unten + 14} textAnchor="middle" fontSize="10.5"
               fill={T.muted} fontFamily="ui-monospace, Menlo, monospace">{xFormat ? xFormat(w) : w}</text>
           ))}
+          {/* Die Zone, in der die Inserate verschwinden — dorthin laufen die
+              Linien, bevor die Spur abbricht. */}
+          {band && (
+            <g>
+              <rect x={rand.links} width={zeichenB} y={py(band.bis)}
+                height={Math.max(2, py(band.von) - py(band.bis))}
+                fill={band.farbe || T.good} fillOpacity={0.13} />
+              <line x1={rand.links} x2={rand.links + zeichenB} y1={py(band.bis)} y2={py(band.bis)}
+                stroke={band.farbe || T.good} strokeWidth={1} opacity={0.45} />
+              <line x1={rand.links} x2={rand.links + zeichenB} y1={py(band.von)} y2={py(band.von)}
+                stroke={band.farbe || T.good} strokeWidth={1} opacity={0.45} />
+              {/* Auf schmalen Feldern läuft die Beschriftung durch die Linien;
+                  dort erklärt die Legende den Streifen. */}
+              {band.label && B > 520 && (
+                <text x={rand.links + zeichenB - 6} y={py(band.bis) - 5} textAnchor="end"
+                  fontSize="10" fill={band.farbe || T.good}>{band.label}</text>
+              )}
+            </g>
+          )}
           {linien.map((l, i) => (
             <g key={i}>
               <line x1={rand.links} x2={rand.links + zeichenB} y1={py(l.y)} y2={py(l.y)}
@@ -3428,9 +3505,20 @@ function Linienfeld({ reihen, hoehe = 360, yFormat, xFormat, xTitel, yTitel,
                 {r.knicke.map((k, i) => (
                   <circle key={i} cx={px(k.x)} cy={py(k.y)} r={dran ? 4 : 2.6} fill={r.farbe} />
                 ))}
-                {/* Ende der Linie: gefüllt heißt läuft noch, offen heißt weg */}
-                <circle cx={px(r.ende)} cy={py(r.punkte[r.punkte.length - 1].y)} r={dran ? 5 : 3.4}
-                  fill={r.offline ? T.bg : r.farbe} stroke={r.farbe} strokeWidth={r.offline ? 1.8 : 0} />
+                {/* Das Ende einer Linie ist die wichtigste Stelle im Bild.
+                    Verschwunden = Treffer: voller Punkt mit Ring darum.
+                    Läuft noch  = offenes Ende: kleiner hohler Kreis. */}
+                {r.offline ? (
+                  <g>
+                    <circle cx={px(r.ende)} cy={py(r.punkte[r.punkte.length - 1].y)} r={dran ? 9 : 7}
+                      fill="none" stroke={r.farbe} strokeWidth={1.2} opacity={0.55} />
+                    <circle cx={px(r.ende)} cy={py(r.punkte[r.punkte.length - 1].y)} r={dran ? 5 : 3.8}
+                      fill={r.farbe} />
+                  </g>
+                ) : (
+                  <circle cx={px(r.ende)} cy={py(r.punkte[r.punkte.length - 1].y)} r={dran ? 4.5 : 3.2}
+                    fill={T.bg} stroke={r.farbe} strokeWidth={1.6} />
+                )}
               </g>
             );
           })}
