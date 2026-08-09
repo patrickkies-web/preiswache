@@ -355,6 +355,57 @@ function tageZwischen(von, bis) {
 // Erster bekannter Tag des Inserats: gesetzter Wert, sonst der erste Preis-Punkt.
 const inseriertSeit = (v) => v.listedSince || v.priceHistory?.[0]?.date || "";
 
+/* --- Überlebensrechnung nach Kaplan-Meier ---------------------------
+   Die Frage "wie viel ist nach N Tagen weg?" naiv zu beantworten — Abgänge
+   durch alle — geht aus zwei Gründen schief:
+
+   Zensierung. Ein Inserat, das seit drei Tagen läuft, ist nicht "nicht
+   verkauft". Es ist "bis hierher noch da". Es in den Nenner zu werfen,
+   drückt jede Quote nach unten, ohne dass der Preis daran schuld wäre.
+
+   Verzögerter Eintritt. Ein Inserat, das du erst nach dreißig Tagen
+   gefunden hast, konnte in diesen dreißig Tagen gar nicht als Abgang
+   auffallen — dass es überhaupt in deiner Liste steht, heißt ja, dass es
+   so lange überlebt hat. Zählt man es von Tag null an mit, sieht die frühe
+   Zeit sicherer aus, als sie ist.
+
+   Kaplan-Meier löst beides: zu jedem Zeitpunkt zählt nur, wer da gerade
+   wirklich im Feld steht und beobachtet wird.
+
+   faelle: [{ eintritt, austritt, ereignis }]
+     eintritt  — ab welchem Tag der Standzeit du hinsiehst
+     austritt  — Tag, an dem es verschwand, sonst der heutige Stand
+     ereignis  — true, wenn es tatsächlich verschwunden ist  */
+function ueberlebenskurve(faelle) {
+  const zeiten = [...new Set(faelle.filter((f) => f.ereignis).map((f) => f.austritt))]
+    .sort((a, b) => a - b);
+  let s = 1;
+  const kurve = [{ tag: 0, s: 1, risiko: faelle.filter((f) => f.eintritt <= 0).length, abgang: 0 }];
+  zeiten.forEach((t) => {
+    const risiko = faelle.filter((f) => f.eintritt < t && f.austritt >= t).length;
+    const abgang = faelle.filter((f) => f.ereignis && f.austritt === t).length;
+    if (risiko > 0) s *= 1 - abgang / risiko;
+    kurve.push({ tag: t, s, risiko, abgang });
+  });
+  return kurve;
+}
+// Anteil, der bis zu diesem Tag weg ist.
+function abgangBis(kurve, tag) {
+  let s = 1;
+  for (const k of kurve) { if (k.tag <= tag) s = k.s; else break; }
+  return 1 - s;
+}
+// Wie viele stehen an diesem Tag überhaupt noch unter Beobachtung?
+function risikoBei(faelle, tag) {
+  return faelle.filter((f) => f.eintritt < tag && f.austritt >= tag).length;
+}
+// Halbwertszeit: der Tag, an dem die Hälfte weg ist. Wird sie nie erreicht,
+// bleibt die Antwort leer — das ist ehrlicher als eine hochgerechnete Zahl.
+function halbwertszeit(kurve) {
+  const t = kurve.find((k) => k.s <= 0.5);
+  return t ? t.tag : null;
+}
+
 /* --- Beobachtung je Fahrzeug -------------------------------------------
    Gespeichert werden nur die vier Angaben, die sich nicht ausrechnen
    lassen: firstSeen, lastSeen, disappearedAt und trackingQuality. Alles
@@ -891,6 +942,9 @@ export default function App() {
   // Orderbuch: aufgeklappte Preisstufe und der Preis im Rechner
   const [buchStufe, setBuchStufe] = useState(null);
   const [buchPreis, setBuchPreis] = useState("");
+  // Absorptionskarte: Zielzeit und aufgeklappte Preisstufe
+  const [zielTage, setZielTage] = useState(30);
+  const [karteStufe, setKarteStufe] = useState(null);
   const aktiv = tab === "analyseB" ? 1 : 0;
   const andere = 1 - aktiv;
   const [openRows, setOpenRows] = useState({});
@@ -1500,6 +1554,89 @@ export default function App() {
       medianTempo: mitte(eintraege.filter((e) => e.offline).map((e) => e.tage)),
     };
   }, [list]);
+
+  /* ---- Absorptionskarte: Preis mal Zeit ----
+     Für jede Preisstufe eine eigene Überlebensrechnung. Die Karte zeigt je
+     Stufe und Zeitfenster, welcher Anteil bis dahin absorbiert war — und
+     wo im Preis die Absorption abreißt. */
+  const ABSORPTION_FENSTER = [
+    { tage: 7, kurz: "1 Woche" }, { tage: 14, kurz: "2 Wochen" },
+    { tage: 30, kurz: "1 Monat" }, { tage: 60, kurz: "2 Monate" },
+    { tage: 90, kurz: "3 Monate" }, { tage: 180, kurz: "6 Monate" },
+  ];
+  const absorption = useMemo(() => {
+    const faelle = list.map((v) => {
+      const t = tracking(v);
+      // Der Preis, zu dem es zuletzt am Markt stand — bei Verschwundenen der
+      // Kurs, bei dem es weg war.
+      const preis = t.offline ? t.lastAsk : t.currentPrice;
+      const austritt = t.daysOnline != null ? t.daysOnline : t.daysTracked;
+      if (preis == null || austritt == null) return null;
+      // Ab wann du hinsiehst. Bei einem nachträglich gefundenen Inserat sind
+      // das die Tage, die es vor deinem Fund schon lief.
+      const eintritt = Math.max(0, Math.min(t.blindTage || 0, Math.max(0, austritt - 1)));
+      return {
+        id: v.id, title: v.title || v.id, url: v.url, preis,
+        eintritt, austritt, ereignis: t.offline, stand: t.stand,
+        km: v.mileage, ez: erstzulassung(v), guete: t.qualitaet,
+        marke: [v.make, v.model].filter(Boolean).join(" "),
+      };
+    }).filter(Boolean);
+    if (faelle.length < 4) return { zuWenig: true, anzahl: faelle.length };
+
+    const abgaenge = faelle.filter((f) => f.ereignis).length;
+    const laengste = Math.max(...faelle.map((f) => f.austritt));
+    const fenster = ABSORPTION_FENSTER.filter((f, i) =>
+      f.tage <= laengste || (i > 0 && ABSORPTION_FENSTER[i - 1].tage <= laengste));
+
+    // Preisstufen wie im Orderbuch, damit beide Bilder dieselbe Leiter haben.
+    const preise = faelle.map((f) => f.preis);
+    const min = Math.min(...preise), max = Math.max(...preise);
+    const roh = Math.max(1, (max - min) / 5);
+    const groesse = Math.pow(10, Math.floor(Math.log10(roh)));
+    const breite = [1, 2, 2.5, 5, 10].map((x) => x * groesse).find((x) => x >= roh) || groesse * 10;
+    const unten = Math.floor(min / breite) * breite;
+    const oben = Math.floor(max / breite) * breite;
+
+    const stufen = [];
+    for (let p = oben; p >= unten - 0.5; p -= breite) {
+      const drin = faelle.filter((f) => f.preis >= p && f.preis < p + breite);
+      const kurve = ueberlebenskurve(drin);
+      stufen.push({
+        von: Math.round(p), bis: Math.round(p + breite), faelle: drin,
+        anzahl: drin.length, abgaenge: drin.filter((f) => f.ereignis).length,
+        kurve, halbwert: halbwertszeit(kurve),
+        zellen: fenster.map((w) => ({
+          ...w,
+          anteil: drin.length ? abgangBis(kurve, w.tage) : null,
+          risiko: risikoBei(drin, w.tage),
+          // Ohne zwei Beobachtungen im Feld ist eine Quote geraten.
+          belastbar: risikoBei(drin, Math.min(w.tage, 1)) >= 2 || drin.filter((f) => f.austritt >= w.tage || f.ereignis).length >= 2,
+        })),
+      });
+    }
+    const belegt = stufen.filter((st) => st.anzahl > 0);
+
+    // Der faire Preis zur Zielzeit: die oberste Stufe, auf der bis dahin
+    // mindestens die Hälfte absorbiert war.
+    const zielZelle = (st) => st.zellen.find((z) => z.tage === zielTage) || st.zellen[st.zellen.length - 1];
+    const brauchbar = belegt.filter((st) => zielZelle(st) && zielZelle(st).belastbar);
+    const fair = brauchbar.find((st) => zielZelle(st).anteil >= 0.5) || null;
+    const tot = brauchbar.length
+      ? brauchbar.filter((st) => zielZelle(st).anteil <= 0.15).slice(-1)[0] || null
+      : null;
+
+    const gesamt = ueberlebenskurve(faelle);
+    return {
+      zuWenig: false, faelle, stufen: belegt, fenster, breite,
+      anzahl: faelle.length, abgaenge, laengste,
+      gesamtKurve: gesamt, gesamtHalbwert: halbwertszeit(gesamt),
+      gesamtAnteil: abgangBis(gesamt, zielTage),
+      fair, tot, zielZelle,
+      duenn: belegt.filter((st) => !zielZelle(st) || !zielZelle(st).belastbar).length,
+      nachgetragen: faelle.filter((f) => f.eintritt > 0).length,
+    };
+  }, [list, zielTage]);
 
   // Alles, wo noch eine Entscheidung von dir aussteht. Unbestätigte zuerst,
   // danach die mit den meisten offenen Punkten.
@@ -2254,6 +2391,177 @@ export default function App() {
       </section>
       )}
 
+      {tab === "uebersicht" && (
+      <section style={{ ...S.panel, borderColor: T.accent + "44" }}>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8, color: T.accent }}>
+            <TrendingUp size={15} /> Absorptionskarte
+          </span>
+          {!absorption.zuWenig && (
+            <span style={S.umschalter}>
+              {[7, 14, 30, 60, 90].filter((t) => t <= Math.max(30, absorption.laengste)).map((t) => (
+                <button key={t} onClick={() => setZielTage(t)}
+                  style={zielTage === t ? S.umschalterAn : S.umschalterAus}>{t} T</button>
+              ))}
+            </span>
+          )}
+        </div>
+        <p style={S.hint}>
+          Waagerecht die Zeit, senkrecht der Preis, die Farbe sagt: <b style={{ color: T.text }}>wie viel davon
+          war bis dahin weg</b>. Gerechnet wird nicht „Abgänge durch alle" — das wäre falsch. Ein Inserat, das
+          seit drei Tagen läuft, ist nicht <i>nicht verkauft</i>, sondern <i>bis hierher noch da</i>. Und eines,
+          das du erst nach dreißig Tagen gefunden hast, konnte vorher gar nicht auffallen. Beides wird
+          herausgerechnet; zu jedem Zeitpunkt zählt nur, wer da wirklich im Feld stand.
+        </p>
+
+        {absorption.zuWenig ? (
+          <div style={S.empty}>
+            <TrendingUp size={30} color={T.line} />
+            <span>Für eine Absorptionsrechnung braucht es mindestens vier Fahrzeuge mit Preis und
+              Zeitangabe — es sind erst {absorption.anzahl}.</span>
+          </div>
+        ) : (
+          <>
+            <div style={S.zahlenreihe}>
+              <Zahlenfeld label={`Fair für ${zielTage} Tage`} accent
+                wert={absorption.fair ? `unter ${fmtEUR(absorption.fair.bis)}` : "—"}
+                zusatz={absorption.fair
+                  ? `dort war die Hälfte in ${zielTage} Tagen weg`
+                  : "keine Stufe erreicht die Hälfte"} />
+              <Zahlenfeld label="Halbwertszeit"
+                wert={absorption.gesamtHalbwert == null ? "noch offen" : laufzeitText(absorption.gesamtHalbwert)}
+                zusatz={absorption.gesamtHalbwert == null
+                  ? "die Hälfte steht noch" : "bis die Hälfte weg ist"} />
+              <Zahlenfeld label={`Absorbiert in ${zielTage} T`}
+                wert={`${Math.round(absorption.gesamtAnteil * 100)} %`}
+                zusatz="über alle Preisstufen" />
+              <Zahlenfeld label="Datengrundlage"
+                wert={`${absorption.abgaenge} von ${absorption.anzahl}`}
+                zusatz={absorption.abgaenge < 5 ? "zu wenige Abgänge für scharfe Kanten" : "beobachtete Abgänge"} />
+            </div>
+
+            {/* ---- Die Karte ---- */}
+            <div style={S.karteRahmen}>
+              <div className="pw-karte" style={{ ...S.karteZeile, ...S.karteKopfZeile }}>
+                <span style={S.karteStufeKopf}>Preisstufe</span>
+                {absorption.fenster.map((w) => (
+                  <span key={w.tage} style={S.karteSpalteKopf}>{w.kurz}</span>
+                ))}
+                <span style={S.karteSpalteKopf}>halb weg</span>
+              </div>
+              {absorption.stufen.map((st) => {
+                const auf = karteStufe === st.von;
+                const istFair = absorption.fair && absorption.fair.von === st.von;
+                const istTot = absorption.tot && absorption.tot.von === st.von;
+                return (
+                  <div key={st.von}>
+                    <button className="pw-karte" onClick={() => setKarteStufe(auf ? null : st.von)}
+                      style={{ ...S.karteZeile, borderLeftColor: istFair ? T.good : istTot ? T.bad : "transparent" }}>
+                      <span style={S.karteStufe}>
+                        {fmtNum(st.von)}–{fmtNum(st.bis)}
+                        <span style={S.karteStufeN}>{st.anzahl} Stk · {st.abgaenge} weg</span>
+                      </span>
+                      {st.zellen.map((z) => (
+                        <span key={z.tage} style={{
+                          ...S.karteZelle,
+                          background: z.belastbar ? absorptionsFarbe(z.anteil) : "transparent",
+                          border: z.belastbar ? "none" : `1px dashed ${T.line}`,
+                          color: !z.belastbar ? T.muted : z.anteil > 0.55 ? T.bg : T.text,
+                          outline: z.tage === zielTage ? `2px solid ${T.accent}` : "none",
+                        }} title={z.belastbar
+                          ? `${Math.round(z.anteil * 100)} % weg nach ${z.kurz} · ${z.risiko} noch im Feld`
+                          : "zu wenige Beobachtungen"}>
+                          {z.belastbar ? `${Math.round(z.anteil * 100)}` : "·"}
+                        </span>
+                      ))}
+                      <span style={{ ...S.karteHalb, color: st.halbwert == null ? T.muted : T.text }}>
+                        {st.halbwert == null ? "nie" : `${st.halbwert} T`}
+                      </span>
+                    </button>
+                    {auf && (
+                      <div style={S.buchDetail}>
+                        {st.faelle.slice().sort((a, b) => b.austritt - a.austritt).map((f) => (
+                          <a key={f.id} href={f.url ? normalizeUrl(f.url) : undefined}
+                            target="_blank" rel="noreferrer" style={S.buchAuto}>
+                            <span style={{ ...S.buchPunkt, background: f.ereignis ? T.good : T.accent }} />
+                            <span style={S.buchAutoTitel}>{f.title}</span>
+                            <span style={S.buchAutoZahl}>{fmtEUR(f.preis)}</span>
+                            <span style={S.buchAutoZeit}>
+                              {f.ereignis ? `${f.stand} nach ${laufzeitDativ(f.austritt)}` : `steht ${laufzeitText(f.austritt)}`}
+                              {f.eintritt > 0 && ` · ab Tag ${f.eintritt} gesehen`}
+                            </span>
+                          </a>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            <div style={S.karteSkala}>
+              <span style={S.legendeEintrag}>0 %</span>
+              {[0, 0.2, 0.4, 0.6, 0.8, 1].map((a) => (
+                <span key={a} style={{ ...S.karteSkalaFeld, background: absorptionsFarbe(a) }} />
+              ))}
+              <span style={S.legendeEintrag}>100 % absorbiert</span>
+              <span style={{ ...S.legendeEintrag, marginLeft: 10 }}>
+                <span style={{ ...S.karteSkalaFeld, background: "transparent", border: `1px dashed ${T.line}` }} /> zu dünn
+              </span>
+            </div>
+
+            {/* ---- Der Schluss ---- */}
+            <div style={S.spanneSatz}>
+              {absorption.abgaenge === 0 ? (
+                <>Noch ist kein einziges Inserat verschwunden. Die Karte kann deshalb nichts einfärben — sie
+                  wartet auf den ersten Abgang. <b style={{ color: T.text }}>Schließ ein Inserat ab, sobald es
+                  aus den Suchergebnissen weg ist</b>, dann fängt sie an zu leben.</>
+              ) : absorption.fair ? (
+                <>
+                  <b style={{ color: T.accent }}>Wenn du in {zielTage} Tagen raus willst:</b>{" "}
+                  Du musst unter <b style={{ color: T.good }}>{fmtEUR(absorption.fair.bis)}</b> hinein.
+                  Auf dieser Stufe war nach {zielTage} Tagen{" "}
+                  <b style={{ color: T.text }}>{Math.round(absorption.zielZelle(absorption.fair).anteil * 100)} %</b>{" "}
+                  des Feldes absorbiert; die Hälfte war nach{" "}
+                  <b style={{ color: T.text }}>{absorption.fair.halbwert == null ? "— " : laufzeitDativ(absorption.fair.halbwert)}</b> weg.
+                  {absorption.tot && absorption.tot.von > absorption.fair.von && (
+                    <> Ab <b style={{ color: T.bad }}>{fmtEUR(absorption.tot.von)}</b> passiert dagegen fast
+                      nichts mehr — dort waren nach {zielTage} Tagen erst{" "}
+                      {Math.round(absorption.zielZelle(absorption.tot).anteil * 100)} % weg. Zwischen den beiden
+                      Zahlen liegt der Bereich, in dem der Preis über die Wartezeit entscheidet.</>
+                  )}
+                  {" "}Umgekehrt heißt das für den Einkauf: Was oberhalb dieser Grenze steht und dort schon
+                  länger liegt, ist ein Verkäufer, der es noch nicht gemerkt hat.
+                </>
+              ) : (
+                <>
+                  <b style={{ color: T.accent }}>Keine Stufe schafft die Hälfte in {zielTage} Tagen.</b>{" "}
+                  Entweder ist die Zielzeit für diesen Markt zu kurz — stell oben auf ein längeres Fenster —
+                  oder es sind schlicht noch zu wenige Abgänge beobachtet ({absorption.abgaenge} von{" "}
+                  {absorption.anzahl}). Die Rechnung hält sich absichtlich zurück, statt eine Grenze zu
+                  behaupten, die die Daten nicht hergeben.
+                </>
+              )}
+            </div>
+
+            <div style={S.kleinerHinweis}>
+              <b style={{ color: T.accent }}>Wie die Zahlen entstehen.</b>{" "}
+              Je Preisstufe wird eine Überlebenskurve nach Kaplan-Meier gerechnet. Ein laufendes Inserat zählt
+              bis heute mit und danach nicht mehr gegen die Quote — es ist ja nicht gescheitert, es ist noch
+              unterwegs. {absorption.nachgetragen > 0 && (
+                <>Bei {absorption.nachgetragen} {absorption.nachgetragen === 1 ? "Inserat" : "Inseraten"} beginnt
+                  die Beobachtung später als das Inserat: {absorption.nachgetragen === 1 ? "es zählt" : "sie zählen"}{" "}
+                  erst ab dem Fundtag zum Feld, denn vorher {absorption.nachgetragen === 1 ? "hätte es" : "hätten sie"}{" "}
+                  gar nicht auffallen können. </>
+              )}
+              Gestrichelte Felder heißen: dort standen zu wenige unter Beobachtung, um eine Quote zu bilden.
+              Und weiterhin gilt — verschwunden heißt nicht verkauft.
+            </div>
+          </>
+        )}
+      </section>
+      )}
+
       {tab === "verzeichnis" && (
       <section style={S.panel}>
         <div style={{ ...S.panelTitle, justifyContent: "space-between" }}>
@@ -2781,6 +3089,25 @@ function ChoiceQuestion({ frage, options, hilfe, value, onChange }) {
    wieder gescheitert.
  * -------------------------------------------------------------------- */
 
+/* Farbe der Absorption: von kalt (nichts geht) über Bernstein nach grün
+   (alles weg). Bewusst dieselbe Sprache wie überall sonst in der App. */
+function absorptionsFarbe(anteil) {
+  const a = Math.max(0, Math.min(1, anteil || 0));
+  const stopps = [
+    [0.00, [34, 40, 50]],
+    [0.35, [120, 90, 30]],
+    [0.65, [222, 160, 30]],
+    [1.00, [53, 196, 107]],
+  ];
+  let u = stopps[0], o = stopps[stopps.length - 1];
+  for (let i = 0; i < stopps.length - 1; i++) {
+    if (a >= stopps[i][0] && a <= stopps[i + 1][0]) { u = stopps[i]; o = stopps[i + 1]; break; }
+  }
+  const t = o[0] === u[0] ? 0 : (a - u[0]) / (o[0] - u[0]);
+  const c = [0, 1, 2].map((i) => Math.round(u[1][i] + (o[1][i] - u[1][i]) * t));
+  return `rgb(${c[0]}, ${c[1]}, ${c[2]})`;
+}
+
 // Runde Achsenschritte: 1, 2, 2,5 oder 5 mal einer Zehnerpotenz.
 function achsenSchritte(min, max, anzahl = 5) {
   const spanne = (max - min) || 1;
@@ -3265,6 +3592,8 @@ const globalCss = `
     .pw-metrics { grid-column: 1 / -1; grid-row: 2; display: flex; flex-wrap: wrap; gap: 8px 18px; }
     .pw-mlabel { display: block; }
     /* Sternniveau-Zeilen: Titel oben, Zahlen darunter nebeneinander */
+    .pw-karte { grid-template-columns: 84px repeat(auto-fit, minmax(0, 1fr)) !important; gap: 2px !important; }
+    .pw-karte > span { font-size: 10px !important; }
     .pw-buch { grid-template-columns: 94px 1fr 44px !important; gap: 6px !important; }
     .pw-buch > span:nth-child(4) { display: none; }
     .pw-stufe { grid-template-columns: auto 1fr !important; row-gap: 2px; }
@@ -3417,6 +3746,17 @@ const styles = {
   feldLegende: { display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center", marginTop: 6, fontSize: 10.5, color: T.muted },
   legendeEintrag: { display: "inline-flex", alignItems: "center", gap: 6 },
   legendePunkt: { width: 9, height: 9, borderRadius: "50%", display: "inline-block" },
+  karteRahmen: { display: "flex", flexDirection: "column", gap: 3, marginTop: 4 },
+  karteZeile: { display: "grid", gridTemplateColumns: "132px repeat(auto-fit, minmax(0, 1fr))", gap: 3, alignItems: "stretch", width: "100%", background: "transparent", border: "none", borderLeft: "3px solid", padding: "0 0 0 6px", textAlign: "left" },
+  karteKopfZeile: { paddingBottom: 3 },
+  karteStufeKopf: { fontSize: 9.5, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700, alignSelf: "end" },
+  karteSpalteKopf: { fontSize: 9.5, color: T.muted, textAlign: "center", alignSelf: "end", lineHeight: 1.2 },
+  karteStufe: { display: "flex", flexDirection: "column", justifyContent: "center", fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11.5, color: T.text },
+  karteStufeN: { color: T.muted, fontSize: 9.5 },
+  karteZelle: { display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 5, padding: "9px 2px", fontSize: 11.5, fontWeight: 800, fontFamily: "ui-monospace, Menlo, monospace", boxSizing: "border-box" },
+  karteHalb: { display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "ui-monospace, Menlo, monospace", fontSize: 11 },
+  karteSkala: { display: "flex", alignItems: "center", gap: 3, justifyContent: "center", flexWrap: "wrap", marginTop: 8, fontSize: 10, color: T.muted },
+  karteSkalaFeld: { width: 26, height: 10, borderRadius: 2, display: "inline-block", boxSizing: "border-box" },
   buchKopf: { display: "grid", gridTemplateColumns: "104px 1fr 60px 74px", gap: 8, alignItems: "center", padding: "0 10px 6px", fontSize: 9.5, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 },
   buchKopfPreis: {},
   buchKopfMitte: { textAlign: "center" },
