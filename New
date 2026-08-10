@@ -532,6 +532,33 @@ const SORT_FELDER = {
   } },
 };
 
+/* ---- Filter über der Übersicht ----------------------------------
+   Was hier ausgewählt ist, gilt für alle Schaubilder gleichzeitig: Sie
+   rechnen mit derselben Auswahl, nicht mit dem ganzen Verzeichnis. Nur so
+   sind Aussagen wie "so lange stehen die Automatik-Diesel" überhaupt
+   möglich — ein Feld aus allem Möglichen mittelt sich selbst weg. */
+const FILTER_FELDER = {
+  model:      { label: "Modell",      wert: (v) => v.model },
+  trimline:   { label: "Linie",       wert: (v) => v.trimline },
+  fuel:       { label: "Kraftstoff",  wert: (v) => v.fuel },
+  gearbox:    { label: "Getriebe",    wert: (v) => v.gearbox },
+  sellerType: { label: "Anbieter",    wert: (v) => v.sellerType },
+  exterieur:  { label: "Exterieur",   wert: (v) => v.exterieur },
+  interieur:  { label: "Interieur",   wert: (v) => v.interieur },
+  repairKind: { label: "Reparaturen", wert: (v) => v.repairKind },
+  accidentRepaired: { label: "Unfall angegeben", wert: (v) => v.accidentRepaired },
+  ausstattung: { label: "Ausstattung", wert: (v) => v.ausstattung },
+  status: { label: "Status",
+    wert: (v) => (verschwundenAm(v) || (v.listingStatus && v.listingStatus !== "Aktiv")
+      ? "Nicht mehr online" : "Läuft noch") },
+};
+// Von–bis-Felder. Der Preis ist immer der zuletzt geforderte.
+const FILTER_BEREICHE = {
+  preis:   { label: "Preis", einheit: "€", wert: (v) => lastPrice(v) },
+  mileage: { label: "Kilometer", einheit: "km", wert: (v) => (v.mileage != null ? Number(v.mileage) : null) },
+  year:    { label: "Baujahr", einheit: "", wert: (v) => (v.year ? Number(v.year) : null) },
+};
+
 const istLeer = (x) => x == null || x === "" || (typeof x === "number" && isNaN(x));
 
 function sortiere(fahrzeuge, feld, richtung) {
@@ -1012,6 +1039,9 @@ export default function App() {
   const [kmArt, setKmArt] = useState("auto");
   // Sammel-Nachtrag der Inseratsdaten direkt am Preisverlauf
   const [nachtragOffen, setNachtragOffen] = useState(false);
+  // Filter über allen Schaubildern
+  const [filter, setFilter] = useState({});
+  const [filterOffen, setFilterOffen] = useState(false);
   // Orderbuch: aufgeklappte Preisstufe und der Preis im Rechner
   const [buchStufe, setBuchStufe] = useState(null);
   const [buchPreis, setBuchPreis] = useState("");
@@ -1423,12 +1453,37 @@ export default function App() {
   // Nur die Anzeige im Verzeichnis wird umsortiert, nicht die Daten der Auswertung.
   const verzeichnis = useMemo(() => sortiere(list, sortFeld, sortRichtung), [list, sortFeld, sortRichtung]);
 
+  /* Die Auswahl, mit der alle Schaubilder rechnen. `ausser` blendet eine
+     Dimension aus — damit die Zahl neben einem Filterwert zeigt, wie viele
+     Fahrzeuge übrig blieben, wenn man genau diesen Wert wählt, und nicht
+     stur Null, sobald ein Nachbarwert derselben Zeile gesetzt ist. */
+  const passtZumFilter = useCallback((v, ausser) => {
+    for (const [f, def] of Object.entries(FILTER_FELDER)) {
+      if (f === ausser) continue;
+      const gewaehlt = filter[f];
+      if (gewaehlt && gewaehlt.length && !gewaehlt.includes(def.wert(v) || "ohne Angabe")) return false;
+    }
+    for (const [f, def] of Object.entries(FILTER_BEREICHE)) {
+      if (f === ausser) continue;
+      const g = filter[f];
+      if (!g || (g.von === "" && g.bis === "")) continue;
+      const w = def.wert(v);
+      if (w == null) return false;                       // ohne Angabe fällt aus dem Bereich
+      if (g.von !== "" && w < Number(g.von)) return false;
+      if (g.bis !== "" && w > Number(g.bis)) return false;
+    }
+    return true;
+  }, [filter]);
+  const auswahl = useMemo(() => list.filter((v) => passtZumFilter(v)), [list, passtZumFilter]);
+  const filterAktiv = useMemo(() => Object.entries(filter).some(([f, g]) =>
+    (FILTER_FELDER[f] && g && g.length) || (FILTER_BEREICHE[f] && g && (g.von !== "" || g.bis !== ""))), [filter]);
+
   /* ---- Übersicht: ein Punkt je Inserat, zum Einstiegspreis ----
      Gezeigt wird ausdrücklich der Preis bei der ERSTEN Erfassung — das ist
      der Preis, den man beim Fund im Netz gesehen hat. Spätere Senkungen
      stecken im Verlauf, nicht in diesem Bild. */
   const uebersicht = useMemo(() => {
-    const punkte = list.map((v) => {
+    const punkte = auswahl.map((v) => {
       const t = tracking(v);
       if (t.initialTrackedPrice == null) return null;
       const seit = t.firstSeen || v.priceHistory?.[0]?.date || "";
@@ -1460,7 +1515,7 @@ export default function App() {
       ohneDatum: punkte.filter((p) => p.seitZeit == null).length,
       guenstigstes: nachPreis[0], teuerstes: nachPreis[nachPreis.length - 1],
     };
-  }, [list]);
+  }, [auswahl]);
 
   /* ---- Preisverläufe: wann senken die Anbieter? ----
      Je Inserat eine Treppe. Waagerecht die Tage seit dem Start, senkrecht
@@ -1480,7 +1535,7 @@ export default function App() {
     const farben = ["#F5B301", "#4EA8F4", "#35C46B", "#C77DFF", "#F4544E",
       "#2DD4BF", "#FB923C", "#E879A9", "#A3E635", "#22D3EE"];
 
-    const reihen = list.map((v, nr) => {
+    const reihen = auswahl.map((v, nr) => {
       const t = tracking(v);
       const stufen = t.stufen;
       if (!stufen.length || !stufen[0].preis) return null;
@@ -1575,7 +1630,7 @@ export default function App() {
         .sort((a, b) => a.titel.localeCompare(b.titel, "de")),
       kurz: reihen.filter((r) => r.ende <= 1).length,
     };
-  }, [list, verlaufNull]);
+  }, [auswahl, verlaufNull]);
 
   /* ---- Was der Kilometer kostet: vier Quartile, eine Formel ----
      Die Fahrzeuge werden nach Laufleistung sortiert und in vier gleich
@@ -1593,7 +1648,7 @@ export default function App() {
       return u === o ? sortiert[u] : sortiert[u] + (sortiert[o] - sortiert[u]) * (i - u);
     };
 
-    const autos = list.map((v) => {
+    const autos = auswahl.map((v) => {
       const t = tracking(v);
       const km = Number(v.mileage) || 0;
       const preis = t.currentPrice || 0;
@@ -1667,9 +1722,9 @@ export default function App() {
       besser: kurve.r2 > gerade.r2 ? "kurve" : "gerade",
       anzahl: autos.length, offline: autos.filter((a) => a.offline).length,
       kmMin: autos[0].km, kmMax: autos[autos.length - 1].km,
-      ohneKm: list.length - autos.length,
+      ohneKm: auswahl.length - autos.length,
     };
-  }, [list]);
+  }, [auswahl]);
 
   /* ---- Orderbuch: Angebot und Abgang je Preisstufe ----
 
@@ -1695,7 +1750,7 @@ export default function App() {
       const m = Math.floor(s2.length / 2);
       return s2.length % 2 ? s2[m] : Math.round((s2[m - 1] + s2[m]) / 2);
     };
-    const eintraege = list.map((v) => {
+    const eintraege = auswahl.map((v) => {
       const t = tracking(v);
       // Was gerade im Buch liegt, ist der heutige Preis. Was weg ist, liegt
       // dort, wo es zuletzt stand — das ist der Kurs, zu dem es ging.
@@ -1765,7 +1820,7 @@ export default function App() {
       medianGeduld: mitte(eintraege.filter((e) => !e.offline).map((e) => e.tage)),
       medianTempo: mitte(eintraege.filter((e) => e.offline).map((e) => e.tage)),
     };
-  }, [list]);
+  }, [auswahl]);
 
   /* ---- Absorptionskarte: Preis mal Zeit ----
      Für jede Preisstufe eine eigene Überlebensrechnung. Die Karte zeigt je
@@ -1777,7 +1832,7 @@ export default function App() {
     { tage: 90, kurz: "3 Monate" }, { tage: 180, kurz: "6 Monate" },
   ];
   const absorption = useMemo(() => {
-    const faelle = list.map((v) => {
+    const faelle = auswahl.map((v) => {
       const t = tracking(v);
       // Der Preis, zu dem es zuletzt am Markt stand — bei Verschwundenen der
       // Kurs, bei dem es weg war.
@@ -1848,7 +1903,7 @@ export default function App() {
       duenn: belegt.filter((st) => !zielZelle(st) || !zielZelle(st).belastbar).length,
       nachgetragen: faelle.filter((f) => f.eintritt > 0).length,
     };
-  }, [list, zielTage]);
+  }, [auswahl, zielTage]);
 
   // Alles, wo noch eine Entscheidung von dir aussteht. Unbestätigte zuerst,
   // danach die mit den meisten offenen Punkten.
@@ -2200,6 +2255,12 @@ export default function App() {
             </div>
           )}
       </section>
+      )}
+
+      {tab === "uebersicht" && list.length > 0 && (
+        <Filterleiste list={list} auswahl={auswahl} filter={filter} setFilter={setFilter}
+          passt={passtZumFilter} offen={filterOffen} umschalten={() => setFilterOffen((o) => !o)}
+          aktiv={filterAktiv} />
       )}
 
       {tab === "uebersicht" && (
@@ -3372,6 +3433,122 @@ function BeoWert({ label, wert, zusatz, farbe, stark }) {
   );
 }
 
+/* Der Filter über allen Schaubildern.
+   Die Zahl hinter jedem Wert zählt, was übrig bliebe, wenn man genau
+   diesen Wert wählt — die eigene Zeile wird dafür ausgeblendet. Sonst
+   stünde überall Null, sobald in derselben Zeile schon etwas gewählt ist. */
+function Filterleiste({ list, auswahl, filter, setFilter, passt, offen, umschalten, aktiv }) {
+  const S = styles;
+  const werteFuer = (feld, def) => {
+    const zaehler = new Map();
+    list.forEach((v) => {
+      const w = def.wert(v) || "ohne Angabe";
+      zaehler.set(w, (zaehler.get(w) || 0) + (passt(v, feld) ? 1 : 0));
+    });
+    return [...zaehler.entries()].sort((a, b) => String(a[0]).localeCompare(String(b[0]), "de"));
+  };
+  const wertUmschalten = (feld, w) => setFilter((alt) => {
+    const jetzt = alt[feld] || [];
+    return { ...alt, [feld]: jetzt.includes(w) ? jetzt.filter((x) => x !== w) : [...jetzt, w] };
+  });
+  const setzeBereich = (feld, seite, roh) => setFilter((alt) => ({
+    ...alt, [feld]: { von: "", bis: "", ...(alt[feld] || {}), [seite]: roh.replace(/[^\d]/g, "") },
+  }));
+
+  // Eine Zeile lohnt sich erst ab zwei verschiedenen Werten.
+  const zeilen = Object.entries(FILTER_FELDER)
+    .map(([feld, def]) => [feld, def, werteFuer(feld, def)])
+    .filter(([, , werte]) => werte.length > 1);
+
+  return (
+    <section style={S.panel}>
+      <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10, marginBottom: offen ? 14 : 0 }}>
+        <button style={S.filterKopf} onClick={umschalten} className="pw-filterkopf">
+          <Filter size={15} />
+          Filter
+          <span style={S.filterZaehler}>
+            {aktiv ? `${auswahl.length} von ${list.length}` : `alle ${list.length}`}
+          </span>
+          <ChevronRight size={13} style={{ transform: offen ? "rotate(90deg)" : "none", transition: "transform .15s" }} />
+        </button>
+        {aktiv && (
+          <button style={S.ghostBtn} onClick={() => setFilter({})}>
+            <X size={13} /> Filter zurücksetzen
+          </button>
+        )}
+      </div>
+
+      {!offen && aktiv && (
+        <div style={S.filterKurz}>
+          {Object.entries(filter).map(([feld, g]) => {
+            if (FILTER_FELDER[feld] && g?.length) return `${FILTER_FELDER[feld].label}: ${g.join(", ")}`;
+            if (FILTER_BEREICHE[feld] && g && (g.von !== "" || g.bis !== "")) {
+              const d = FILTER_BEREICHE[feld];
+              return `${d.label}: ${g.von ? fmtNum(Number(g.von)) : "—"} bis ${g.bis ? fmtNum(Number(g.bis)) : "—"} ${d.einheit}`.trim();
+            }
+            return null;
+          }).filter(Boolean).join("  ·  ")}
+        </div>
+      )}
+
+      {offen && (
+        <>
+          <p style={S.hint}>
+            Was du hier auswählst, gilt für <b style={{ color: T.text }}>alle Schaubilder darunter</b> —
+            sie rechnen dann nur noch mit diesen Fahrzeugen. Mehrfachauswahl je Zeile ist möglich; nichts
+            angetippt heißt „alle". Die Zahl hinter einem Wert sagt, wie viele Fahrzeuge übrig blieben.
+          </p>
+
+          {zeilen.map(([feld, def, werte]) => (
+            <div key={feld} style={S.filterZeile} className="pw-filterzeile">
+              <span style={S.filterLabel}>{def.label}</span>
+              <span style={S.filterWerte}>
+                {werte.map(([w, n]) => {
+                  const an = (filter[feld] || []).includes(w);
+                  return (
+                    <button key={w} onClick={() => wertUmschalten(feld, w)}
+                      style={an ? S.askOptionOn : { ...S.askOption, opacity: n === 0 && !an ? 0.4 : 1 }}>
+                      {w} <span style={{ opacity: 0.65, fontWeight: 600 }}>{n}</span>
+                    </button>
+                  );
+                })}
+              </span>
+            </div>
+          ))}
+
+          {Object.entries(FILTER_BEREICHE).map(([feld, def]) => (
+            <div key={feld} style={S.filterZeile} className="pw-filterzeile">
+              <span style={S.filterLabel}>{def.label}</span>
+              <span style={S.filterWerte}>
+                <input value={filter[feld]?.von ?? ""} onChange={(e) => setzeBereich(feld, "von", e.target.value)}
+                  placeholder="von" inputMode="numeric" style={S.filterFeld} />
+                <span style={{ color: T.muted, fontSize: 11.5 }}>bis</span>
+                <input value={filter[feld]?.bis ?? ""} onChange={(e) => setzeBereich(feld, "bis", e.target.value)}
+                  placeholder="bis" inputMode="numeric" style={S.filterFeld} />
+                {def.einheit && <span style={{ color: T.muted, fontSize: 11.5 }}>{def.einheit}</span>}
+              </span>
+            </div>
+          ))}
+
+          {aktiv && auswahl.length === 0 && (
+            <div style={S.warnKasten}>
+              <b style={{ color: T.accent }}>Kein Fahrzeug passt zu dieser Auswahl.</b> Alle Schaubilder
+              darunter bleiben deshalb leer — nimm einen Wert wieder heraus oder setz den Filter zurück.
+            </div>
+          )}
+          {aktiv && auswahl.length > 0 && auswahl.length < 4 && (
+            <div style={S.kleinerHinweis}>
+              Nur {auswahl.length} {auswahl.length === 1 ? "Fahrzeug" : "Fahrzeuge"} in der Auswahl — die
+              meisten Schaubilder brauchen mehr, um etwas zu zeigen, und ihre Aussagen sind bei so wenigen
+              Fahrzeugen ohnehin Zufall.
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 /* Alle Inserate ohne Inseratsdatum an einer Stelle, mit je einem Feld.
    Zwanzig Fahrzeuge einzeln im Verzeichnis aufzuklappen ist der falsche
    Weg für eine Angabe, die überall gleichzeitig fehlt. Die Liste steht
@@ -4227,6 +4404,8 @@ const globalCss = `
       padding-bottom: 2px; margin-bottom: 10px;
     }
     .pw-sortleiste::-webkit-scrollbar { display: none; }
+    /* Filterzeilen: Beschriftung über die Werte statt daneben */
+    .pw-filterzeile { grid-template-columns: 1fr !important; gap: 5px !important; }
     .pw-sortleiste > button { flex-shrink: 0; }
     .pw-dirrow { grid-template-columns: minmax(0, 1fr) auto; row-gap: 9px; }
     .pw-dirrow > button:first-of-type { grid-column: 1; grid-row: 1; }
@@ -4444,6 +4623,13 @@ const styles = {
   quartilTag: { fontWeight: 800, color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
   quartilKm: { fontFamily: "ui-monospace, Menlo, monospace", color: T.text },
   quartilZahl: { fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
+  filterKopf: { display: "inline-flex", alignItems: "center", gap: 8, background: "none", border: "none", color: T.text, padding: 0, fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em" },
+  filterZaehler: { background: T.bg, color: T.accent, border: `1px solid ${T.line}`, borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700, textTransform: "none", letterSpacing: 0, fontFamily: "ui-monospace, Menlo, monospace" },
+  filterKurz: { color: T.muted, fontSize: 11.5, lineHeight: 1.6, marginTop: 10 },
+  filterZeile: { display: "grid", gridTemplateColumns: "116px 1fr", gap: 10, alignItems: "start", padding: "7px 0", borderTop: `1px solid ${T.line}` },
+  filterLabel: { color: T.muted, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700, paddingTop: 6 },
+  filterWerte: { display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" },
+  filterFeld: { width: 84, background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 7, padding: "5px 9px", fontSize: 12, fontFamily: "ui-monospace, Menlo, monospace" },
   nachtragBox: { marginTop: 8, background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "6px 10px" },
   nachtragKopf: { display: "flex", alignItems: "center", gap: 7, width: "100%", background: "none", border: "none", color: T.accent, fontSize: 11, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", padding: "5px 0", textAlign: "left" },
   nachtragKopfHilfe: { marginLeft: "auto", color: T.muted, fontWeight: 600, textTransform: "none", letterSpacing: 0, fontSize: 10.5 },
