@@ -1799,13 +1799,33 @@ export default function App() {
 
   const qPruefen = (text) => {
     const quelle = typeof text === "string" ? text : qRoh;
+    if (!quelle.trim()) return;
     const roh = extractJson(quelle);
+    if (!roh) {
+      setNotice({ type: "err", msg: "Darin steckt kein JSON. Kopier die Antwort der KI komplett — Text drumherum ist kein Problem." });
+      setQVorschau(null); return;
+    }
+    /* Dieselbe Reparaturstufe wie beim Fahrzeug-Import: Modelle antworten
+       gern mit typografischen Anführungszeichen oder einem Komma vor der
+       schließenden Klammer. Ohne diesen zweiten Versuch scheiterte jede
+       solche Antwort mit "kein JSON lesbar". */
     let daten;
     try { daten = JSON.parse(roh); }
-    catch (_) { setNotice({ type: "err", msg: "Daraus lässt sich kein JSON lesen." }); setQVorschau(null); return; }
-    const liste = (Array.isArray(daten) ? daten : [daten]).map(normalizeQuooker)
+    catch (_) {
+      try { daten = JSON.parse(repairJson(roh)); }
+      catch (e2) {
+        setNotice({ type: "err", msg: "Der JSON-Block ist unvollständig oder fehlerhaft. Lass ihn dir von der KI noch einmal komplett ausgeben und füg die ganze Antwort ein." });
+        setQVorschau(null); return;
+      }
+    }
+    const liste = (Array.isArray(daten) ? daten : [daten])
+      .filter((x) => x && typeof x === "object").map(normalizeQuooker)
       .filter((x) => x.armatur || x.preis != null);
     if (!liste.length) { setNotice({ type: "err", msg: "Darin steckt kein Quooker-Inserat." }); setQVorschau(null); return; }
+    /* Steht der Link nur im Text daneben statt im Feld "url", ist er
+       trotzdem der Link zu diesem Inserat — bei genau einem Eintrag. */
+    const drumherum = linksImText(String(quelle).split(roh).join(" \n "));
+    if (liste.length === 1 && !liste[0].url && drumherum.length === 1) liste[0].url = drumherum[0];
     const bekannt = (x) => qListe.find((q) =>
       (x.url && q.url && normalizeUrl(q.url) === x.url) ||
       (!x.url && qFingerabdruck(q) === qFingerabdruck({ ...x, umfang: x.umfang })));
