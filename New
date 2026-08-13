@@ -591,6 +591,126 @@ const Q_UMFANG = [
   "Originalverpackung", "Rechnung/Garantie", "Montagematerial",
 ];
 const Q_ANBIETER = ["Privat", "Gewerblich"];
+const Q_VERSAND = ["Versand möglich", "nur Abholung"];
+
+/* Der Prompt für die KI. Er steht im Programm und nicht in einer Datei
+   daneben, damit er nicht veraltet, während die Felder sich ändern. */
+const Q_PROMPT = `Du bekommst ein Kleinanzeigen-Inserat für einen Quooker (Kochendwasserhahn)
+als Text, Screenshot oder beides. Erstelle daraus einen JSON-Block.
+Antworte NUR mit dem JSON, ohne Kommentar davor oder danach.
+
+WICHTIG VORAB:
+- Nutze Titel, Beschreibungstext UND die Fotos. Vieles steht nur im Text.
+- Wo ich eine Liste erlaubter Wörter vorgebe, nimmst du AUSSCHLIESSLICH
+  diese Wörter. Keine eigenen Formulierungen.
+- Was du nicht findest: "" (leer) oder false. Niemals raten.
+- Mehrere Inserate auf einmal: ein JSON-Array, also [ {...}, {...} ].
+
+{
+  "armatur": "Flex",
+  "farbe": "Schwarz",
+  "reservoir": "COMBI",
+  "zustand": "Neu und verpackt",
+  "umfang": ["Armatur", "Reservoir/Tank", "CO₂-Flasche", "Originalverpackung"],
+  "preis": 1290,
+  "listedSince": "2026-07-24",
+  "ort": "50667 Köln",
+  "anbieter": "Privat",
+  "versand": "Versand möglich",
+  "baujahr": "2023",
+  "url": "",
+  "notiz": "",
+  "date": "2026-08-13"
+}
+
+SO FÜLLST DU JEDES FELD AUS:
+
+1. "armatur"  --  NUR EINES DIESER WÖRTER:
+      Flex | Fusion Square | Fusion Round | Front
+      Nordic Square Single Tap | Nordic Square Twintaps
+      Nordic Round Single Tap | Nordic Round Twintaps
+      Classic Fusion Square | Classic Fusion Round
+      Classic Nordic Square Twintaps | Classic Nordic Round Twintaps
+      Design | Modern | Basic | PRO3 Twintaps | anderes Modell
+   Steht das Modell nicht im Text, sieh auf den Fotos nach:
+     Flex   = runder Auslauf mit herausziehbarem Schlauch
+     Fusion = ein Hahn für alles, eckig (Square) oder rund (Round)
+     Nordic = klassische Form; Twintaps heißt ZWEI Hähne nebeneinander
+     Front  = Bedienung vorne am Auslauf
+   Bist du unsicher: "anderes Modell". Rate NICHT.
+
+2. "farbe"  --  NUR EINES DIESER WÖRTER:
+      Chrom | Edelstahl | Schwarz | Weiß | Gold
+      Rose Copper | Patinated Brass | Gunmetal | andere Farbe
+
+3. "reservoir"  --  NUR EINES DIESER WÖRTER:
+      COMBI | COMBI+ | PRO3-VAQ | CUBE-Set | kein Reservoir | unbekannt
+   COMBI und COMBI+ liefern kochendes UND heißes Wasser.
+   PRO3-VAQ liefert nur kochendes Wasser.
+   CUBE-Set heißt: ein CUBE ist Teil des Angebots (gekühlt und sprudelnd).
+   Steht nur "mit Reservoir" ohne Typ: "unbekannt".
+   Wird ausdrücklich nur die Armatur verkauft: "kein Reservoir".
+
+4. "zustand"  --  NUR EINES DIESER ZWEI WÖRTER:
+      Neu und verpackt  |  Nahezu neu, wenig gebraucht
+   "Neu und verpackt" nur, wenn das Inserat ungeöffnete oder ungenutzte
+   Neuware nennt (Fehlkauf, Ausstellungsstück original verpackt, nie
+   verbaut). Alles andere, was noch gepflegt ist: "Nahezu neu, wenig
+   gebraucht". Ist das Gerät sichtbar abgenutzt oder defekt, schreib
+   trotzdem "Nahezu neu, wenig gebraucht" und vermerke es unter "notiz".
+
+5. "umfang"
+   Eine Liste. Nimm jeden Punkt auf, den das Inserat ausdrücklich nennt
+   oder der auf den Fotos eindeutig zu sehen ist -- exakt so geschrieben:
+      "Armatur"              (der Wasserhahn selbst)
+      "Reservoir/Tank"       (der Untertischbehälter)
+      "CUBE"                 (Zusatzgerät für gekühlt und sprudelnd)
+      "CO₂-Flasche"          (Kohlensäurezylinder)
+      "Scale Control"        (Entkalkungspatrone)
+      "Filterpatrone"        (Wasserfilter, Ersatzfilter)
+      "Seifenspender"        (Nordic Soap Dispenser)
+      "Handbrause/Schlauchset"
+      "Originalverpackung"   (Karton vorhanden)
+      "Rechnung/Garantie"    (Kaufbeleg oder Garantieunterlagen dabei)
+      "Montagematerial"      (Anschlussset, Schläuche, Befestigung)
+   Nichts davon erkennbar: [] (leere Liste). Rate nichts hinzu -- ob eine
+   CO₂-Flasche dabei ist, entscheidet über hunderte Euro.
+
+6. "preis"
+   Der geforderte Preis in Euro als reine Zahl, ohne Punkt und ohne "€".
+   Steht "VB" dahinter, ändert das nichts an der Zahl.
+
+7. "listedSince"
+   Wann das Inserat eingestellt wurde, als JJJJ-MM-TT. Auf Kleinanzeigen
+   steht das am Inserat, oft als "Eingestellt am" oder als Angabe wie
+   "vor 3 Wochen" -- die rechnest du ins Datum um. Findest du nichts: "".
+   Rate NICHT und setz niemals das heutige Datum ein.
+
+8. "ort"
+   Postleitzahl und Ort. Beispiel: "50667 Köln".
+
+9. "anbieter"  --  NUR EINES DIESER ZWEI WÖRTER:
+      Privat  |  Gewerblich
+
+10. "versand"  --  NUR EINES DIESER ZWEI WÖRTER:
+       Versand möglich  |  nur Abholung
+    Steht nichts dazu: "nur Abholung".
+
+11. "baujahr"
+    Das Baujahr oder Kaufjahr des Geräts, vierstellig, falls genannt.
+    Sonst "".
+
+12. "url"
+    Der Link zum Inserat, falls du ihn hast. Nur die nackte Adresse.
+    Sonst "".
+
+13. "notiz"
+    Was sonst auffällt, in ein bis zwei Sätzen: Kratzer, fehlende Teile,
+    "Abholung nur bis Freitag", auffällig knapper Text, schlechte Fotos.
+    Nichts Auffälliges: "".
+
+14. "date"
+    Das heutige Datum im Format JJJJ-MM-TT.`;
 
 // Ein sprechender Name aus den Merkmalen — nichts, was man tippen müsste.
 const qTitel = (q) => [q.armatur, q.farbe, q.reservoir && q.reservoir !== "unbekannt"
@@ -598,6 +718,70 @@ const qTitel = (q) => [q.armatur, q.farbe, q.reservoir && q.reservoir !== "unbek
 // Gleiche Merkmale = dasselbe Angebot. Preis bleibt bewusst außen vor.
 const qFingerabdruck = (q) => [q.armatur, q.farbe, q.reservoir, q.zustand,
   [...(q.umfang || [])].sort().join(",")].join("|").toLowerCase();
+
+/* Antworten einer KI auf das eigene Vokabular zwingen — dieselbe Haltung
+   wie beim Fahrzeug: Was nicht in die Liste passt, wird nicht übernommen,
+   sonst zersplittert die Auswertung an Schreibweisen. */
+function qWaehle(wert, liste, standard = "") {
+  const roh = String(wert == null ? "" : wert).trim();
+  if (!roh) return standard;
+  const klein = roh.toLowerCase();
+  const genau = liste.find((o) => o.toLowerCase() === klein);
+  if (genau) return genau;
+  const teil = liste.find((o) => klein.includes(o.toLowerCase()) || o.toLowerCase().includes(klein));
+  return teil || standard;
+}
+// "CO2-Flasche", "CO₂ Flasche", "Kohlensäureflasche" — alles dasselbe Teil.
+const Q_UMFANG_SYNONYME = {
+  "co2": "CO₂-Flasche", "kohlensäure": "CO₂-Flasche", "zylinder": "CO₂-Flasche",
+  "tank": "Reservoir/Tank", "reservoir": "Reservoir/Tank", "boiler": "Reservoir/Tank",
+  "cube": "CUBE", "scale": "Scale Control", "entkalk": "Scale Control",
+  "filter": "Filterpatrone", "seife": "Seifenspender", "soap": "Seifenspender",
+  "brause": "Handbrause/Schlauchset", "schlauch": "Handbrause/Schlauchset",
+  "karton": "Originalverpackung", "verpack": "Originalverpackung", "ovp": "Originalverpackung",
+  "rechnung": "Rechnung/Garantie", "garantie": "Rechnung/Garantie", "beleg": "Rechnung/Garantie",
+  "montage": "Montagematerial", "anschluss": "Montagematerial",
+  "armatur": "Armatur", "hahn": "Armatur",
+};
+function qUmfangListe(roh) {
+  const rein = Array.isArray(roh) ? roh : String(roh || "").split(/[,;\n]/);
+  const treffer = rein.map((x) => {
+    const s = String(x).trim(); if (!s) return null;
+    const genau = Q_UMFANG.find((u) => u.toLowerCase() === s.toLowerCase());
+    if (genau) return genau;
+    const klein = s.toLowerCase();
+    const stichwort = Object.keys(Q_UMFANG_SYNONYME).find((k) => klein.includes(k));
+    return stichwort ? Q_UMFANG_SYNONYME[stichwort] : null;
+  }).filter(Boolean);
+  return [...new Set(treffer)];
+}
+function normalizeQuooker(v) {
+  const heute = todayISO();
+  const preis = coerceNum(v.preis ?? v.price);
+  return {
+    armatur: qWaehle(v.armatur ?? v.modell ?? v.model, Q_ARMATUREN),
+    farbe: qWaehle(v.farbe ?? v.color, Q_FARBEN),
+    reservoir: qWaehle(v.reservoir ?? v.tank, Q_RESERVOIR, "unbekannt"),
+    zustand: qWaehle(v.zustand ?? v.condition, Q_ZUSTAND, Q_ZUSTAND[1]),
+    umfang: qUmfangListe(v.umfang ?? v.lieferumfang ?? v.enthalten),
+    preis,
+    listedSince: datumOderVorher(v.listedSince ?? v.onlineSince ?? v.eingestellt,
+      nurDatum(v.date) || heute),
+    ort: String(v.ort ?? v.location ?? "").trim(),
+    anbieter: qWaehle(v.anbieter ?? v.sellerType, Q_ANBIETER, "Privat"),
+    // "ja"/"nein" statt der vorgegebenen Wörter kommt oft genug vor
+    versand: (() => {
+      const roh = String(v.versand ?? v.shipping ?? "").trim().toLowerCase();
+      if (/^(ja|yes|true|möglich|versand)/.test(roh)) return "Versand möglich";
+      if (/^(nein|no|false|abholung|selbstabholung)/.test(roh)) return "nur Abholung";
+      return qWaehle(v.versand ?? v.shipping, Q_VERSAND, "nur Abholung");
+    })(),
+    baujahr: (String(v.baujahr ?? v.year ?? "").match(/\d{4}/) || [""])[0],
+    url: normalizeUrl(v.url ?? v.link ?? ""),
+    notiz: String(v.notiz ?? v.note ?? "").trim(),
+    date: nurDatum(v.date) || heute,
+  };
+}
 
 const istLeer = (x) => x == null || x === "" || (typeof x === "number" && isNaN(x));
 
@@ -1552,7 +1736,8 @@ export default function App() {
 
   const qNeu = () => ({
     armatur: "", farbe: "", reservoir: "", zustand: Q_ZUSTAND[0], umfang: ["Armatur"],
-    preis: "", listedSince: "", url: "", ort: "", anbieter: "Privat", notiz: "",
+    preis: "", listedSince: "", url: "", ort: "", anbieter: "Privat",
+    versand: Q_VERSAND[1], baujahr: "", notiz: "",
   });
   const [qForm, setQForm] = useState(qNeu);
   const [qOffen, setQOffen] = useState({});
@@ -1569,7 +1754,8 @@ export default function App() {
       armatur: qForm.armatur, farbe: qForm.farbe, reservoir: qForm.reservoir,
       zustand: qForm.zustand, umfang: [...qForm.umfang],
       url: normalizeUrl(qForm.url), ort: qForm.ort.trim(),
-      anbieter: qForm.anbieter, notiz: qForm.notiz.trim(),
+      anbieter: qForm.anbieter, versand: qForm.versand,
+      baujahr: (qForm.baujahr.match(/\d{4}/) || [""])[0], notiz: qForm.notiz.trim(),
       priceHistory: [{ date: heute, price: preis }],
       listedSince: nurDatum(qForm.listedSince),
       firstSeen: heute, lastSeen: heute, disappearedAt: "",
@@ -1602,6 +1788,68 @@ export default function App() {
   const qLoeschen = (id) => {
     const rest = { ...quooker }; delete rest[id]; persistQ(rest);
   };
+  /* JSON aus einer KI-Antwort übernehmen. Ein Inserat, dessen Link schon
+     im Bestand liegt, bekommt nur einen neuen Preis — sonst entstünde bei
+     jedem Nachtragen ein zweiter Eintrag und die Standzeit begänne von
+     vorn. Ohne Link entscheidet der Fingerabdruck aus den Merkmalen. */
+  const [qRoh, setQRoh] = useState("");
+  const [qVorschau, setQVorschau] = useState(null);
+  const [qPromptOffen, setQPromptOffen] = useState(false);
+  const [qKopiert, setQKopiert] = useState(false);
+
+  const qPruefen = (text) => {
+    const quelle = typeof text === "string" ? text : qRoh;
+    const roh = extractJson(quelle);
+    let daten;
+    try { daten = JSON.parse(roh); }
+    catch (_) { setNotice({ type: "err", msg: "Daraus lässt sich kein JSON lesen." }); setQVorschau(null); return; }
+    const liste = (Array.isArray(daten) ? daten : [daten]).map(normalizeQuooker)
+      .filter((x) => x.armatur || x.preis != null);
+    if (!liste.length) { setNotice({ type: "err", msg: "Darin steckt kein Quooker-Inserat." }); setQVorschau(null); return; }
+    const bekannt = (x) => qListe.find((q) =>
+      (x.url && q.url && normalizeUrl(q.url) === x.url) ||
+      (!x.url && qFingerabdruck(q) === qFingerabdruck({ ...x, umfang: x.umfang })));
+    setQVorschau(liste.map((x) => ({ ...x, treffer: bekannt(x) || null })));
+    setNotice(null);
+  };
+
+  const qUebernehmen = () => {
+    if (!qVorschau) return;
+    const naechster = { ...quooker };
+    let neu = 0, aktualisiert = 0;
+    qVorschau.forEach((x, i) => {
+      if (x.preis == null || x.preis <= 0) return;
+      if (x.treffer) {
+        const q = naechster[x.treffer.id]; if (!q) return;
+        const ohne = (q.priceHistory || []).filter((p) => p.date !== x.date);
+        naechster[q.id] = { ...q,
+          priceHistory: [...ohne, { date: x.date, price: x.preis }].sort((a, b) => a.date.localeCompare(b.date)),
+          lastSeen: [q.lastSeen, x.date].filter(Boolean).sort().pop(),
+          umfang: x.umfang.length ? x.umfang : q.umfang,
+          url: q.url || x.url,
+          listedSince: q.listedSince || x.listedSince,
+          updatedAt: new Date().toISOString() };
+        aktualisiert++;
+      } else {
+        const id = `q${Date.now().toString(36)}${i}`;
+        naechster[id] = { id,
+          armatur: x.armatur || "anderes Modell", farbe: x.farbe, reservoir: x.reservoir,
+          zustand: x.zustand, umfang: x.umfang.length ? x.umfang : ["Armatur"],
+          url: x.url, ort: x.ort, anbieter: x.anbieter, versand: x.versand,
+          baujahr: x.baujahr, notiz: x.notiz,
+          priceHistory: [{ date: x.date, price: x.preis }],
+          listedSince: x.listedSince, firstSeen: x.date, lastSeen: x.date,
+          disappearedAt: "", listingStatus: "Aktiv", closedDate: "",
+          trackingQuality: trackingGuete(x.listedSince, x.date),
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+        neu++;
+      }
+    });
+    persistQ(naechster);
+    setQVorschau(null); setQRoh("");
+    setNotice({ type: "ok", msg: `${neu} neu · ${aktualisiert} aktualisiert.` });
+  };
+
   const qSetzeDatum = (id, datum) => updateQuooker(id, (q) => {
     const listedSince = nurDatum(datum);
     return { ...q, listedSince,
@@ -2415,7 +2663,99 @@ export default function App() {
       {tab === "quooker" && (
       <>
         <section style={S.panel}>
-          <div style={S.panelTitle}><Package size={15} /> Inserat erfassen</div>
+          <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Upload size={15} /> Inserat aus JSON übernehmen
+            </span>
+            <button style={S.exportBtn} onClick={() => setQPromptOffen((o) => !o)}>
+              <FileUp size={13} /> {qPromptOffen ? "Prompt zuklappen" : "Prompt zeigen"}
+            </button>
+          </div>
+          <p style={S.hint}>
+            Schick einer KI den Prompt zusammen mit dem Inserat (Text oder Screenshots) und füg die
+            Antwort hier ein. Ein Inserat, dessen Link schon im Bestand liegt, bekommt nur einen neuen
+            Preis — so trägst du Preise nach, ohne dass ein zweiter Eintrag entsteht.
+          </p>
+
+          {qPromptOffen && (
+            <div style={S.qPromptBox}>
+              <div style={S.beoZeile}>
+                <button style={S.beoBtn} onClick={() => {
+                  navigator.clipboard?.writeText(Q_PROMPT).then(() => {
+                    setQKopiert(true); setTimeout(() => setQKopiert(false), 2000);
+                  }).catch(() => {});
+                }}>
+                  {qKopiert ? <><Check size={13} /> kopiert</> : <><Download size={13} /> Prompt kopieren</>}
+                </button>
+                <span style={{ color: T.muted, fontSize: 11 }}>
+                  Er kennt genau die Werte, die dieser Bereich auswertet — eigene Formulierungen fallen
+                  beim Einlesen weg.
+                </span>
+              </div>
+              <pre style={S.qPromptText}>{Q_PROMPT}</pre>
+            </div>
+          )}
+
+          <textarea value={qRoh} onChange={(e) => setQRoh(e.target.value)} style={S.textarea}
+            placeholder='{ "armatur": "Flex", "farbe": "Schwarz", "reservoir": "COMBI", … }'
+            spellCheck={false} className="pw-q-json" />
+          <div style={S.row}>
+            <button style={S.primaryBtn} onClick={() => qPruefen()} disabled={!qRoh.trim()} className="pw-q-pruefen">
+              <Check size={16} /> Prüfen
+            </button>
+            {qRoh && <button style={S.ghostBtn} onClick={() => { setQRoh(""); setQVorschau(null); }}>Leeren</button>}
+          </div>
+
+          {notice && (
+            <div style={{ ...S.notice, borderLeftColor: notice.type === "err" ? T.bad : T.good }}>
+              {notice.type === "err" ? <AlertTriangle size={15} color={T.bad} /> : <Check size={15} color={T.good} />}
+              <span>{notice.msg}</span>
+            </div>
+          )}
+
+          {qVorschau && (
+            <div style={S.draft}>
+              <div style={S.draftHead}>
+                <span>Gefunden · {qVorschau.length}</span>
+                <span style={S.badge}>{qVorschau.filter((x) => x.treffer).length} davon bekannt</span>
+              </div>
+              {qVorschau.map((x, i) => (
+                <div key={i} style={S.previewBlock}>
+                  <div style={S.previewRow}>
+                    <span style={S.previewTitle}>{qTitel(x)}</span>
+                    <span style={S.previewMeta}>
+                      {[x.zustand, x.preis != null ? fmtEUR(x.preis) : "kein Preis",
+                        x.ort || null].filter(Boolean).join(" · ")}
+                      {x.treffer && <span style={S.updTag}> bekannt — nur Preis</span>}
+                    </span>
+                  </div>
+                  <div style={S.tagRow}>
+                    {x.umfang.map((u) => (
+                      <span key={u} style={{ ...S.statusTag, color: T.good, borderColor: T.good + "55" }}>
+                        <Check size={10} /> {u}
+                      </span>
+                    ))}
+                  </div>
+                  {!x.listedSince && (
+                    <div style={S.previewFehlt}>
+                      <AlertTriangle size={12} /> Kein Inseratsdatum erkannt — Tag 0 ist dann dein Fundtag.
+                    </div>
+                  )}
+                  {x.notiz && <div style={S.kleinerHinweis}>{x.notiz}</div>}
+                </div>
+              ))}
+              <div style={S.row}>
+                <button style={S.primaryBtn} onClick={qUebernehmen} className="pw-q-uebernehmen">
+                  <Check size={16} /> Übernehmen
+                </button>
+                <button style={S.ghostBtn} onClick={() => setQVorschau(null)}>Verwerfen</button>
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section style={S.panel}>
+          <div style={S.panelTitle}><Package size={15} /> Inserat von Hand erfassen</div>
           <p style={S.hint}>
             Hier wird von Hand erfasst statt über die KI: Bei einem Quooker steht alles Wesentliche in
             drei Auswahlfeldern und einer Liste zum Abhaken. Was du hier ankreuzt, ist genau das, was den
@@ -2510,6 +2850,18 @@ export default function App() {
                 {Q_ANBIETER.map((a) => <option key={a} value={a}>{a}</option>)}
               </select>
             </label>
+            <label style={S.qFeld}>
+              <span style={S.fieldLabel}>Versand</span>
+              <select value={qForm.versand} onChange={(e) => setQForm((f) => ({ ...f, versand: e.target.value }))}
+                style={S.qAuswahl}>
+                {Q_VERSAND.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </label>
+            <label style={S.qFeld}>
+              <span style={S.fieldLabel}>Baujahr</span>
+              <input value={qForm.baujahr} onChange={(e) => setQForm((f) => ({ ...f, baujahr: e.target.value }))}
+                inputMode="numeric" placeholder="2023" style={S.qEingabe} />
+            </label>
           </div>
           <label style={{ ...S.qFeld, marginTop: 10 }}>
             <span style={S.fieldLabel}>Notiz</span>
@@ -2575,7 +2927,10 @@ export default function App() {
               const delta = t.absolut;
               return (
                 <div key={q.id} style={{ ...S.listRow, borderLeftColor: t.offline ? T.muted : T.accent }}>
-                  <div className="pw-dirrow" style={{ ...S.listHead, gridTemplateColumns: "minmax(150px,2.4fr) 96px 104px 92px 96px 32px" }}>
+                  {/* Eigene Klasse statt Inline-Raster: Ein Inline-Stil schlägt
+                      die Media-Regel, und dann schoben sich die Kennzahlen auf
+                      schmalen Schirmen übereinander. */}
+                  <div className="pw-qrow" style={S.listHead}>
                     <button style={S.listToggle} onClick={() => setQOffen((o) => ({ ...o, [q.id]: !o[q.id] }))}>
                       <span style={{ ...S.chev, transform: offen ? "rotate(90deg)" : "none" }}><ChevronRight size={14} /></span>
                       <span style={{ minWidth: 0 }}>
@@ -2585,12 +2940,14 @@ export default function App() {
                         </span>
                       </span>
                     </button>
+                    <span className="pw-metrics">
                     <Metric label="Preis" value={fmtEUR(t.currentPrice)} stark />
                     <Metric label="Veränderung"
                       value={delta === 0 || delta == null ? "unverändert" : `${delta > 0 ? "+" : "−"}${fmtEUR(Math.abs(delta))}`}
                       color={delta == null || delta === 0 ? T.muted : delta < 0 ? T.good : T.bad} />
                     <Metric label="Standzeit" value={t.daysOnline != null ? laufzeitText(t.daysOnline) : "—"} />
                     <Metric label="Teile" value={`${(q.umfang || []).length} von ${Q_UMFANG.length}`} />
+                    </span>
                     <button style={S.iconBtn} title="Eintrag entfernen" onClick={() => qLoeschen(q.id)}><Trash2 size={14} /></button>
                   </div>
 
@@ -2749,13 +3106,13 @@ export default function App() {
             hat meist ohnehin das teurere Set —, aber es zeigt, worauf sich der Aufpreis im Feld stützt.
           </p>
           <div style={S.quartilListe}>
-            <div style={{ ...S.qMerkmalZeile, ...S.quartilKopf }}>
+            <div className="pw-qmerkmal" style={{ ...S.qMerkmalZeile, ...S.quartilKopf }}>
               <span>Merkmal</span><span style={{ textAlign: "right" }}>mit</span>
               <span style={{ textAlign: "right" }}>Ø mit</span><span style={{ textAlign: "right" }}>Ø ohne</span>
               <span style={{ textAlign: "right" }}>Abstand</span>
             </div>
             {qAnalyse.merkmale.map((m) => (
-              <div key={m.merkmal} style={S.qMerkmalZeile}>
+              <div key={m.merkmal} className="pw-qmerkmal" style={S.qMerkmalZeile}>
                 <span style={S.nachtragTitel}>{m.merkmal}</span>
                 <span style={S.quartilZahl}>{m.mit}</span>
                 <span style={S.quartilZahl}>{m.schnittMit != null ? fmtEUR(Math.round(m.schnittMit)) : "—"}</span>
@@ -5077,6 +5434,17 @@ const globalCss = `
   .pw-dirrow > button:first-of-type { width: 100%; max-width: 100%; overflow: hidden; }
   .pw-dirrow > button:first-of-type > span:last-child { flex: 1 1 auto; min-width: 0; overflow: hidden; }
   .pw-metrics { display: contents; }
+  /* Quooker-Zeile: eigenes Raster, weil sie einen Knopf weniger hat als
+     die Fahrzeugzeile und deren Handy-Regeln sonst den Titel verschieben. */
+  .pw-qrow {
+    display: grid;
+    grid-template-columns: minmax(150px, 2.4fr) 96px 108px 96px 92px 32px;
+    gap: 9px;
+    align-items: center;
+  }
+  .pw-qrow > * { min-width: 0; }
+  .pw-qrow > button:first-of-type { width: 100%; max-width: 100%; overflow: hidden; }
+  .pw-qrow > button:first-of-type > span:last-child { flex: 1 1 auto; min-width: 0; overflow: hidden; }
   /* Auf breiten Schirmen tragen die Spaltenköpfe die Beschriftung */
   .pw-mlabel { display: none; }
   /* Die Sortierleiste ersetzt auf schmalen Schirmen die Spaltenköpfe */
@@ -5091,8 +5459,18 @@ const globalCss = `
     .pw-sortleiste::-webkit-scrollbar { display: none; }
     /* Filterzeilen: Beschriftung über die Werte statt daneben */
     .pw-filterzeile { grid-template-columns: 1fr !important; gap: 5px !important; }
+    /* Merkmalstabelle bricht um, statt seitlich aus dem Bild zu laufen:
+       Name über die volle Breite, darunter die Zahlen. "Ø ohne" entfällt —
+       der Abstand daneben sagt dasselbe. */
+    .pw-qmerkmal { grid-template-columns: 1fr 1fr 1fr !important; min-width: 0 !important; row-gap: 2px; }
+    .pw-qmerkmal > span:nth-child(1) { grid-column: 1 / -1; }
+    .pw-qmerkmal > span:nth-child(4) { display: none; }
     .pw-sortleiste > button { flex-shrink: 0; }
     .pw-dirrow { grid-template-columns: minmax(0, 1fr) auto; row-gap: 9px; }
+    .pw-qrow { grid-template-columns: minmax(0, 1fr) auto; row-gap: 9px; }
+    .pw-qrow > button:first-of-type { grid-column: 1; grid-row: 1; }
+    .pw-qrow > button:last-of-type { grid-column: 2; grid-row: 1; justify-self: end; }
+    .pw-qrow > .pw-metrics { grid-column: 1 / -1; grid-row: 2; display: flex; flex-wrap: wrap; gap: 8px 18px; }
     .pw-dirrow > button:first-of-type { grid-column: 1; grid-row: 1; }
     .pw-dirrow > button:nth-last-of-type(2) { grid-column: 2; grid-row: 1; justify-self: end; margin-right: 30px; }
     .pw-dirrow > button:last-of-type { grid-column: 2; grid-row: 1; justify-self: end; }
@@ -5312,6 +5690,8 @@ const styles = {
   qFeld: { display: "flex", flexDirection: "column", gap: 5, minWidth: 0 },
   qAuswahl: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, width: "100%", boxSizing: "border-box" },
   qEingabe: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace", width: "100%", boxSizing: "border-box" },
+  qPromptBox: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 10, padding: "10px 12px", marginBottom: 12 },
+  qPromptText: { margin: "8px 0 0", maxHeight: 300, overflow: "auto", fontSize: 10.5, lineHeight: 1.5, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", whiteSpace: "pre-wrap", wordBreak: "break-word" },
   qBlock: { marginTop: 14, display: "flex", flexDirection: "column", gap: 7 },
   qHaken: { display: "flex", gap: 6, flexWrap: "wrap" },
   qHakenAus: { display: "inline-flex", alignItems: "center", gap: 7, background: T.bg, color: T.muted, border: `1px solid ${T.line}`, borderRadius: 8, padding: "7px 11px", fontSize: 12, fontWeight: 600 },
