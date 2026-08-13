@@ -3,7 +3,7 @@ import {
   Gauge, Plus, Trash2, Check, X, TrendingDown, TrendingUp, Minus, Car,
   AlertTriangle, Upload, MapPin, Store, User, Wrench, Filter, ShieldCheck, Download,
   Camera, CalendarClock, Archive, RotateCcw, Clock, ChevronRight, FileUp,
-  Cloud, CloudOff, RefreshCw, ArrowUp, ArrowDown, Link2,
+  Cloud, CloudOff, RefreshCw, ArrowUp, ArrowDown, Link2, Droplet, Package,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -559,6 +559,46 @@ const FILTER_BEREICHE = {
   year:    { label: "Baujahr", einheit: "", wert: (v) => (v.year ? Number(v.year) : null) },
 };
 
+/* ================= Zweite Warengruppe: Quooker =====================
+   Warum überhaupt eine zweite Gruppe: Bei Autos vergleicht man nie zwei
+   gleiche Dinge — jeder Wagen hat seine eigene Geschichte, und die
+   Streuung frisst jede Aussage. Ein "Flex in Schwarz mit COMBI" ist
+   dagegen überall derselbe Gegenstand. Erst dadurch messen dieselben
+   Schaubilder eine echte Preisverteilung statt einer Wolke.
+
+   Der Zustand wird bewusst nur zweistufig geführt: gehandelt wird
+   ausschließlich Neuware und nahezu Neues. Alles darunter ist ein
+   anderes Geschäft und würde die Verteilung verwässern. */
+const Q_ARMATUREN = [
+  "Flex", "Fusion Square", "Fusion Round", "Front",
+  "Nordic Square Single Tap", "Nordic Square Twintaps",
+  "Nordic Round Single Tap", "Nordic Round Twintaps",
+  "Classic Fusion Square", "Classic Fusion Round",
+  "Classic Nordic Square Twintaps", "Classic Nordic Round Twintaps",
+  "Design", "Modern", "Basic", "PRO3 Twintaps", "anderes Modell",
+];
+const Q_FARBEN = ["Chrom", "Edelstahl", "Schwarz", "Weiß", "Gold",
+  "Rose Copper", "Patinated Brass", "Gunmetal", "andere Farbe"];
+// Das Reservoir bestimmt den Wert oft stärker als die Armatur.
+const Q_RESERVOIR = ["COMBI", "COMBI+", "PRO3-VAQ", "CUBE-Set", "kein Reservoir", "unbekannt"];
+const Q_ZUSTAND = ["Neu und verpackt", "Nahezu neu, wenig gebraucht"];
+/* Was im Inserat tatsächlich dabei ist. Genau hier entsteht der
+   Preisunterschied zwischen zwei sonst gleichen Anzeigen — deshalb
+   einzeln abhakbar und nicht als Fließtext. */
+const Q_UMFANG = [
+  "Armatur", "Reservoir/Tank", "CUBE", "CO₂-Flasche", "Scale Control",
+  "Filterpatrone", "Seifenspender", "Handbrause/Schlauchset",
+  "Originalverpackung", "Rechnung/Garantie", "Montagematerial",
+];
+const Q_ANBIETER = ["Privat", "Gewerblich"];
+
+// Ein sprechender Name aus den Merkmalen — nichts, was man tippen müsste.
+const qTitel = (q) => [q.armatur, q.farbe, q.reservoir && q.reservoir !== "unbekannt"
+  ? `mit ${q.reservoir}` : ""].filter(Boolean).join(" · ") || "Ohne Angabe";
+// Gleiche Merkmale = dasselbe Angebot. Preis bleibt bewusst außen vor.
+const qFingerabdruck = (q) => [q.armatur, q.farbe, q.reservoir, q.zustand,
+  [...(q.umfang || [])].sort().join(",")].join("|").toLowerCase();
+
 const istLeer = (x) => x == null || x === "" || (typeof x === "number" && isNaN(x));
 
 function sortiere(fahrzeuge, feld, richtung) {
@@ -889,9 +929,17 @@ function localRead() {
     return roh ? JSON.parse(roh) : null;
   } catch (_) { return null; }
 }
-function localWrite(vehicles) {
-  try { localStorage.setItem(STORE_KEY, JSON.stringify({ vehicles })); return true; }
-  catch (e) { console.error("Lokal speichern fehlgeschlagen", e); return false; }
+/* Beide Warengruppen liegen in einem Datensatz. Wer nur eine übergibt,
+   überschreibt die andere nicht — sie wird aus dem Vorhandenen ergänzt. */
+function localWrite(vehicles, quooker) {
+  try {
+    const alt = localRead() || {};
+    localStorage.setItem(STORE_KEY, JSON.stringify({
+      vehicles: vehicles !== undefined ? vehicles : (alt.vehicles || {}),
+      quooker: quooker !== undefined ? quooker : (alt.quooker || {}),
+    }));
+    return true;
+  } catch (e) { console.error("Lokal speichern fehlgeschlagen", e); return false; }
 }
 
 async function serverRead(key) {
@@ -900,11 +948,11 @@ async function serverRead(key) {
   if (!r.ok) throw Object.assign(new Error(daten.error || `Server antwortete mit ${r.status}`), { status: r.status });
   return daten;
 }
-async function serverWrite(key, vehicles, base) {
+async function serverWrite(key, vehicles, quooker, base) {
   const r = await fetch(SERVER_URL, {
     method: "PUT",
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-    body: JSON.stringify({ vehicles, base }),
+    body: JSON.stringify({ vehicles, quooker, base }),
   });
   const daten = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(daten.error || `Server antwortete mit ${r.status}`), { status: r.status, daten });
@@ -1068,17 +1116,26 @@ export default function App() {
   /* ---- Speichern: lokal sofort, auf dem Server sobald möglich ---- */
   const baseRef = useRef(null);        // Stand, auf dem unsere Änderungen aufsetzen
   const keyRef = useRef(readKey());
+  const vehiclesRef = useRef({});      // letzter bekannter Stand beider
+  const quookerRef = useRef({});       // Warengruppen, für das Speichern
 
-  const pushToServer = useCallback(async (next) => {
+  /* Der Server bekommt immer beide Warengruppen. Wer nur eine ändert,
+     schickt für die andere den zuletzt bekannten Stand mit — sonst
+     überschriebe das Speichern der einen Gruppe die andere. */
+  const pushToServer = useCallback(async (nextVehicles, nextQuooker) => {
+    if (nextVehicles !== undefined) vehiclesRef.current = nextVehicles;
+    if (nextQuooker !== undefined) quookerRef.current = nextQuooker;
     if (!keyRef.current) return;
     setSync((s) => ({ ...s, state: "speichert" }));
     try {
-      const { savedAt } = await serverWrite(keyRef.current, next, baseRef.current);
+      const { savedAt } = await serverWrite(keyRef.current,
+        vehiclesRef.current, quookerRef.current, baseRef.current);
       baseRef.current = savedAt;
       setSync({ state: "verbunden", savedAt, msg: "" });
     } catch (e) {
       if (e.status === 409) {
-        setSync({ state: "konflikt", savedAt: e.daten?.savedAt || null, msg: e.message, fremd: e.daten?.vehicles || {} });
+        setSync({ state: "konflikt", savedAt: e.daten?.savedAt || null, msg: e.message,
+          fremd: e.daten?.vehicles || {}, fremdQ: e.daten?.quooker || {} });
       } else {
         setSync({ state: e.status === 401 ? "schluessel" : "fehler", savedAt: null, msg: e.message });
       }
@@ -1086,42 +1143,62 @@ export default function App() {
   }, []);
 
   const persist = useCallback((next) => {
-    setVehicles(next); localWrite(next); pushToServer(next);
+    setVehicles(next); localWrite(next, undefined); pushToServer(next, undefined);
+  }, [pushToServer]);
+
+  // Dasselbe für die zweite Warengruppe.
+  const [quooker, setQuooker] = useState({});
+  const persistQ = useCallback((next) => {
+    setQuooker(next); localWrite(undefined, next); pushToServer(undefined, next);
+  }, [pushToServer]);
+  const updateQuooker = useCallback((id, updater) => {
+    setQuooker((prev) => {
+      const q = prev[id]; if (!q) return prev;
+      const next = { ...prev, [id]: updater({ ...q }) };
+      localWrite(undefined, next); pushToServer(undefined, next);
+      return next;
+    });
   }, [pushToServer]);
 
   const updateVehicle = useCallback((id, updater) => {
     setVehicles((prev) => {
       const v = prev[id]; if (!v) return prev;
       const next = { ...prev, [id]: updater({ ...v }) };
-      localWrite(next); pushToServer(next);
+      localWrite(next, undefined); pushToServer(next, undefined);
       return next;
     });
   }, [pushToServer]);
 
   // Beim Start: lokale Kopie sofort zeigen, dann den Server nachziehen.
   useEffect(() => {
-    const lokal = migrate(localRead()?.vehicles || {});
-    setVehicles(lokal);
-    localWrite(lokal);          // geradegezogene Werte gleich festhalten
+    const roh = localRead() || {};
+    const lokal = migrate(roh.vehicles || {});
+    const lokalQ = roh.quooker || {};
+    setVehicles(lokal); setQuooker(lokalQ);
+    vehiclesRef.current = lokal; quookerRef.current = lokalQ;
+    localWrite(lokal, lokalQ);          // geradegezogene Werte gleich festhalten
     setLoaded(true);
     const key = keyRef.current;
     if (!key) { setSync({ state: "lokal", savedAt: null, msg: "" }); return; }
     (async () => {
       setSync((s) => ({ ...s, state: "laedt" }));
       try {
-        const { vehicles: fern, savedAt } = await serverRead(key);
+        const { vehicles: fern, quooker: fernQ, savedAt } = await serverRead(key);
         baseRef.current = savedAt;
         if (savedAt) {
-          const roh = JSON.stringify(fern);          // migrate arbeitet am Original
+          const rohStand = JSON.stringify(fern);     // migrate arbeitet am Original
           const gehoben = migrate(fern);
-          setVehicles(gehoben); localWrite(gehoben);
+          const gehobenQ = fernQ || {};
+          setVehicles(gehoben); setQuooker(gehobenQ);
+          vehiclesRef.current = gehoben; quookerRef.current = gehobenQ;
+          localWrite(gehoben, gehobenQ);
           setSync({ state: "verbunden", savedAt, msg: "" });
           // Hat das Anheben etwas geradegezogen — etwa einen kaputten Link —,
           // gehört der bereinigte Stand auch auf den Server, sonst kommt er
           // beim nächsten Gerät wieder als Altlast zurück.
-          if (JSON.stringify(gehoben) !== roh) pushToServer(gehoben);
-        } else if (Object.keys(lokal).length) {
-          await pushToServer(lokal);            // erster Abgleich: lokal hoch
+          if (JSON.stringify(gehoben) !== rohStand) pushToServer(gehoben, gehobenQ);
+        } else if (Object.keys(lokal).length || Object.keys(lokalQ).length) {
+          await pushToServer(lokal, lokalQ);    // erster Abgleich: lokal hoch
         } else {
           setSync({ state: "verbunden", savedAt: null, msg: "" });
         }
@@ -1135,14 +1212,17 @@ export default function App() {
   const konfliktServerNehmen = useCallback(() => {
     setSync((s) => {
       const fern = migrate(s.fremd || {});
-      setVehicles(fern); localWrite(fern);
+      const fernQ = s.fremdQ || {};
+      setVehicles(fern); setQuooker(fernQ);
+      vehiclesRef.current = fern; quookerRef.current = fernQ;
+      localWrite(fern, fernQ);
       baseRef.current = s.savedAt;
       return { state: "verbunden", savedAt: s.savedAt, msg: "" };
     });
   }, []);
   const konfliktEigenesNehmen = useCallback(() => {
     setSync((s) => { baseRef.current = s.savedAt; return s; });
-    setTimeout(() => setVehicles((v) => { pushToServer(v); return v; }), 0);
+    setTimeout(() => { pushToServer(vehiclesRef.current, quookerRef.current); }, 0);
   }, [pushToServer]);
 
   const schluesselSpeichern = useCallback((k) => {
@@ -1152,16 +1232,19 @@ export default function App() {
     (async () => {
       setSync({ state: "laedt", savedAt: null, msg: "" });
       try {
-        const { vehicles: fern, savedAt } = await serverRead(sauber);
+        const { vehicles: fern, quooker: fernQ, savedAt } = await serverRead(sauber);
         baseRef.current = savedAt;
         if (savedAt) {
-          const roh = JSON.stringify(fern);
+          const rohStand = JSON.stringify(fern);
           const gehoben = migrate(fern);
-          setVehicles(gehoben); localWrite(gehoben);
+          const gehobenQ = fernQ || {};
+          setVehicles(gehoben); setQuooker(gehobenQ);
+          vehiclesRef.current = gehoben; quookerRef.current = gehobenQ;
+          localWrite(gehoben, gehobenQ);
           setSync({ state: "verbunden", savedAt, msg: "" });
-          if (JSON.stringify(gehoben) !== roh) pushToServer(gehoben);
+          if (JSON.stringify(gehoben) !== rohStand) pushToServer(gehoben, gehobenQ);
         } else {
-          setVehicles((v) => { pushToServer(v); return v; });
+          pushToServer(vehiclesRef.current, quookerRef.current);
         }
       } catch (e) {
         setSync({ state: e.status === 401 ? "schluessel" : "fehler", savedAt: null, msg: e.message });
@@ -1452,6 +1535,148 @@ export default function App() {
   const alleOffen = list.length > 0 && list.every((v) => openRows[v.id]);
   // Nur die Anzeige im Verzeichnis wird umsortiert, nicht die Daten der Auswertung.
   const verzeichnis = useMemo(() => sortiere(list, sortFeld, sortRichtung), [list, sortFeld, sortRichtung]);
+
+  /* ---- Quooker: erfassen, beobachten, auswerten ----
+     Die Einträge tragen dieselben Beobachtungsfelder wie ein Fahrzeug
+     (priceHistory, listedSince, firstSeen, disappearedAt). Dadurch
+     rechnen tracking() und preisStufen() unverändert weiter, und die
+     Schaubilder verwenden dieselben Bausteine. */
+  const qListe = useMemo(() => Object.values(quooker)
+    .sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "")), [quooker]);
+  const [qFilter, setQFilter] = useState({});
+  const qAuswahl = useMemo(() => qListe.filter((q) =>
+    ["zustand", "armatur", "reservoir", "farbe"].every((f) => {
+      const g = qFilter[f];
+      return !g || !g.length || g.includes(q[f] || "ohne Angabe");
+    })), [qListe, qFilter]);
+
+  const qNeu = () => ({
+    armatur: "", farbe: "", reservoir: "", zustand: Q_ZUSTAND[0], umfang: ["Armatur"],
+    preis: "", listedSince: "", url: "", ort: "", anbieter: "Privat", notiz: "",
+  });
+  const [qForm, setQForm] = useState(qNeu);
+  const [qOffen, setQOffen] = useState({});
+  const [qPreisFuer, setQPreisFuer] = useState(null);
+  const [qPreisWert, setQPreisWert] = useState("");
+  const [qPreisDatum, setQPreisDatum] = useState(todayISO());
+
+  const qSpeichern = () => {
+    const preis = coerceNum(qForm.preis);
+    if (!qForm.armatur || preis == null || preis <= 0) return;
+    const heute = todayISO();
+    const eintrag = {
+      id: `q${Date.now().toString(36)}`,
+      armatur: qForm.armatur, farbe: qForm.farbe, reservoir: qForm.reservoir,
+      zustand: qForm.zustand, umfang: [...qForm.umfang],
+      url: normalizeUrl(qForm.url), ort: qForm.ort.trim(),
+      anbieter: qForm.anbieter, notiz: qForm.notiz.trim(),
+      priceHistory: [{ date: heute, price: preis }],
+      listedSince: nurDatum(qForm.listedSince),
+      firstSeen: heute, lastSeen: heute, disappearedAt: "",
+      listingStatus: "Aktiv", closedDate: "",
+      trackingQuality: trackingGuete(nurDatum(qForm.listedSince), heute),
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
+    };
+    persistQ({ ...quooker, [eintrag.id]: eintrag });
+    setQForm(qNeu());
+  };
+  const qPreisAnhaengen = (id) => {
+    const preis = coerceNum(qPreisWert);
+    if (preis == null || preis <= 0) return;
+    const datum = nurDatum(qPreisDatum) || todayISO();
+    updateQuooker(id, (q) => {
+      const ohne = (q.priceHistory || []).filter((p) => p.date !== datum);
+      return { ...q,
+        priceHistory: [...ohne, { date: datum, price: preis }].sort((a, b) => a.date.localeCompare(b.date)),
+        lastSeen: [q.lastSeen, datum].filter(Boolean).sort().pop() };
+    });
+    setQPreisFuer(null); setQPreisWert("");
+  };
+  const qWegAb = (id, datum) => updateQuooker(id, (q) => ({
+    ...q, listingStatus: "Verkauft", closedDate: datum, disappearedAt: datum, lastSeen: q.lastSeen || datum,
+  }));
+  const qWiederOeffnen = (id) => updateQuooker(id, (q) => ({
+    ...q, listingStatus: "Aktiv", closedDate: "", disappearedAt: "",
+  }));
+  const qHeuteGesehen = (id) => updateQuooker(id, (q) => ({ ...q, lastSeen: todayISO() }));
+  const qLoeschen = (id) => {
+    const rest = { ...quooker }; delete rest[id]; persistQ(rest);
+  };
+  const qSetzeDatum = (id, datum) => updateQuooker(id, (q) => {
+    const listedSince = nurDatum(datum);
+    return { ...q, listedSince,
+      trackingQuality: listedSince ? trackingGuete(listedSince, q.firstSeen) : "legacy" };
+  });
+
+  /* Was ein einzelnes Ausstattungsmerkmal im Mittel ausmacht: Preis der
+     Inserate mit dem Merkmal gegen die ohne. Das ist keine Ursache —
+     wer eine CO₂-Flasche dazulegt, hat meist auch das teurere Set —,
+     aber es zeigt, worauf sich der Aufpreis im Feld tatsächlich stützt. */
+  const qAnalyse = useMemo(() => {
+    const punkte = qAuswahl.map((q) => {
+      const t = tracking(q);
+      if (t.currentPrice == null) return null;
+      return { ...q, t, preis: t.currentPrice, start: t.initialTrackedPrice,
+        offline: t.offline, tage: t.daysOnline ?? t.daysTracked };
+    }).filter(Boolean);
+    if (!punkte.length) return null;
+    const mittel = (z) => (z.length ? z.reduce((a, b) => a + b, 0) / z.length : null);
+    const sortiert = [...punkte].map((p) => p.preis).sort((a, b) => a - b);
+    const q = (p) => {
+      const i = (sortiert.length - 1) * p, u = Math.floor(i), o = Math.ceil(i);
+      return u === o ? sortiert[u] : sortiert[u] + (sortiert[o] - sortiert[u]) * (i - u);
+    };
+    const merkmale = Q_UMFANG.map((m) => {
+      const mit = punkte.filter((p) => (p.umfang || []).includes(m));
+      const ohne = punkte.filter((p) => !(p.umfang || []).includes(m));
+      const a = mittel(mit.map((x) => x.preis)), b = mittel(ohne.map((x) => x.preis));
+      return { merkmal: m, mit: mit.length, ohne: ohne.length, schnittMit: a, schnittOhne: b,
+        delta: a != null && b != null ? a - b : null };
+    }).filter((m) => m.mit > 0);
+    const weg = punkte.filter((p) => p.offline);
+    return {
+      punkte, anzahl: punkte.length,
+      min: sortiert[0], max: sortiert[sortiert.length - 1],
+      median: q(0.5), q1: q(0.25), q3: q(0.75),
+      offline: weg.length,
+      wegSchnitt: mittel(weg.map((p) => p.preis)),
+      offenSchnitt: mittel(punkte.filter((p) => !p.offline).map((p) => p.preis)),
+      standzeitWeg: mittel(weg.map((p) => p.tage).filter((x) => x != null)),
+      merkmale: merkmale.sort((a, b) => (b.delta ?? -1e9) - (a.delta ?? -1e9)),
+    };
+  }, [qAuswahl]);
+
+  // Preisverläufe der Quooker-Inserate: dieselbe Treppe wie bei den Autos.
+  const qVerlaeufe = useMemo(() => {
+    const farben = ["#F5B301", "#4EA8F4", "#35C46B", "#C77DFF", "#F4544E",
+      "#2DD4BF", "#FB923C", "#E879A9", "#A3E635", "#22D3EE"];
+    const reihen = qAuswahl.map((q, nr) => {
+      const t = tracking(q);
+      const stufen = t.stufen;
+      if (!stufen.length || !stufen[0].preis) return null;
+      const start = inseriertSeit(q) || t.firstSeen || stufen[0].von;
+      if (!start) return null;
+      const ende = Math.max(1, tageZwischen(start, verschwundenAm(q) || todayISO()) ?? 1);
+      const blindBis = Math.max(0, Math.min(ende, tageZwischen(start, stufen[0].von) ?? 0));
+      const punkte = [], knicke = [];
+      stufen.forEach((st, i) => {
+        const von = i === 0 ? 0 : Math.max(0, Math.min(ende, tageZwischen(start, st.von) ?? 0));
+        const bis = i + 1 < stufen.length
+          ? Math.max(von, Math.min(ende, tageZwischen(start, stufen[i + 1].von) ?? ende)) : ende;
+        punkte.push({ x: von, y: st.preis }); punkte.push({ x: bis, y: st.preis });
+        if (i > 0) knicke.push({ x: von, y: st.preis });
+      });
+      return { id: q.id, title: qTitel(q), url: q.url, farbe: farben[nr % farben.length],
+        zustand: q.zustand, ende, blindBis, punkte, knicke,
+        offline: t.offline, stand: t.stand, startPreis: stufen[0].preis,
+        letzterPreis: stufen[stufen.length - 1].preis, hatStart: !!q.listedSince };
+    }).filter(Boolean);
+    if (!reihen.length) return null;
+    const gesenkt = reihen.filter((r) => r.letzterPreis < r.startPreis);
+    return { reihen, anzahl: reihen.length, gesenkt: gesenkt.length,
+      ohneStart: reihen.filter((r) => !r.hatStart).length,
+      laengste: Math.max(...reihen.map((r) => r.ende)) };
+  }, [qAuswahl]);
 
   /* Die Auswahl, mit der alle Schaubilder rechnen. `ausser` blendet eine
      Dimension aus — damit die Zahl neben einem Filterwert zeigt, wie viele
@@ -1947,6 +2172,10 @@ export default function App() {
           <Car size={14} /> Verzeichnis
           {list.length > 0 && <span style={tab === "verzeichnis" ? S.tabCountOn : S.tabCount}>{list.length}</span>}
         </button>
+        <button style={tab === "quooker" ? S.tabOn : S.tabOff} onClick={() => setTab("quooker")}>
+          <Droplet size={14} /> Quooker
+          {qListe.length > 0 && <span style={tab === "quooker" ? S.tabCountOn : S.tabCount}>{qListe.length}</span>}
+        </button>
         <button style={tab === "pruefen" ? S.tabOn : S.tabOff} onClick={() => setTab("pruefen")}>
           <ShieldCheck size={14} /> Offene Punkte
           {zuPruefen.length > 0 && (
@@ -2182,6 +2411,428 @@ export default function App() {
 
       </>)}
 
+
+      {tab === "quooker" && (
+      <>
+        <section style={S.panel}>
+          <div style={S.panelTitle}><Package size={15} /> Inserat erfassen</div>
+          <p style={S.hint}>
+            Hier wird von Hand erfasst statt über die KI: Bei einem Quooker steht alles Wesentliche in
+            drei Auswahlfeldern und einer Liste zum Abhaken. Was du hier ankreuzt, ist genau das, was den
+            Preisunterschied zwischen zwei sonst gleichen Anzeigen ausmacht.
+          </p>
+
+          <div style={S.qGitter}>
+            <label style={S.qFeld}>
+              <span style={S.fieldLabel}>Armatur</span>
+              <select value={qForm.armatur} onChange={(e) => setQForm((f) => ({ ...f, armatur: e.target.value }))}
+                style={S.qAuswahl} className="pw-q-armatur">
+                <option value="">— wählen —</option>
+                {Q_ARMATUREN.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </label>
+            <label style={S.qFeld}>
+              <span style={S.fieldLabel}>Farbe</span>
+              <select value={qForm.farbe} onChange={(e) => setQForm((f) => ({ ...f, farbe: e.target.value }))}
+                style={S.qAuswahl}>
+                <option value="">— wählen —</option>
+                {Q_FARBEN.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </label>
+            <label style={S.qFeld}>
+              <span style={S.fieldLabel}>Reservoir</span>
+              <select value={qForm.reservoir} onChange={(e) => setQForm((f) => ({ ...f, reservoir: e.target.value }))}
+                style={S.qAuswahl}>
+                <option value="">— wählen —</option>
+                {Q_RESERVOIR.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </label>
+            <label style={S.qFeld}>
+              <span style={S.fieldLabel}>Preis in Euro</span>
+              <input value={qForm.preis} onChange={(e) => setQForm((f) => ({ ...f, preis: e.target.value }))}
+                inputMode="numeric" placeholder="1290" style={S.qEingabe} className="pw-q-preis" />
+            </label>
+            <label style={S.qFeld}>
+              <span style={S.fieldLabel}>Inseriert seit</span>
+              <input type="date" value={qForm.listedSince} max={todayISO()}
+                onChange={(e) => setQForm((f) => ({ ...f, listedSince: e.target.value }))}
+                style={{ ...S.qEingabe, colorScheme: "dark" }} />
+            </label>
+            <label style={S.qFeld}>
+              <span style={S.fieldLabel}>Ort oder PLZ</span>
+              <input value={qForm.ort} onChange={(e) => setQForm((f) => ({ ...f, ort: e.target.value }))}
+                placeholder="50667 Köln" style={S.qEingabe} />
+            </label>
+          </div>
+
+          <div style={S.qBlock}>
+            <span style={S.fieldLabel}>Zustand</span>
+            <div style={S.askOptions}>
+              {Q_ZUSTAND.map((z) => (
+                <button key={z} onClick={() => setQForm((f) => ({ ...f, zustand: z }))}
+                  style={qForm.zustand === z ? S.askOptionOn : S.askOption}>{z}</button>
+              ))}
+            </div>
+            <div style={S.askHilfe}>
+              Nur diese beiden Stufen werden verfolgt — alles Abgenutzte ist ein anderes Geschäft und
+              würde die Verteilung verwässern.
+            </div>
+          </div>
+
+          <div style={S.qBlock}>
+            <span style={S.fieldLabel}>Was ist im Inserat enthalten</span>
+            <div style={S.qHaken}>
+              {Q_UMFANG.map((u) => {
+                const an = qForm.umfang.includes(u);
+                return (
+                  <button key={u} className="pw-q-haken"
+                    onClick={() => setQForm((f) => ({ ...f,
+                      umfang: an ? f.umfang.filter((x) => x !== u) : [...f.umfang, u] }))}
+                    style={an ? S.qHakenAn : S.qHakenAus}>
+                    <span style={an ? S.qKastenAn : S.qKasten}>{an ? <Check size={11} strokeWidth={3.5} /> : null}</span>
+                    {u}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div style={S.qGitter}>
+            <label style={{ ...S.qFeld, gridColumn: "span 2" }}>
+              <span style={S.fieldLabel}>Link zum Inserat</span>
+              <input value={qForm.url} onChange={(e) => setQForm((f) => ({ ...f, url: e.target.value }))}
+                placeholder="kleinanzeigen.de/…" spellCheck={false} style={S.qEingabe} />
+            </label>
+            <label style={S.qFeld}>
+              <span style={S.fieldLabel}>Anbieter</span>
+              <select value={qForm.anbieter} onChange={(e) => setQForm((f) => ({ ...f, anbieter: e.target.value }))}
+                style={S.qAuswahl}>
+                {Q_ANBIETER.map((a) => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </label>
+          </div>
+          <label style={{ ...S.qFeld, marginTop: 10 }}>
+            <span style={S.fieldLabel}>Notiz</span>
+            <input value={qForm.notiz} onChange={(e) => setQForm((f) => ({ ...f, notiz: e.target.value }))}
+              placeholder="Kratzer am Auslauf, Bilder unscharf …" style={S.qEingabe} />
+          </label>
+
+          <div style={S.row}>
+            <button style={S.primaryBtn} onClick={qSpeichern}
+              disabled={!qForm.armatur || !coerceNum(qForm.preis)} className="pw-q-speichern">
+              <Plus size={16} /> Inserat aufnehmen
+            </button>
+            <button style={S.ghostBtn} onClick={() => setQForm(qNeu())}>Felder leeren</button>
+            {!qForm.listedSince && (
+              <span style={S.beoWarnung}>
+                Ohne „Inseriert seit" beginnt die Zeitrechnung erst heute — steht im Inserat, wann es
+                eingestellt wurde, trag es gleich ein.
+              </span>
+            )}
+          </div>
+        </section>
+
+        {qListe.length > 0 && (
+        <section style={S.panel}>
+          <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <Droplet size={15} /> Erfasste Inserate · {qAuswahl.length}
+              {qAuswahl.length !== qListe.length && <span style={{ color: T.muted }}> von {qListe.length}</span>}
+            </span>
+          </div>
+
+          {[["zustand", "Zustand", Q_ZUSTAND], ["armatur", "Armatur", null], ["reservoir", "Reservoir", null]]
+            .map(([feld, label]) => {
+              const werte = [...new Set(qListe.map((q) => q[feld] || "ohne Angabe"))].sort();
+              if (werte.length < 2) return null;
+              return (
+                <div key={feld} style={S.filterZeile} className="pw-filterzeile">
+                  <span style={S.filterLabel}>{label}</span>
+                  <span style={S.filterWerte}>
+                    {werte.map((w) => {
+                      const an = (qFilter[feld] || []).includes(w);
+                      const n = qListe.filter((q) => (q[feld] || "ohne Angabe") === w).length;
+                      return (
+                        <button key={w} className="pw-q-filter"
+                          onClick={() => setQFilter((alt) => {
+                            const jetzt = alt[feld] || [];
+                            return { ...alt, [feld]: jetzt.includes(w) ? jetzt.filter((x) => x !== w) : [...jetzt, w] };
+                          })}
+                          style={an ? S.askOptionOn : S.askOption}>
+                          {w} <span style={{ opacity: 0.65 }}>{n}</span>
+                        </button>
+                      );
+                    })}
+                  </span>
+                </div>
+              );
+            })}
+
+          <div style={{ ...S.listWrap, marginTop: 12 }}>
+            {qAuswahl.map((q) => {
+              const t = tracking(q);
+              const offen = !!qOffen[q.id];
+              const delta = t.absolut;
+              return (
+                <div key={q.id} style={{ ...S.listRow, borderLeftColor: t.offline ? T.muted : T.accent }}>
+                  <div className="pw-dirrow" style={{ ...S.listHead, gridTemplateColumns: "minmax(150px,2.4fr) 96px 104px 92px 96px 32px" }}>
+                    <button style={S.listToggle} onClick={() => setQOffen((o) => ({ ...o, [q.id]: !o[q.id] }))}>
+                      <span style={{ ...S.chev, transform: offen ? "rotate(90deg)" : "none" }}><ChevronRight size={14} /></span>
+                      <span style={{ minWidth: 0 }}>
+                        <span style={S.listTitle} title={qTitel(q)}>{qTitel(q)}</span>
+                        <span style={S.listSub}>
+                          {q.zustand}{q.ort ? ` · ${q.ort}` : ""}{t.offline ? ` · ${t.stand}` : ""}
+                        </span>
+                      </span>
+                    </button>
+                    <Metric label="Preis" value={fmtEUR(t.currentPrice)} stark />
+                    <Metric label="Veränderung"
+                      value={delta === 0 || delta == null ? "unverändert" : `${delta > 0 ? "+" : "−"}${fmtEUR(Math.abs(delta))}`}
+                      color={delta == null || delta === 0 ? T.muted : delta < 0 ? T.good : T.bad} />
+                    <Metric label="Standzeit" value={t.daysOnline != null ? laufzeitText(t.daysOnline) : "—"} />
+                    <Metric label="Teile" value={`${(q.umfang || []).length} von ${Q_UMFANG.length}`} />
+                    <button style={S.iconBtn} title="Eintrag entfernen" onClick={() => qLoeschen(q.id)}><Trash2 size={14} /></button>
+                  </div>
+
+                  {offen && (
+                    <div style={S.cardBody}>
+                      <div style={S.tagRow}>
+                        {(q.umfang || []).map((u) => (
+                          <span key={u} style={{ ...S.statusTag, color: T.good, borderColor: T.good + "55" }}>
+                            <Check size={10} /> {u}
+                          </span>
+                        ))}
+                        {Q_UMFANG.filter((u) => !(q.umfang || []).includes(u)).map((u) => (
+                          <span key={u} style={{ ...S.statusTag, color: T.muted, borderColor: T.line }}>— {u}</span>
+                        ))}
+                      </div>
+
+                      <div style={S.beoGitter}>
+                        <BeoWert label="Preis heute" wert={fmtEUR(t.currentPrice)} stark />
+                        <BeoWert label="Erster Preis" wert={fmtEUR(t.initialTrackedPrice)} />
+                        <BeoWert label="Preisänderungen" wert={`${t.aenderungen}`}
+                          zusatz={t.tageSeitAenderung == null ? null
+                            : t.aenderungen === 0 ? `unverändert seit ${laufzeitDativ(t.tageSeitAenderung)}`
+                              : `zuletzt vor ${laufzeitDativ(t.tageSeitAenderung)}`} />
+                        <BeoDatum label="Inseriert seit" wert={q.listedSince} gesetzt={!!q.listedSince}
+                          zusatz={q.listedSince
+                            ? (t.blindTage ? `${t.blindTage} Tage vor deinem Fund` : "von Anfang an dabei")
+                            : "fehlt — Tag 0 ist dein Fundtag"}
+                          aendern={(d) => qSetzeDatum(q.id, d)} />
+                        <BeoWert label="Zuletzt gesehen" wert={t.lastSeen ? fmtDate(t.lastSeen) : "—"}
+                          zusatz={t.tageSeitGesehen == null ? null
+                            : t.tageSeitGesehen === 0 ? "heute" : `vor ${laufzeitDativ(t.tageSeitGesehen)}`} />
+                        <BeoWert label="Status" wert={t.stand} farbe={t.offline ? T.muted : T.good}
+                          zusatz={t.offline && t.disappearedAt ? `seit ${fmtDate(t.disappearedAt)}` : "noch online"} />
+                      </div>
+
+                      {q.notiz && <div style={S.kleinerHinweis}>{q.notiz}</div>}
+                      {istLink(q.url) && (
+                        <div style={{ marginTop: 8 }}>
+                          <a href={normalizeUrl(q.url)} target="_blank" rel="noreferrer" style={S.linkOeffnen}>Inserat öffnen ↗</a>
+                        </div>
+                      )}
+
+                      <div style={S.beoZeile}>
+                        {qPreisFuer === q.id ? (
+                          <>
+                            <input value={qPreisWert} onChange={(e) => setQPreisWert(e.target.value)}
+                              inputMode="numeric" placeholder="neuer Preis" style={S.rechnerFeld} className="pw-q-neupreis" />
+                            <input type="date" value={qPreisDatum} max={todayISO()}
+                              onChange={(e) => setQPreisDatum(e.target.value)}
+                              style={{ ...S.rechnerFeld, width: 138, colorScheme: "dark" }} />
+                            <button style={S.beoBtn} onClick={() => qPreisAnhaengen(q.id)}><Check size={13} /> Übernehmen</button>
+                            <button style={S.beoBtn} onClick={() => setQPreisFuer(null)}><X size={13} /> Abbrechen</button>
+                          </>
+                        ) : (
+                          <>
+                            <button style={S.beoBtn} className="pw-q-preisknopf"
+                              onClick={() => { setQPreisFuer(q.id); setQPreisWert(String(t.currentPrice ?? "")); setQPreisDatum(todayISO()); }}>
+                              <Plus size={13} /> Preis nachtragen
+                            </button>
+                            {!t.offline ? (
+                              <>
+                                <button style={S.beoBtn} onClick={() => qHeuteGesehen(q.id)}><Check size={13} /> heute noch online</button>
+                                <button style={S.beoBtn} onClick={() => qWegAb(q.id, todayISO())}>
+                                  <Archive size={13} /> Inserat ist weg
+                                </button>
+                              </>
+                            ) : (
+                              <button style={S.reopenBtn} onClick={() => qWiederOeffnen(q.id)}>
+                                <RotateCcw size={12} /> doch wieder online
+                              </button>
+                            )}
+                          </>
+                        )}
+                      </div>
+
+                      {t.stufen.length > 1 && (
+                        <div style={S.stufenListe}>
+                          {t.stufen.map((st, i) => (
+                            <div key={i} style={S.stufenZeile}>
+                              <span style={S.stufenPreis}>{fmtEUR(st.preis)}</span>
+                              <span style={S.stufenDauer}>{st.tage != null ? laufzeitText(st.tage) : "—"}</span>
+                              <span style={S.stufenZeitraum}>ab {fmtDate(st.von)}</span>
+                              <span style={{ ...S.stufenDelta, color: i === 0 ? T.muted : st.preis < t.stufen[i - 1].preis ? T.good : T.bad }}>
+                                {i === 0 ? "Start" : `${st.preis < t.stufen[i - 1].preis ? "−" : "+"}${fmtEUR(Math.abs(st.preis - t.stufen[i - 1].preis))}`}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+        )}
+
+        {qAnalyse && (
+        <section style={S.panel}>
+          <div style={S.panelTitle}><TrendingDown size={15} /> Was wird verlangt</div>
+          <p style={S.hint}>
+            Ein Punkt je Inserat auf Höhe seines <b style={{ color: T.text }}>heutigen</b> Preises. Hier
+            vergleichst du echte Gleichteile — anders als bei Autos ist ein „Flex in Schwarz mit COMBI"
+            überall derselbe Gegenstand. Zeigen erklärt, ein Klick öffnet das Inserat.
+          </p>
+          <div style={S.zahlenreihe}>
+            <Zahlenfeld label="Inserate" wert={`${qAnalyse.anzahl}`}
+              zusatz={qAnalyse.offline > 0 ? `${qAnalyse.offline} nicht mehr online` : "alle noch online"} />
+            <Zahlenfeld label="Günstigstes" wert={fmtEUR(Math.round(qAnalyse.min))} />
+            <Zahlenfeld label="Mitte" wert={fmtEUR(Math.round(qAnalyse.median))} accent
+              zusatz="die Hälfte liegt darunter" />
+            <Zahlenfeld label="Teuerstes" wert={fmtEUR(Math.round(qAnalyse.max))} />
+          </div>
+
+          <Punktfeld
+            hoehe={330}
+            punkte={[...qAnalyse.punkte].sort((a, b) => a.preis - b.preis).map((p, i) => ({
+              id: p.id, x: i + 1, y: p.preis, offen: p.offline,
+              farbe: p.zustand === Q_ZUSTAND[0] ? T.good : T.accent,
+              daten: p,
+            }))}
+            yFormat={(w) => fmtNum(Math.round(w))}
+            xTitel="Inserate, vom günstigsten zum teuersten"
+            yTitel="Geforderter Preis in Euro"
+            band={{ von: qAnalyse.q1, bis: qAnalyse.q3 }}
+            linien={[{ y: qAnalyse.median, farbe: T.accent, label: `Mitte ${fmtEUR(Math.round(qAnalyse.median))}` }]}
+            karte={(p) => <Quookerkarte p={p} />}
+            aufKlick={(p) => { if (p.daten.url) window.open(normalizeUrl(p.daten.url), "_blank", "noreferrer"); }}
+          />
+          <div style={S.feldLegende}>
+            <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.good }} /> neu und verpackt</span>
+            <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.accent }} /> nahezu neu</span>
+            <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.bg, border: `2px solid ${T.muted}` }} /> hohl: nicht mehr online</span>
+            <span style={S.legendeEintrag}><span style={S.legendeBand} /> mittleres Feld: die Hälfte aller Inserate</span>
+          </div>
+
+          {qAnalyse.offline >= 2 && qAnalyse.wegSchnitt != null && (
+            <div style={S.spanneSatz}>
+              <b style={{ color: T.accent }}>Was das heißt:</b> Die <b style={{ color: T.text }}>{qAnalyse.offline}</b> verschwundenen
+              Inserate lagen im Mittel bei <b style={{ color: T.good }}>{fmtEUR(Math.round(qAnalyse.wegSchnitt))}</b>,
+              die noch stehenden bei <b style={{ color: T.text }}>{fmtEUR(Math.round(qAnalyse.offenSchnitt))}</b>.
+              {qAnalyse.standzeitWeg != null && <> Wer weg war, stand im Schnitt <b style={{ color: T.text }}>{laufzeitText(Math.round(qAnalyse.standzeitWeg))}</b>.</>}
+              {" "}Verschwunden heißt nicht verkauft — aber die Richtung ist der beste Anhaltspunkt, den du hast.
+            </div>
+          )}
+        </section>
+        )}
+
+        {qAnalyse && qAnalyse.merkmale.length > 0 && (
+        <section style={S.panel}>
+          <div style={S.panelTitle}><Gauge size={15} /> Was der Umfang wert ist</div>
+          <p style={S.hint}>
+            Für jedes Merkmal der Durchschnittspreis der Inserate <b style={{ color: T.text }}>mit</b> gegen
+            die <b style={{ color: T.text }}>ohne</b>. Das ist keine Ursache — wer eine CO₂-Flasche dazulegt,
+            hat meist ohnehin das teurere Set —, aber es zeigt, worauf sich der Aufpreis im Feld stützt.
+          </p>
+          <div style={S.quartilListe}>
+            <div style={{ ...S.qMerkmalZeile, ...S.quartilKopf }}>
+              <span>Merkmal</span><span style={{ textAlign: "right" }}>mit</span>
+              <span style={{ textAlign: "right" }}>Ø mit</span><span style={{ textAlign: "right" }}>Ø ohne</span>
+              <span style={{ textAlign: "right" }}>Abstand</span>
+            </div>
+            {qAnalyse.merkmale.map((m) => (
+              <div key={m.merkmal} style={S.qMerkmalZeile}>
+                <span style={S.nachtragTitel}>{m.merkmal}</span>
+                <span style={S.quartilZahl}>{m.mit}</span>
+                <span style={S.quartilZahl}>{m.schnittMit != null ? fmtEUR(Math.round(m.schnittMit)) : "—"}</span>
+                <span style={{ ...S.quartilZahl, color: T.muted }}>{m.schnittOhne != null ? fmtEUR(Math.round(m.schnittOhne)) : "—"}</span>
+                <span style={{ ...S.quartilZahl, color: m.delta == null ? T.muted : m.delta > 0 ? T.good : T.bad }}>
+                  {m.delta == null ? "—" : `${m.delta > 0 ? "+" : "−"}${fmtEUR(Math.abs(Math.round(m.delta)))}`}
+                </span>
+              </div>
+            ))}
+          </div>
+          <div style={S.kleinerHinweis}>
+            Merkmale, die in allen Inseraten vorkommen, haben keinen Vergleichswert und zeigen „—".
+            Aussagekräftig wird eine Zeile erst, wenn auf beiden Seiten mehrere Inserate stehen.
+          </div>
+        </section>
+        )}
+
+        {qVerlaeufe && (
+        <section style={S.panel}>
+          <div style={S.panelTitle}><Clock size={15} /> Wann senken die Anbieter</div>
+          <p style={S.hint}>
+            Je Inserat eine Linie ab dem Tag, an dem es eingestellt wurde. Kurze Linien waren schnell
+            wieder weg, lange stehen noch. Trag die Preise regelmäßig nach — ohne zweiten Preis bleibt
+            jede Linie waagerecht.
+          </p>
+          <div style={S.zahlenreihe}>
+            <Zahlenfeld label="Mit Senkung" wert={`${qVerlaeufe.gesenkt} von ${qVerlaeufe.anzahl}`} accent />
+            <Zahlenfeld label="Längste Laufzeit" wert={laufzeitText(qVerlaeufe.laengste)} />
+            <Zahlenfeld label="Ohne Inseratsdatum" wert={`${qVerlaeufe.ohneStart}`}
+              zusatz={qVerlaeufe.ohneStart ? "dort ist Tag 0 dein Fundtag" : "alle mit echtem Tag 0"} />
+          </div>
+          <Linienfeld
+            hoehe={340}
+            reihen={qVerlaeufe.reihen}
+            yFormat={(w) => fmtNum(Math.round(w))}
+            xFormat={(w) => `${Math.round(w)} T`}
+            xTitel="Tage seit dem Tag, an dem inseriert wurde"
+            yTitel="Geforderter Preis in Euro"
+            karte={(r, tag) => (
+              <div style={S.punktKarte}>
+                <div style={{ ...S.punktKopf, color: r.farbe }}>
+                  Tag {tag} · {r.offline ? `${r.stand} nach ${laufzeitDativ(r.ende)}` : `läuft seit ${laufzeitDativ(r.ende)}`}
+                </div>
+                <div style={S.punktTitel}>{r.title}</div>
+                <div style={S.punktMarke}>{r.zustand}</div>
+                <div style={S.punktPreis}>{fmtEUR(r.letzterPreis)}</div>
+                {r.letzterPreis !== r.startPreis && (
+                  <div style={{ ...S.punktJetzt, color: r.letzterPreis < r.startPreis ? T.good : T.bad }}>
+                    Start {fmtEUR(r.startPreis)} · {r.letzterPreis < r.startPreis ? "−" : "+"}
+                    {fmtEUR(Math.abs(r.letzterPreis - r.startPreis))}
+                  </div>
+                )}
+              </div>
+            )}
+            aufKlick={(r) => { if (r.url) window.open(normalizeUrl(r.url), "_blank", "noreferrer"); }}
+          />
+          <div style={S.feldLegende}>
+            <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.text }} /> Ende mit Ring: nicht mehr online</span>
+            <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.bg, border: `2px solid ${T.text}` }} /> offenes Ende: läuft noch</span>
+            <span style={S.legendeEintrag}><span style={S.legendeStrich} /> gestrichelt: vor deiner ersten Beobachtung</span>
+          </div>
+        </section>
+        )}
+
+        {!qListe.length && (
+          <section style={S.panel}>
+            <div style={S.empty}>
+              <Droplet size={30} color={T.line} />
+              <span>
+                Noch kein Quooker-Inserat erfasst. Trag oben das erste ein — Armatur und Preis reichen,
+                alles andere schärft die Auswertung. Ab etwa zehn Inseraten wird die Preisverteilung aussagekräftig.
+              </span>
+            </div>
+          </section>
+        )}
+      </>
+      )}
 
       {tab === "pruefen" && (
       <section style={S.panel}>
@@ -4268,6 +4919,40 @@ function Verlaufskarte({ r, tag, einheit }) {
 }
 
 // Die Karte, die beim Zeigen auf einen Punkt der Übersicht erscheint.
+// Die Karte am Quooker-Feld: was dieses Angebot enthält und was es kostet.
+function Quookerkarte({ p }) {
+  const S = styles;
+  const dabei = (p.umfang || []).filter((u) => u !== "Armatur");
+  return (
+    <div style={S.punktKarte}>
+      <div style={{ ...S.punktKopf, color: p.offline ? T.muted : T.accent }}>
+        {p.offline ? `${p.t.stand} nach ${laufzeitDativ(p.tage ?? 0)}` : `läuft seit ${laufzeitDativ(p.tage ?? 0)}`}
+      </div>
+      <div style={S.punktTitel}>{qTitel(p)}</div>
+      <div style={S.punktMarke}>{p.zustand}</div>
+      <div style={S.punktPreis}>{fmtEUR(p.preis)}</div>
+      {p.start != null && p.start !== p.preis && (
+        <div style={{ ...S.punktJetzt, color: p.preis < p.start ? T.good : T.bad }}>
+          Start {fmtEUR(p.start)} · {p.preis < p.start ? "−" : "+"}{fmtEUR(Math.abs(p.preis - p.start))}
+        </div>
+      )}
+      <div style={S.punktListe}>
+        <div style={S.punktZeile}>
+          <span style={S.punktLabel}>Enthalten</span>
+          <span style={S.punktWert}>{(p.umfang || []).length} Teile</span>
+        </div>
+        {p.ort && (
+          <div style={S.punktZeile}><span style={S.punktLabel}>Ort</span><span style={S.punktWert}>{p.ort}</span></div>
+        )}
+        <div style={S.punktZeile}>
+          <span style={S.punktLabel}>Anbieter</span><span style={S.punktWert}>{p.anbieter || "—"}</span>
+        </div>
+      </div>
+      {dabei.length > 0 && <div style={S.punktFussnote}>{dabei.join(" · ")}</div>}
+    </div>
+  );
+}
+
 /* Die Karte am Kilometerfeld: was dieses Fahrzeug kostet, was die Formel
    an seiner Stelle sagt, und wie weit es davon abweicht. */
 function Kilometerkarte({ a }) {
@@ -4623,6 +5308,17 @@ const styles = {
   quartilTag: { fontWeight: 800, color: T.accent, fontFamily: "ui-monospace, Menlo, monospace" },
   quartilKm: { fontFamily: "ui-monospace, Menlo, monospace", color: T.text },
   quartilZahl: { fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right" },
+  qGitter: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(158px, 1fr))", gap: 10, marginBottom: 4 },
+  qFeld: { display: "flex", flexDirection: "column", gap: 5, minWidth: 0 },
+  qAuswahl: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, width: "100%", boxSizing: "border-box" },
+  qEingabe: { background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", fontSize: 12.5, fontFamily: "ui-monospace, Menlo, monospace", width: "100%", boxSizing: "border-box" },
+  qBlock: { marginTop: 14, display: "flex", flexDirection: "column", gap: 7 },
+  qHaken: { display: "flex", gap: 6, flexWrap: "wrap" },
+  qHakenAus: { display: "inline-flex", alignItems: "center", gap: 7, background: T.bg, color: T.muted, border: `1px solid ${T.line}`, borderRadius: 8, padding: "7px 11px", fontSize: 12, fontWeight: 600 },
+  qHakenAn: { display: "inline-flex", alignItems: "center", gap: 7, background: T.good + "1E", color: T.text, border: `1px solid ${T.good}`, borderRadius: 8, padding: "7px 11px", fontSize: 12, fontWeight: 700 },
+  qKasten: { width: 14, height: 14, borderRadius: 4, border: `1px solid ${T.line}`, display: "grid", placeItems: "center", flexShrink: 0 },
+  qKastenAn: { width: 14, height: 14, borderRadius: 4, background: T.good, color: T.bg, display: "grid", placeItems: "center", flexShrink: 0 },
+  qMerkmalZeile: { display: "grid", gridTemplateColumns: "minmax(118px,1fr) 44px 82px 82px 82px", gap: 6, alignItems: "center", background: T.bg, borderRadius: 6, padding: "5px 9px", fontSize: 11.5, minWidth: 360 },
   filterKopf: { display: "inline-flex", alignItems: "center", gap: 8, background: "none", border: "none", color: T.text, padding: 0, fontSize: 13, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em" },
   filterZaehler: { background: T.bg, color: T.accent, border: `1px solid ${T.line}`, borderRadius: 20, padding: "2px 10px", fontSize: 11, fontWeight: 700, textTransform: "none", letterSpacing: 0, fontFamily: "ui-monospace, Menlo, monospace" },
   filterKurz: { color: T.muted, fontSize: 11.5, lineHeight: 1.6, marginTop: 10 },
