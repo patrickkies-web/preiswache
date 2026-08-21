@@ -830,6 +830,26 @@ function senkungen(v) {
 
 const DUBLETTE_FELDER = ["make", "model", "color", "location"];
 
+/* Beim Import: Steht dieser Wagen vielleicht schon im Bestand?
+   Die id aus Erstzulassung und Kilometerstand greift nur, solange der
+   Verkäufer den Kilometerstand nicht anfasst — ändert er ihn, entsteht
+   sonst ein zweiter Eintrag und die Laufzeit beginnt von vorn. Drei
+   Merkmale, die derselbe Wagen behält, egal wie oft neu inseriert wird:
+   Monat und Jahr der Erstzulassung, das Getriebe und der Ort.
+   Gesucht wird im ganzen Bestand, auch im Archiv — gerade dort steht,
+   was gerade verschwunden ist und wiederkommen könnte. */
+const VERDACHT_FELDER = ["gearbox", "location"];
+const verdachtVollstaendig = (v) =>
+  !!erstzulassung(v) && VERDACHT_FELDER.every((f) => String(v[f] || "").trim());
+const verdachtSchluessel = (v) => [erstzulassung(v),
+  ...VERDACHT_FELDER.map((f) => String(v[f] || "").trim().toLowerCase())].join(" | ");
+function verdachtsfaelle(eingehend, bestand) {
+  if (!verdachtVollstaendig(eingehend)) return [];
+  const k = verdachtSchluessel(eingehend);
+  return bestand.filter((x) => x.id !== eingehend.id
+    && verdachtVollstaendig(x) && verdachtSchluessel(x) === k);
+}
+
 function fingerabdruck(v) {
   return [...DUBLETTE_FELDER.map((f) => v[f]), erstzulassung(v)]
     .map((s) => String(s == null ? "" : s).trim().toLowerCase()).join(" | ");
@@ -1475,6 +1495,16 @@ export default function App() {
       };
     });
     setAnswers(vorbelegt);
+    /* Wer schon über die id gefunden wird, braucht keine Rückfrage — dort
+       ist die Sache eindeutig. Gefragt wird nur, wenn der Wagen unter
+       anderer id im Bestand stecken könnte. */
+    const verdacht = {};
+    res.vehicles.forEach((v) => {
+      if (vehicles[v.id]) return;
+      const treffer = verdachtsfaelle(v, Object.values(vehicles));
+      if (treffer.length) verdacht[v.id] = treffer;
+    });
+    setVerdacht(verdacht);
     setPreview(res.vehicles); setNotice(null);
   }
   async function handleFile(e) {
@@ -1493,9 +1523,14 @@ export default function App() {
 
   const setAnswer = (id, feld, wert) =>
     setAnswers((prev) => ({ ...prev, [id]: { ...prev[id], [feld]: wert } }));
+  /* Zu jedem eingehenden Fahrzeug die möglichen Doppelgänger im Bestand,
+     dazu deine Entscheidung: "neu" oder die id des gemeinten Wagens. */
+  const [verdacht, setVerdacht] = useState({});
+  const [verdachtWahl, setVerdachtWahl] = useState({});
   const alleBeantwortet = !preview || preview.every((v) => {
     const a = answers[v.id] || {};
-    return a.trimline && a.exterieur && a.interieur && a.repairKind && istLink(a.url);
+    const offen = verdacht[v.id]?.length && !verdachtWahl[v.id];
+    return a.trimline && a.exterieur && a.interieur && a.repairKind && istLink(a.url) && !offen;
   });
 
   function confirmImport() {
@@ -1504,7 +1539,15 @@ export default function App() {
       const antw = answers[raw_.id] || {};
       // Beim Import hast du jedes Fahrzeug einzeln vor dir gehabt, inklusive
       // der Hinweise auf Schäden — das zählt als Durchsicht.
-      const incoming = { ...raw_, ...antw, url: normalizeUrl(antw.url || raw_.url), geprueft: todayISO() };
+      let incoming = { ...raw_, ...antw, url: normalizeUrl(antw.url || raw_.url), geprueft: todayISO() };
+      /* Hast du bestätigt, dass es ein bereits erfasster Wagen ist, wird er
+         unter dessen id geführt — sonst liefe er als zweiter Eintrag mit
+         eigener Laufzeit weiter, obwohl es dasselbe Auto ist. Die neue
+         Laufleistung wird dabei übernommen; nur der Schlüssel bleibt. */
+      const gewaehlt = verdachtWahl[raw_.id];
+      if (gewaehlt && gewaehlt !== "neu" && next[gewaehlt]) {
+        incoming = { ...incoming, id: gewaehlt };
+      }
       const existing = next[incoming.id];
       /* Der Wagen war schon einmal da und ist verschwunden — jetzt steht er
          wieder drin. Das ist kein Preis-Update, sondern ein zweiter Lauf:
@@ -1579,6 +1622,7 @@ export default function App() {
       }
     });
     persist(next); setPreview(null); setRaw("");
+    setVerdacht({}); setVerdachtWahl({});
     setNotice({ type: "ok", msg: `${added} neu · ${updated} aktualisiert.` });
   }
 
@@ -2599,6 +2643,61 @@ export default function App() {
                   </div>
                 )}
                 {previewDubletten[v.id] && <DublettenWarnung neu={v} treffer={previewDubletten[v.id]} />}
+                {verdacht[v.id]?.length > 0 && (
+                  <div style={S.verdachtBox}>
+                    <div style={S.verdachtKopf}>
+                      <AlertTriangle size={14} color={T.accent} />
+                      <span>
+                        <b style={{ color: T.text }}>
+                          {verdacht[v.id].length === 1 ? "Dieser Wagen könnte schon erfasst sein"
+                            : "Dieser Wagen könnte einer von diesen sein"}
+                        </b>
+                        {" "}— gleiche Erstzulassung, gleiches Getriebe, gleicher Ort. Nur der
+                        Kilometerstand weicht ab, und den ändert ein Verkäufer beim Neu-Inserieren gern.
+                      </span>
+                    </div>
+                    {verdacht[v.id].map((alt) => {
+                      const weg = verschwundenAm(alt);
+                      const alterPreis = lastPrice(alt);
+                      const gewaehlt = verdachtWahl[v.id] === alt.id;
+                      return (
+                        <button key={alt.id} className="pw-verdacht"
+                          onClick={() => setVerdachtWahl((w) => ({ ...w, [v.id]: alt.id }))}
+                          style={gewaehlt ? S.verdachtTrefferAn : S.verdachtTreffer}>
+                          <span style={S.verdachtTitel}>{alt.title || alt.id}</span>
+                          <span style={S.verdachtMeta}>
+                            {[alt.mileage != null ? `${fmtNum(alt.mileage)} km` : null,
+                              alterPreis != null ? fmtEUR(alterPreis) : null,
+                              weg ? `${alt.listingStatus || "weg"} seit ${fmtDate(weg)}` : "läuft noch",
+                            ].filter(Boolean).join(" · ")}
+                          </span>
+                          <span style={S.verdachtNeu}>
+                            neu: {v.mileage != null ? `${fmtNum(v.mileage)} km` : "—"}
+                            {v.mileage != null && alt.mileage != null && v.mileage !== alt.mileage
+                              ? ` (${v.mileage > alt.mileage ? "+" : "−"}${fmtNum(Math.abs(v.mileage - alt.mileage))})` : ""}
+                          </span>
+                          <span style={S.verdachtHaken}>{gewaehlt ? <Check size={14} /> : ""}</span>
+                        </button>
+                      );
+                    })}
+                    <button className="pw-verdacht-neu"
+                      onClick={() => setVerdachtWahl((w) => ({ ...w, [v.id]: "neu" }))}
+                      style={verdachtWahl[v.id] === "neu" ? S.verdachtTrefferAn : S.verdachtTreffer}>
+                      <span style={S.verdachtTitel}>Nein, ein anderes Fahrzeug</span>
+                      <span style={S.verdachtMeta}>wird als eigener Eintrag angelegt</span>
+                      <span style={S.verdachtNeu} />
+                      <span style={S.verdachtHaken}>{verdachtWahl[v.id] === "neu" ? <Check size={14} /> : ""}</span>
+                    </button>
+                    {verdachtWahl[v.id] && verdachtWahl[v.id] !== "neu" && (
+                      <div style={S.askHilfe}>
+                        {verschwundenAm(vehicles[verdachtWahl[v.id]])
+                          ? "Das Inserat war schon einmal weg — es entsteht ein zweiter Lauf, der erste bleibt vollständig erhalten."
+                          : "Der Preis wird an den bestehenden Eintrag angehängt, die Laufzeit läuft weiter."}
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 <div style={S.askBlock}>
                   <div style={S.askIntro}>Deine Einschätzung — das kann dir keine KI abnehmen:</div>
                   <FotoHinweis v={v} />
@@ -2636,7 +2735,13 @@ export default function App() {
             <div style={S.row}>
               <button style={S.primaryBtn} onClick={confirmImport} disabled={!alleBeantwortet}><Check size={16} /> Importieren</button>
               <button style={S.ghostBtn} onClick={() => setPreview(null)}><X size={15} /> Abbrechen</button>
-              {!alleBeantwortet && <span style={S.askHint}>Alle vier Fragen beantworten und den Link einfügen, dann geht es weiter.</span>}
+              {!alleBeantwortet && (
+                <span style={S.askHint}>
+                  {preview.some((v) => verdacht[v.id]?.length && !verdachtWahl[v.id])
+                    ? "Sag zuerst, ob es ein bereits erfasstes Fahrzeug ist."
+                    : "Alle vier Fragen beantworten und den Link einfügen, dann geht es weiter."}
+                </span>
+              )}
             </div>
           </div>
         )}
@@ -5584,6 +5689,10 @@ const globalCss = `
       padding-bottom: 2px; margin-bottom: 10px;
     }
     .pw-sortleiste::-webkit-scrollbar { display: none; }
+    /* Verdachtszeilen brechen um statt zu quetschen */
+    .pw-verdacht, .pw-verdacht-neu { grid-template-columns: 1fr 20px !important; row-gap: 2px; }
+    .pw-verdacht > span:nth-child(2), .pw-verdacht > span:nth-child(3) { grid-column: 1; text-align: left; }
+    .pw-verdacht > span:nth-child(4) { grid-row: 1; grid-column: 2; }
     /* Filterzeilen: Beschriftung über die Werte statt daneben */
     .pw-filterzeile { grid-template-columns: 1fr !important; gap: 5px !important; }
     /* Merkmalstabelle bricht um, statt seitlich aus dem Bild zu laufen:
@@ -5648,6 +5757,14 @@ const styles = {
   previewRow: { display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", fontSize: 12.5, flexWrap: "wrap" },
   previewFehlt: { display: "flex", alignItems: "flex-start", gap: 6, color: T.accent, fontSize: 11, lineHeight: 1.5, margin: "2px 0 6px" },
 
+  verdachtBox: { background: T.accent + "12", border: `1px solid ${T.accent}55`, borderRadius: 9, padding: "10px 12px", marginTop: 8, display: "flex", flexDirection: "column", gap: 6 },
+  verdachtKopf: { display: "flex", alignItems: "flex-start", gap: 8, fontSize: 12, lineHeight: 1.55, color: T.muted, marginBottom: 2 },
+  verdachtTreffer: { display: "grid", gridTemplateColumns: "minmax(110px,1.6fr) minmax(0,1.4fr) minmax(0,1fr) 20px", gap: 8, alignItems: "center", width: "100%", background: T.bg, color: T.text, border: `1px solid ${T.line}`, borderRadius: 8, padding: "8px 10px", textAlign: "left", fontSize: 12 },
+  verdachtTrefferAn: { display: "grid", gridTemplateColumns: "minmax(110px,1.6fr) minmax(0,1.4fr) minmax(0,1fr) 20px", gap: 8, alignItems: "center", width: "100%", background: T.accent + "22", color: T.text, border: `1px solid ${T.accent}`, borderRadius: 8, padding: "8px 10px", textAlign: "left", fontSize: 12, fontWeight: 700 },
+  verdachtTitel: { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  verdachtMeta: { color: T.muted, fontSize: 11, fontFamily: "ui-monospace, Menlo, monospace", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  verdachtNeu: { color: T.accent, fontSize: 11, fontFamily: "ui-monospace, Menlo, monospace", textAlign: "right", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" },
+  verdachtHaken: { color: T.accent, display: "grid", placeItems: "center" },
   askBlock: { background: T.bg, border: `1px solid ${T.line}`, borderRadius: 9, padding: "11px 12px", marginTop: 8 },
   askIntro: { fontSize: 10.5, color: T.accent, textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 700, marginBottom: 10 },
   askItem: { marginBottom: 12 },
