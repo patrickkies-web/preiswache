@@ -42,6 +42,11 @@ const TEXT_FIELDS = [
   // disappearedAt  — als zuerst auffiel, dass es nicht mehr online ist
   // trackingQuality— "full" oder "legacy", einmal beim Aufnehmen bestimmt
   "firstSeen", "lastSeen", "disappearedAt", "trackingQuality",
+  /* Ein Inserat, das nach dem Verschwinden erneut auftaucht, ist der
+     Beweis, dass NICHT verkauft wurde. Der alte Eintrag verweist auf den
+     neuen, der neue zurück — beide bleiben vollständig erhalten, denn
+     zusammen erzählen sie mehr als jeder für sich. */
+  "wiederInseriertAls", "wiederInseriertAm", "vorgaenger",
 ];
 
 /* Definierte Begriffe (kontrolliertes Vokabular)
@@ -424,6 +429,13 @@ function halbwertszeit(kurve) {
    Bei "legacy" fehlt der Anfang: frühe Senkungen sind unsichtbar, und die
    Standzeit ist länger als das, was hier beobachtet wurde. */
 const verschwundenAm = (v) => v.disappearedAt || (v.listingStatus && v.listingStatus !== "Aktiv" ? v.closedDate : "") || "";
+/* Ein echter Abgang ist ein Inserat, das weg ist UND nicht kurz darauf
+   wieder auftauchte. Wer neu inseriert, hat nicht verkauft — solche
+   Fälle als Verkauf zu zählen, verschiebt jede Absorptionsrechnung nach
+   unten. In der Überlebensrechnung zählen sie als zensiert: bis hierher
+   beobachtet, ohne Ereignis. */
+const wiederInseriert = (v) => !!v.wiederInseriertAls;
+const echterAbgang = (v) => !!verschwundenAm(v) && !wiederInseriert(v);
 
 /* Preisstufen: aufeinanderfolgende gleiche Preise gehören zu EINER Stufe.
    Trägst du dreimal denselben Preis nach, ist das kein dreimaliger
@@ -1494,6 +1506,34 @@ export default function App() {
       // der Hinweise auf Schäden — das zählt als Durchsicht.
       const incoming = { ...raw_, ...antw, url: normalizeUrl(antw.url || raw_.url), geprueft: todayISO() };
       const existing = next[incoming.id];
+      /* Der Wagen war schon einmal da und ist verschwunden — jetzt steht er
+         wieder drin. Das ist kein Preis-Update, sondern ein zweiter Lauf:
+         eigener Anfang, eigene Standzeit, eigene Linie im Chart. Würde man
+         den Preis an die alte Reihe hängen, entstünde eine durchgehende
+         Beobachtung über eine Lücke, die es nie gab. Beide Einträge
+         bleiben erhalten und zeigen aufeinander. */
+      if (existing && verschwundenAm(existing) && !existing.wiederInseriertAls) {
+        let nr = 2;
+        while (next[`${incoming.id}#${nr}`]) nr++;
+        const neueId = `${incoming.id}#${nr}`;
+        const heute = todayISO();
+        next[existing.id] = { ...existing,
+          wiederInseriertAls: neueId, wiederInseriertAm: heute,
+          updatedAt: new Date().toISOString() };
+        next[neueId] = { ...incoming, id: neueId,
+          vorgaenger: existing.id,
+          // Was du selbst beurteilt hast, gilt weiter — es ist dasselbe Auto.
+          exterieur: incoming.exterieur || existing.exterieur || "",
+          interieur: incoming.interieur || existing.interieur || "",
+          repairKind: incoming.repairKind || existing.repairKind || "",
+          trimline: incoming.trimline || existing.trimline || "",
+          listingStatus: "Aktiv", closedDate: "", disappearedAt: "",
+          firstSeen: heute, lastSeen: heute,
+          trackingQuality: trackingGuete(incoming.listedSince, heute),
+          createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+        added++;
+        return;
+      }
       if (existing) {
         const merged = { ...existing };
         TEXT_FIELDS.forEach((k) => { if (incoming[k]) merged[k] = incoming[k]; });
@@ -2069,6 +2109,7 @@ export default function App() {
         farbe: farben[nr % farben.length],
         startPreis, letzterPreis, ende, blindBis, punkte, knicke, schritte, senkungen,
         offline: t.offline, stand: t.stand,
+        abgang: echterAbgang(v), erneut: wiederInseriert(v),
         hatStart: !!v.listedSince, fund: t.firstSeen,
         ersteSenkung: senkungen.length ? senkungen[0].tag : null,
         ersteSenkungPct: senkungen.length ? (senkungen[0].delta / senkungen[0].von) * 100 : null,
@@ -2086,7 +2127,7 @@ export default function App() {
        sondern ein Streifen im Bild — man soll sehen, auf welche Höhe die
        Linien zulaufen, bevor sie enden. Unter drei Abgängen wäre der
        Streifen die Meinung eines einzelnen Verkäufers, deshalb erst ab drei. */
-    const ausstieg = reihen.filter((r) => r.offline).map((r) => r.letzterPreis).sort((a, b) => a - b);
+    const ausstieg = reihen.filter((r) => r.abgang).map((r) => r.letzterPreis).sort((a, b) => a - b);
     const perzentil = (p) => {
       if (!ausstieg.length) return null;
       const i = (ausstieg.length - 1) * p;
@@ -2113,6 +2154,7 @@ export default function App() {
       geraten: reihen.filter((r) => r.blindBis > 0).length,
       laengste: Math.max(...reihen.map((r) => r.ende)),
       zone, abgaenge: ausstieg.length,
+      erneut: reihen.filter((r) => r.erneut).length,
       /* Ohne Inseratsdatum nimmt die App den Erfassungstag als Tag 0. Wer
          alles heute erfasst hat, bekommt lauter Linien der Länge 1 — das
          ist keine Kaputtheit des Bildes, sondern eine fehlende Angabe, und
@@ -2337,7 +2379,8 @@ export default function App() {
       const eintritt = Math.max(0, Math.min(t.blindTage || 0, Math.max(0, austritt - 1)));
       return {
         id: v.id, title: v.title || v.id, url: v.url, preis,
-        eintritt, austritt, ereignis: t.offline, stand: t.stand,
+        // Wieder inseriert heißt: nicht verkauft. Zählt als zensiert.
+        eintritt, austritt, ereignis: t.offline && !wiederInseriert(v), stand: t.stand,
         km: v.mileage, ez: erstzulassung(v), guete: t.qualitaet,
         marke: [v.make, v.model].filter(Boolean).join(" "),
       };
@@ -3619,6 +3662,15 @@ export default function App() {
               </div>
             )}
 
+            {preisverlaeufe.erneut > 0 && (
+              <div style={S.kleinerHinweis}>
+                {preisverlaeufe.erneut} {preisverlaeufe.erneut === 1 ? "Inserat wurde" : "Inserate wurden"} nach
+                dem Verschwinden <b style={{ color: T.text }}>neu eingestellt</b> — dort wurde also nicht
+                verkauft. Solche Fälle zählen nicht in den grünen Streifen, sonst zöge ein bloßer
+                Anzeigenwechsel den fairen Preis nach unten.
+              </div>
+            )}
+
             {preisverlaeufe.ohneStart > 0 && (
               <Nachtragliste liste={preisverlaeufe.ohneStartListe} gesamt={preisverlaeufe.anzahl}
                 offen={nachtragOffen} umschalten={() => setNachtragOffen((o) => !o)}
@@ -4303,6 +4355,29 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
         )}
 
         <div style={S.lifeBox}>
+          {/* Der Zusammenhang zwischen zwei Läufen desselben Wagens. Er ist
+              die wichtigste Einzelinformation, die das Verzeichnis hergibt:
+              Wer neu inseriert, hat nicht verkauft. */}
+          {v.wiederInseriertAls && (
+            <div style={{ ...S.notice, marginTop: 0, borderLeftColor: T.accent }}>
+              <RotateCcw size={14} color={T.accent} />
+              <span>
+                <b style={{ color: T.text }}>Wurde neu inseriert</b>
+                {v.wiederInseriertAm ? ` am ${fmtDate(v.wiederInseriertAm)}` : ""} — dieser Wagen wurde
+                also <b style={{ color: T.text }}>nicht verkauft</b>. Der zweite Lauf steht als eigener
+                Eintrag im Verzeichnis; dieser hier zählt nicht als Abgang.
+              </span>
+            </div>
+          )}
+          {v.vorgaenger && (
+            <div style={{ ...S.notice, marginTop: 0, borderLeftColor: T.muted }}>
+              <Clock size={14} color={T.muted} />
+              <span>
+                Zweiter Anlauf — derselbe Wagen stand schon einmal im Verzeichnis und verschwand,
+                ohne verkauft zu werden. Der frühere Lauf ist als eigener Eintrag erhalten.
+              </span>
+            </div>
+          )}
           <div style={S.lifeRow}>
             <span style={S.lifeLabel}><Clock size={11} style={{ verticalAlign: -1 }} /> Laufzeit</span>
             <span style={S.lifeValue}>
