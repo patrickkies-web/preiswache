@@ -1756,9 +1756,17 @@ export default function App() {
       schnitt: fertig.length ? Math.round(fertig.reduce((s, r) => s + r.tage, 0) / fertig.length) : null };
   }, [laufzeiten]);
 
-  const alleOffen = list.length > 0 && list.every((v) => openRows[v.id]);
+  /* Das Verzeichnis zeigt die laufenden Inserate. Was verschwunden ist,
+     rutscht ins Archiv — es bleibt vollständig erhalten und geht weiter in
+     jede Auswertung ein, steht aber nicht mehr zwischen den Wagen, die man
+     gerade beobachtet. */
+  const [verzAnsicht, setVerzAnsicht] = useState("online");
+  const listeOnline = useMemo(() => list.filter((v) => !verschwundenAm(v)), [list]);
+  const listeArchiv = useMemo(() => list.filter((v) => verschwundenAm(v)), [list]);
+  const sichtbar = verzAnsicht === "archiv" ? listeArchiv : listeOnline;
+  const alleOffen = sichtbar.length > 0 && sichtbar.every((v) => openRows[v.id]);
   // Nur die Anzeige im Verzeichnis wird umsortiert, nicht die Daten der Auswertung.
-  const verzeichnis = useMemo(() => sortiere(list, sortFeld, sortRichtung), [list, sortFeld, sortRichtung]);
+  const verzeichnis = useMemo(() => sortiere(sichtbar, sortFeld, sortRichtung), [sichtbar, sortFeld, sortRichtung]);
 
   /* ---- Quooker: erfassen, beobachten, auswerten ----
      Die Einträge tragen dieselben Beobachtungsfelder wie ein Fahrzeug
@@ -2481,7 +2489,9 @@ export default function App() {
         </button>
         <button style={tab === "verzeichnis" ? S.tabOn : S.tabOff} onClick={() => setTab("verzeichnis")}>
           <Car size={14} /> Verzeichnis
-          {list.length > 0 && <span style={tab === "verzeichnis" ? S.tabCountOn : S.tabCount}>{list.length}</span>}
+          {list.length > 0 && (
+            <span style={tab === "verzeichnis" ? S.tabCountOn : S.tabCount}>{listeOnline.length}</span>
+          )}
         </button>
         <button style={tab === "quooker" ? S.tabOn : S.tabOff} onClick={() => setTab("quooker")}>
           <Droplet size={14} /> Quooker
@@ -4156,10 +4166,22 @@ export default function App() {
       {tab === "verzeichnis" && (
       <section style={S.panel}>
         <div style={{ ...S.panelTitle, justifyContent: "space-between" }}>
-          <span style={{ display: "flex", alignItems: "center", gap: 8 }}><Car size={15} /> Verzeichnis · {list.length}</span>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Car size={15} /> {verzAnsicht === "archiv" ? "Archiv" : "Verzeichnis"} · {sichtbar.length}
+          </span>
           {list.length > 0 && (
             <span style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              <button style={S.exportBtn} onClick={() => setOpenRows(alleOffen ? {} : Object.fromEntries(list.map((v) => [v.id, true])))}>
+              <span style={S.umschalter}>
+                <button onClick={() => setVerzAnsicht("online")}
+                  style={verzAnsicht === "online" ? S.umschalterAn : S.umschalterAus}>
+                  Online {listeOnline.length}
+                </button>
+                <button onClick={() => setVerzAnsicht("archiv")}
+                  style={verzAnsicht === "archiv" ? S.umschalterAn : S.umschalterAus}>
+                  Archiv {listeArchiv.length}
+                </button>
+              </span>
+              <button style={S.exportBtn} onClick={() => setOpenRows(alleOffen ? {} : Object.fromEntries(sichtbar.map((v) => [v.id, true])))}>
                 {alleOffen ? "Alle zuklappen" : "Alle aufklappen"}
               </button>
               <button style={S.exportBtn} onClick={exportGarage} title="Alle Fahrzeuge als JSON-Datei sichern — wiederherstellen über das Import-Feld">
@@ -4170,6 +4192,16 @@ export default function App() {
         </div>
         {!loaded ? (<div style={S.empty}><span>Lade Daten…</span></div>)
           : list.length === 0 ? (<div style={S.empty}><span>Noch keine Fahrzeuge. Wechsle zu „Erfassen" und füge dort deinen ersten JSON-Block ein.</span></div>)
+          : sichtbar.length === 0 ? (
+            <div style={S.empty}>
+              <Archive size={30} color={T.line} />
+              <span>
+                {verzAnsicht === "archiv"
+                  ? "Noch ist kein Inserat verschwunden. Sobald du eines abschließt, findest du es hier wieder — mit allen Preisen und seiner vollen Laufzeit."
+                  : "Kein Inserat ist mehr online. Alle liegen im Archiv — dort bleiben sie vollständig erhalten."}
+              </span>
+            </div>
+          )
             : (
               <>
                 {/* Auf dem Handy tragen die Spaltenköpfe nicht — die Tabelle
