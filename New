@@ -3,7 +3,7 @@ import {
   Gauge, Plus, Trash2, Check, X, TrendingDown, TrendingUp, Minus, Car,
   AlertTriangle, Upload, MapPin, Store, User, Wrench, Filter, ShieldCheck, Download,
   Camera, CalendarClock, Archive, RotateCcw, Clock, ChevronRight, FileUp,
-  Cloud, CloudOff, RefreshCw, ArrowUp, ArrowDown, Link2, Droplet, Package,
+  Cloud, CloudOff, RefreshCw, ArrowUp, ArrowDown, Link2, Droplet, Package, Eye,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -983,6 +983,70 @@ function normalizeHistory(h) {
   });
   return Object.entries(seen).map(([date, price]) => ({ date, price })).sort((a, b) => a.date.localeCompare(b.date));
 }
+/* Die Nummer, die mobile.de im Link führt: ...&id=412345678&scope=...
+   Sie ist der einzige Schlüssel am Inserat, den weder ein korrigierter
+   Kilometerstand noch ein neuer Titel verändert. Die id der App bleibt
+   trotzdem, wie sie ist — sonst bräche der bestehende Bestand. Die Nummer
+   läuft als zweiter Schlüssel mit und entscheidet beim Import zuerst. */
+function inseratNr(quelle) {
+  const t = String(quelle == null ? "" : quelle).trim();
+  if (!t) return "";
+  const imLink = t.match(/[?&#]id=(\d{4,})/);
+  if (imLink) return imLink[1];
+  // Eine nackte Nummer ist auch eine: "412345678"
+  return /^\d{6,}$/.test(t) ? t : "";
+}
+// Der laufende Eintrag zu einer Inseratsnummer — ein abgelöster Erstlauf zählt nicht.
+function bestandNachNr(nr, bestand) {
+  if (!nr) return null;
+  return bestand.find((x) => x.inseratNr === nr && !x.wiederInseriertAls) || null;
+}
+
+/* Was man sich auf den Fotos ansehen muss, weil der Text es nahelegt.
+   Die KI liest die Stellen aus dem Inserat heraus, gehakt wird von Hand —
+   das Häkchen ist der Beleg, dass wirklich hingesehen wurde. */
+const SICHT_MAX = 8;
+const SICHT_GRUND = [
+  "Front und Heck: Stoßfänger, Spaltmaße, Lackunterschiede",
+  "Schweller und Radläufe: Rost, Blasen unter dem Lack",
+  "Innenraum: Fahrersitzwange, Lenkrad, Schaltknauf",
+  "Reifen und Felgen: Profil, Bordsteinschäden, Marke rundum",
+];
+function sichtpunkteListe(roh, grundwerte = false) {
+  const rein = Array.isArray(roh) ? roh : String(roh || "").split(/\n|;|•/);
+  const punkte = [];
+  rein.forEach((p) => {
+    const istObjekt = p && typeof p === "object";
+    const text = String((istObjekt ? (p.text ?? p.punkt ?? p.stelle) : p) ?? "").trim();
+    if (!text || text.length < 3) return;
+    if (punkte.some((x) => x.text.toLowerCase() === text.toLowerCase())) return;
+    const punkt = { text: text.slice(0, 180), geprueft: istObjekt ? !!(p.geprueft ?? p.ok) : false };
+    // Die Herkunft muss erhalten bleiben, sonst gilt der Grundcheck beim
+    // nächsten Laden als echte Stelle aus dem Inserat — und der gespeicherte
+    // Stand änderte sich bei jedem Start.
+    if (istObjekt && p.grund) punkt.grund = true;
+    punkte.push(punkt);
+  });
+  if (!punkte.length && grundwerte) return SICHT_GRUND.map((text) => ({ text, geprueft: false, grund: true }));
+  return punkte.slice(0, SICHT_MAX);
+}
+/* Beim zweiten Einlesen kommen dieselben Stellen erneut. Ein Haken, den du
+   einmal gesetzt hast, bleibt gesetzt — hingesehen hast du ja. */
+function sichtpunkteZusammen(alt, neu) {
+  const raus = (alt || []).map((p) => ({ ...p }));
+  (neu || []).forEach((p) => {
+    const da = raus.find((x) => x.text.toLowerCase() === p.text.toLowerCase());
+    if (da) da.geprueft = da.geprueft || p.geprueft;
+    else raus.push({ ...p });
+  });
+  /* Grundpunkte sind nur ein Notnagel: Sobald echte Stellen aus dem Inserat
+     da sind, treten sie zurück — außer sie sind schon abgehakt. */
+  const echte = raus.filter((p) => !p.grund);
+  const behalten = echte.length ? [...echte, ...raus.filter((p) => p.grund && p.geprueft)] : raus;
+  return behalten.slice(0, SICHT_MAX);
+}
+const sichtOffen = (v) => (v.sichtpunkte || []).filter((p) => !p.geprueft).length;
+
 function normalizeVehicle(v) {
   const out = {};
   TEXT_FIELDS.forEach((k) => { out[k] = v[k] != null ? String(v[k]).trim() : ""; });
@@ -1041,6 +1105,15 @@ function normalizeVehicle(v) {
   out.lastSeen = nurDatum(v.lastSeen);
   out.disappearedAt = nurDatum(v.disappearedAt);
   out.trackingQuality = v.trackingQuality === "full" ? "full" : v.trackingQuality === "legacy" ? "legacy" : "";
+  /* Steht im Link eine Inseratsnummer, ist sie der sicherste Schlüssel. Sie
+     kommt aus dem Link selbst und nicht aus dem, was die KI dafür hielt. */
+  out.inseratNr = inseratNr(v.url ?? v.link ?? "") || inseratNr(v.inseratNr) || inseratNr(v.id);
+  /* Nennt das Inserat Stellen, die man auf den Fotos ansehen muss, kommen
+     sie hier an. Nennt es keine, setzt die App den Grundcheck — dann steht
+     wenigstens etwas da, das man abhaken kann. */
+  out.sichtpunkte = sichtpunkteListe(
+    v.sichtpunkte ?? v.sichtpruefung ?? v.fotocheck ?? v.pruefpunkte ?? v.checkpoints ?? v.opticalChecks,
+    true);
   out.id = (v.id && String(v.id).trim()) || slugId(out);
   return out;
 }
@@ -1274,6 +1347,18 @@ function migrate(vehicles) {
     delete v.showcase;
     v.listingStatus = normalizeChoice(v.listingStatus, "listingStatus", STATUS_OPTS) || "Aktiv";
     v.listedSince = nurDatum(v.listedSince);   // nichts erfinden, siehe normalize()
+    /* Die Inseratsnummer steckt bei jedem Altbestand schon im gespeicherten
+       Link — sie muss nur herausgeholt werden. Danach erkennt der Import
+       dieselbe Anzeige auch dann wieder, wenn sich der Kilometerstand und
+       damit die alte id geändert hat. */
+    /* Nur setzen, wenn es etwas zu setzen gibt: Ein leeres Feld anzulegen
+       würde bei jedem Start einen Stand erzeugen, der sich vom Server
+       unterscheidet — und damit einen Schreibvorgang, den niemand ausgelöst
+       hat. */
+    const nr = v.inseratNr || inseratNr(v.url);
+    if (nr) v.inseratNr = nr;
+    // Abgehakte Stellen bleiben abgehakt; ohne Liste wird keine angelegt.
+    if (v.sichtpunkte) v.sichtpunkte = sichtpunkteListe(v.sichtpunkte);
 
     /* Aufräumen nach der alten Regel: Bis hierher hat die App ein fehlendes
        Inseratsdatum stillschweigend mit dem Tag der ersten Erfassung
@@ -1530,7 +1615,11 @@ export default function App() {
     // Bei mehreren Fahrzeugen wäre die Zuordnung geraten — dann lieber nicht.
     const ausDemText = res.vehicles.length === 1 && res.drumherum?.length === 1 ? res.drumherum[0] : "";
     res.vehicles.forEach((v) => {
-      const alt = vehicles[v.id];
+      /* Zuerst über die Inseratsnummer aus dem Link: Sie ändert sich nie,
+         auch wenn der Verkäufer den Kilometerstand korrigiert und die id
+         der App damit eine andere wäre. Erst danach über die id. */
+      const nr = v.inseratNr || inseratNr(ausDemText);
+      const alt = bestandNachNr(nr, Object.values(vehicles)) || vehicles[v.id];
       // Aus einer Sicherung mitgelieferte Antworten zählen zuerst,
       // danach die des bereits erfassten Fahrzeugs.
       vorbelegt[v.id] = {
@@ -1540,6 +1629,8 @@ export default function App() {
         repairKind: v.repairKind || alt?.repairKind || (v.repairNote ? "" : "Keine genannt"),
         // Gleich geradegezogen, damit im Feld steht, was später gespeichert wird.
         url: normalizeUrl(v.url) || normalizeUrl(alt?.url) || ausDemText,
+        // Schon geprüfte Stellen bleiben geprüft, neue kommen dazu.
+        sichtpunkte: sichtpunkteZusammen(alt?.sichtpunkte, v.sichtpunkte),
       };
     });
     setAnswers(vorbelegt);
@@ -1549,6 +1640,8 @@ export default function App() {
     const verdacht = {};
     res.vehicles.forEach((v) => {
       if (vehicles[v.id]) return;
+      // Gleiche Inseratsnummer heißt: dieselbe Anzeige. Da gibt es nichts zu fragen.
+      if (bestandNachNr(v.inseratNr, Object.values(vehicles))) return;
       const treffer = verdachtsfaelle(v, Object.values(vehicles));
       if (treffer.length) verdacht[v.id] = treffer;
     });
@@ -1575,6 +1668,8 @@ export default function App() {
      dazu deine Entscheidung: "neu" oder die id des gemeinten Wagens. */
   const [verdacht, setVerdacht] = useState({});
   const [verdachtWahl, setVerdachtWahl] = useState({});
+  const offeneSichtpunkte = !preview ? 0
+    : preview.reduce((n, v) => n + (answers[v.id]?.sichtpunkte || []).filter((p) => !p.geprueft).length, 0);
   const alleBeantwortet = !preview || preview.every((v) => {
     const a = answers[v.id] || {};
     const offen = verdacht[v.id]?.length && !verdachtWahl[v.id];
@@ -1588,6 +1683,14 @@ export default function App() {
       // Beim Import hast du jedes Fahrzeug einzeln vor dir gehabt, inklusive
       // der Hinweise auf Schäden — das zählt als Durchsicht.
       let incoming = { ...raw_, ...antw, url: normalizeUrl(antw.url || raw_.url), geprueft: todayISO() };
+      // Der Link kann beim Prüfen nachgetragen worden sein — dann steht die
+      // Nummer erst jetzt fest.
+      incoming.inseratNr = incoming.inseratNr || inseratNr(incoming.url);
+      /* Dieselbe Inseratsnummer ist ein Beweis, keine Vermutung: Der Eintrag
+         wird fortgeschrieben, auch wenn die id sich über den Kilometerstand
+         verschoben hat. */
+      const nachNr = bestandNachNr(incoming.inseratNr, Object.values(next));
+      if (nachNr && nachNr.id !== incoming.id) incoming = { ...incoming, id: nachNr.id };
       /* Hast du bestätigt, dass es ein bereits erfasster Wagen ist, wird er
          unter dessen id geführt — sonst liefe er als zweiter Eintrag mit
          eigener Laufzeit weiter, obwohl es dasselbe Auto ist. Die neue
@@ -1618,6 +1721,7 @@ export default function App() {
           interieur: incoming.interieur || existing.interieur || "",
           repairKind: incoming.repairKind || existing.repairKind || "",
           trimline: incoming.trimline || existing.trimline || "",
+          sichtpunkte: sichtpunkteZusammen(existing.sichtpunkte, incoming.sichtpunkte),
           listingStatus: "Aktiv", closedDate: "", disappearedAt: "",
           firstSeen: heute, lastSeen: heute,
           trackingQuality: trackingGuete(incoming.listedSince, heute),
@@ -1630,6 +1734,8 @@ export default function App() {
         TEXT_FIELDS.forEach((k) => { if (incoming[k]) merged[k] = incoming[k]; });
         if (incoming.mileage != null) merged.mileage = incoming.mileage;
         if (incoming.equipment?.length) { merged.equipment = incoming.equipment; merged.ausstattung = incoming.ausstattung; }
+        merged.sichtpunkte = sichtpunkteZusammen(existing.sichtpunkte, incoming.sichtpunkte);
+        merged.inseratNr = incoming.inseratNr || existing.inseratNr || "";
         const byDate = {};
         existing.priceHistory.forEach((p) => { byDate[p.date] = p.price; });
         incoming.priceHistory.forEach((p) => { byDate[p.date] = p.price; });
@@ -1686,6 +1792,15 @@ export default function App() {
      statt sie zu beobachten. Steht sie nicht drin, beginnt jede Linie im
      Preisverlauf erst am Tag der Erfassung. Deshalb ist sie nachtragbar.
      Mit ihr ändert sich auch, ob der Anfang mitverfolgt wurde. */
+  /* Der Haken an einer Sichtprüfung ist eine Beobachtung wie jede andere:
+     Er sagt, dass du dir diese Stelle auf den Fotos angesehen hast. Deshalb
+     lässt er sich auch später am Fahrzeug noch setzen und wieder lösen. */
+  const setzeSichtpunkt = useCallback((id, index) => {
+    updateVehicle(id, (v) => ({ ...v,
+      sichtpunkte: (v.sichtpunkte || []).map((p, k) => (k === index ? { ...p, geprueft: !p.geprueft } : p)),
+      updatedAt: new Date().toISOString() }));
+  }, [updateVehicle]);
+
   const setzeInseratsdatum = useCallback((id, datum) => {
     updateVehicle(id, (v) => {
       const listedSince = nurDatum(datum);
@@ -2651,6 +2766,13 @@ export default function App() {
           Hat die KI den Link vergessen, füg ihn einfach neben dem JSON mit ein — bei einem
           einzelnen Fahrzeug wird er von dort übernommen.
         </p>
+        <p style={S.hint}>
+          Aus dem Link zieht sich die App die <b style={{ color: T.text }}>Inseratsnummer</b> (<code style={S.code}>id=…</code>)
+          und erkennt dieselbe Anzeige daran wieder — auch wenn der Verkäufer den Kilometerstand ändert.
+          Aus dem Feld <code style={S.code}>sichtpruefung</code> wird nach dem Prüfen eine Liste zum Abhaken:
+          die Stellen, die der Inseratstext nahelegt. Was ohne Haken bleibt, steht danach am Fahrzeug
+          als offener Punkt.
+        </p>
         <textarea value={raw} onChange={(e) => setRaw(e.target.value)}
           placeholder='Antwort der KI hier einfügen…' style={S.textarea} spellCheck={false} />
         <div style={S.row}>
@@ -2749,6 +2871,12 @@ export default function App() {
                 <div style={S.askBlock}>
                   <div style={S.askIntro}>Deine Einschätzung — das kann dir keine KI abnehmen:</div>
                   <FotoHinweis v={v} />
+                  {/* Die Stellen, die der Inseratstext nahelegt. Der Haken ist
+                      der Beleg, dass du dort auf den Fotos hingesehen hast —
+                      und er bleibt am Fahrzeug stehen. */}
+                  <Sichtliste punkte={answers[v.id]?.sichtpunkte || []}
+                    umschalten={(i) => setAnswer(v.id, "sichtpunkte",
+                      (answers[v.id]?.sichtpunkte || []).map((p, k) => (k === i ? { ...p, geprueft: !p.geprueft } : p)))} />
                   <ChoiceQuestion frage={TRIMLINE_FRAGE} options={TRIMLINE_OPTS} hilfe={TRIMLINE_HILFE}
                     value={answers[v.id]?.trimline || ""} onChange={(w) => setAnswer(v.id, "trimline", w)} />
                   <ChoiceQuestion frage={EXTERIEUR_FRAGE} options={EXTERIEUR_OPTS} hilfe={EXTERIEUR_HILFE}
@@ -2788,6 +2916,15 @@ export default function App() {
                   {preview.some((v) => verdacht[v.id]?.length && !verdachtWahl[v.id])
                     ? "Sag zuerst, ob es ein bereits erfasstes Fahrzeug ist."
                     : "Alle vier Fragen beantworten und den Link einfügen, dann geht es weiter."}
+                </span>
+              )}
+              {/* Kein Hindernis, nur ein Spiegel: Importieren geht auch mit
+                  offenen Stellen — dann steht am Fahrzeug, dass du dort noch
+                  nicht hingesehen hast. */}
+              {alleBeantwortet && offeneSichtpunkte > 0 && (
+                <span style={S.askHint}>
+                  {offeneSichtpunkte} {offeneSichtpunkte === 1 ? "Stelle ist" : "Stellen sind"} noch nicht
+                  abgehakt — das wird am Fahrzeug vermerkt.
                 </span>
               )}
             </div>
@@ -4406,7 +4543,8 @@ export default function App() {
                       openAdd={openAdd} cancelAdd={() => setAddFor(null)} addPoint={addPoint} deletePoint={deletePoint} removeVehicle={removeVehicle}
                       closeFor={closeFor} closeStatus={closeStatus} closeDate={closeDate} setCloseStatus={setCloseStatus} setCloseDate={setCloseDate}
                       openClose={openClose} cancelClose={() => setCloseFor(null)} confirmClose={confirmClose} reopen={reopen}
-                      setzeFeld={setzeFeld} heuteGesehen={heuteGesehen} setzeInseratsdatum={setzeInseratsdatum} />
+                      setzeFeld={setzeFeld} heuteGesehen={heuteGesehen} setzeInseratsdatum={setzeInseratsdatum}
+                      setzeSichtpunkt={setzeSichtpunkt} />
                   ))}
                 </div>
               </>
@@ -4426,7 +4564,7 @@ export default function App() {
 /* --------------------------- Karte ------------------------------- */
 
 function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, setAddDate, setAddPrice, openAdd, cancelAdd, addPoint, deletePoint, removeVehicle,
-  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen, setzeFeld, heuteGesehen, setzeInseratsdatum }) {
+  closeFor, closeStatus, closeDate, setCloseStatus, setCloseDate, openClose, cancelClose, confirmClose, reopen, setzeFeld, heuteGesehen, setzeInseratsdatum, setzeSichtpunkt }) {
   const S = styles;
   const h = v.priceHistory || [];
   const last = h[h.length - 1]?.price;
@@ -4514,6 +4652,10 @@ function VehicleCard({ v, accent, open, onToggle, addFor, addDate, addPrice, set
         </div>
 
         <Beobachtung v={v} heuteGesehen={heuteGesehen} setzeInseratsdatum={setzeInseratsdatum} />
+        {/* Bleibt am Fahrzeug stehen: Was du dir angesehen hast und was
+            noch offen ist. Der Haken ist jederzeit nachholbar. */}
+        <Sichtliste punkte={v.sichtpunkte} klein
+          umschalten={(i) => setzeSichtpunkt(v.id, i)} />
 
         <div style={S.histHead}>
           <span>Preisverlauf · {h.length}</span>
@@ -5030,6 +5172,47 @@ function FotoHinweis({ v }) {
           <span style={S.fotoText}>{teile.join(" · ")}</span>
         </div>
       )}
+    </div>
+  );
+}
+
+/* Die Sichtprüfung: Stellen am Fahrzeug, die der Inseratstext nahelegt.
+   Abgehakt wird von Hand — deshalb sagt die Liste später auch etwas aus.
+   Ungehakte Punkte sind keine Mängel, sondern offene Fragen an die Fotos. */
+function Sichtliste({ punkte, umschalten, klein = false }) {
+  const S = styles;
+  if (!punkte?.length) return null;
+  const offen = punkte.filter((p) => !p.geprueft).length;
+  const grund = punkte.every((p) => p.grund);
+  return (
+    <div style={{ ...S.sichtBox, borderLeftColor: offen ? T.accent : T.good }}>
+      <div style={S.sichtKopf}>
+        <span style={{ ...S.sichtTitel, color: offen ? T.accent : T.good }}>
+          <Eye size={13} /> Darauf musst du auf den Fotos achten
+        </span>
+        <span style={{ ...S.sichtZaehler, color: offen ? T.muted : T.good }}>
+          {punkte.length - offen} von {punkte.length} geprüft
+        </span>
+      </div>
+      {!klein && (
+        <div style={S.sichtHinweis}>
+          {grund
+            ? "Das Inserat nennt keine Stellen — das ist der Grundcheck für einen S204."
+            : "Aus dem Text des Inserats abgeleitet. Haken setzen, wenn du dir die Stelle auf den Fotos angesehen hast."}
+        </div>
+      )}
+      {punkte.map((p, i) => (
+        <button key={`${p.text}-${i}`} className="pw-sicht" onClick={() => umschalten(i)}
+          style={p.geprueft ? S.sichtPunktAn : S.sichtPunkt}
+          title={p.geprueft ? "Angesehen — noch einmal klicken, um den Haken zu entfernen" : "Klicken, wenn du dir die Stelle angesehen hast"}>
+          <span style={{ ...S.sichtHaken, borderColor: p.geprueft ? T.good : T.line,
+            background: p.geprueft ? T.good : "transparent", color: "#FFFFFF" }}>
+            {p.geprueft ? <Check size={11} /> : null}
+          </span>
+          <span style={{ ...S.sichtText, color: p.geprueft ? T.muted : T.text,
+            textDecoration: p.geprueft ? "line-through" : "none" }}>{p.text}</span>
+        </button>
+      ))}
     </div>
   );
 }
@@ -5845,6 +6028,16 @@ const styles = {
   fotoZeile: { display: "flex", flexDirection: "column", gap: 2, marginTop: 6 },
   fotoLabel: { fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 },
   fotoText: { fontSize: 11.5, color: T.text, lineHeight: 1.5 },
+
+  sichtBox: { background: T.surface, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 9, padding: "10px 12px", marginBottom: 12 },
+  sichtKopf: { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 4 },
+  sichtTitel: { display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 700 },
+  sichtZaehler: { fontSize: 10.5, fontWeight: 700, fontVariantNumeric: "tabular-nums" },
+  sichtHinweis: { fontSize: 10.5, color: T.muted, lineHeight: 1.5, marginBottom: 6 },
+  sichtPunkt: { display: "flex", alignItems: "flex-start", gap: 8, width: "100%", maxWidth: "100%", textAlign: "left", background: T.bg, border: `1px solid ${T.line}`, borderRadius: 7, padding: "7px 9px", marginTop: 4, cursor: "pointer", font: "inherit" },
+  sichtPunktAn: { display: "flex", alignItems: "flex-start", gap: 8, width: "100%", maxWidth: "100%", textAlign: "left", background: T.surface2, border: `1px solid ${T.good}55`, borderRadius: 7, padding: "7px 9px", marginTop: 4, cursor: "pointer", font: "inherit" },
+  sichtHaken: { flex: "0 0 auto", width: 16, height: 16, marginTop: 1, borderRadius: 4, border: "1.5px solid", display: "flex", alignItems: "center", justifyContent: "center" },
+  sichtText: { fontSize: 11.5, lineHeight: 1.45, minWidth: 0 },
 
 
   laufTable: { display: "flex", flexDirection: "column", gap: 2, overflowX: "auto" },
