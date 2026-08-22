@@ -27,11 +27,23 @@ Der Prompt ist damit unverändert kopierbar, heute wie in einem halben Jahr.
 Dazu der Link zum Inserat als Pflichtfeld. Alle vier Antworten sind Analyse-Kategorien: du
 kannst danach filtern, gruppieren und Durchschnittspreise vergleichen.
 
-**Den Link kannst du dir sparen:** Schickst du der KI den Link zusammen mit den
-Fahrzeugdaten mit, steht er im Feld `url` und die App füllt das Link-Feld schon aus.
-Vergisst die KI ihn trotzdem, füg ihn beim Import einfach über oder unter dem
-JSON-Block mit ein — bei einem einzelnen Fahrzeug holt die App ihn sich von dort.
+**Schick den Link immer mit.** Er steht dann im Feld `url` und die App füllt das
+Link-Feld schon aus. Vergisst die KI ihn, füg ihn beim Import einfach über oder unter
+dem JSON-Block ein — bei einem einzelnen Fahrzeug holt die App ihn sich von dort.
 Verpackungen wie `[Inserat](https://…)` oder `<https://…>` schneidet sie weg.
+
+**Im Link steckt die Inseratsnummer.** In `…details.html?id=412345678&scope=…` ist
+`412345678` die Nummer, unter der mobile.de das Inserat führt. Sie ändert sich nie —
+auch dann nicht, wenn der Verkäufer den Kilometerstand korrigiert und die aus
+Erstzulassung und Kilometern gebaute `id` damit eine andere wäre. Die App zieht sie
+sich selbst aus dem Link und erkennt dieselbe Anzeige daran wieder, ohne nachzufragen.
+Für den Altbestand holt sie die Nummer aus dem gespeicherten Link nach.
+
+**Der Foto-Check.** Aus Feld 25 (`sichtpruefung`) macht die App im Import-Bereich eine
+Liste zum Abhaken: Welche optischen Mängel könnten laut Inseratstext vorliegen und wo
+musst du auf den Fotos hinsehen. Jeder Haken heißt „angesehen". Was ohne Haken bleibt,
+steht danach am Fahrzeug als offener Punkt — du siehst also jederzeit, wo du noch nicht
+genau hingeschaut hast. Nennt das Inserat keine Stellen, setzt die App einen Grundcheck.
 
 ---
 
@@ -79,7 +91,7 @@ ZEITANGABEN -- HIER WIRD AM MEISTEN FALSCH GEMACHT:
   Leer ist richtig. Geraten ist falsch und verfälscht meine Auswertung.
 
 {
-  "id": "05/2011142500",
+  "id": "412345678",
   "title": "Mercedes-Benz C 220 CDI T Avantgarde BlueEfficiency",
   "make": "Mercedes-Benz",
   "model": "C 220",
@@ -101,17 +113,34 @@ ZEITANGABEN -- HIER WIRD AM MEISTEN FALSCH GEMACHT:
   "accidentRepaired": "Nein",
   "equipment": ["AMG Sport-Paket", "Panorama-Schiebedach", "Standheizung", "KEYLESS-GO"],
   "note": "",
-  "url": "",
-  "price": 8900
+  "url": "https://suchen.mobile.de/fahrzeuge/details.html?id=412345678&scope=C",
+  "price": 8900,
+  "sichtpruefung": [
+    "Heckstoßstange rechts: laut Text Kratzer -- auf den Fotos Tiefe und Lackabplatzer prüfen",
+    "Kotflügel hinten links: nachlackiert -- auf Farbunterschied und Spaltmaße achten",
+    "Fahrersitz: 2 Vorbesitzer und 190.000 km -- Sitzwange auf Durchscheuern ansehen",
+    "Heckklappe unter der Chromleiste: typische Roststelle beim S204"
+  ]
 }
 
 SO FÜLLST DU JEDES FELD AUS:
 
 1. "id"
-   Zwei Angaben direkt hintereinander, ohne Leerzeichen und ohne Bindestrich:
+   ZUERST im Link nachsehen. In jedem mobile.de-Link steht die Nummer des
+   Inserats zwischen "id=" und dem nächsten "&":
+     https://suchen.mobile.de/fahrzeuge/details.html?id=412345678&scope=...
+                                                        ^^^^^^^^^
+   Dann ist die id genau diese Nummer:  "412345678"
+   Nimm nur die Ziffern, ohne "id=" und ohne alles, was hinter dem "&" folgt.
+   Diese Nummer ist der beste Schlüssel: Sie bleibt gleich, auch wenn der
+   Verkäufer Preis, Titel oder Kilometerstand ändert.
+
+   NUR wenn du keinen Link hast, baust du die id aus zwei Angaben direkt
+   hintereinander, ohne Leerzeichen und ohne Bindestrich:
    erst Monat und Jahr der Erstzulassung als MM/JJJJ,
    danach sofort der Kilometerstand als reine Zahl.
    Beispiel: Erstzulassung 05/2011 und 142.500 km  ->  "05/2011142500"
+
    Habe ich dir oben eine id vorgegeben, nimmst du exakt diese und rechnest
    keine neue aus.
 
@@ -283,6 +312,42 @@ SO FÜLLST DU JEDES FELD AUS:
     "VB" oder "Verhandlungsbasis" ändert nichts an der Zahl -- vermerke es
     in "note".
 
+25. "sichtpruefung"
+    Eine Liste mit HÖCHSTENS SECHS kurzen Punkten: Welche optischen Mängel
+    KÖNNTEN vorliegen, und wo genau muss ich deshalb auf den Fotos hinsehen?
+    Das ist die einzige Stelle, an der du mitdenken darfst.
+
+    Jeder Punkt hat diese Form:
+       "Stelle am Fahrzeug: Anlass aus dem Inserat -- worauf ich achten soll"
+
+    Woraus du die Punkte ableitest:
+      a) Was der Text ausdrücklich nennt: Kratzer, Dellen, Steinschläge,
+         Roststellen, nachlackierte Teile, defekte Klimaanlage, "kleine
+         Gebrauchsspuren", "Bastlerfahrzeug", "wie besichtigt".
+      b) Was der Text VERSCHWEIGT, obwohl es auffällt: nur Fotos von einer
+         Seite, kein Innenraumfoto, kein Foto vom Motorraum, auffällig
+         wenige Bilder, alle Bilder bei Dunkelheit oder aus großer Distanz.
+      c) Was sich aus den harten Daten ergibt: hohe Laufleistung und
+         Sitzwangen, viele Vorbesitzer, langer Standzeit-Hinweis,
+         Anhängerkupplung und Heckschürze, HU längst abgelaufen.
+      d) Bekannte Schwachstellen des S204, ABER NUR, wenn der Text oder die
+         Daten einen Anlass geben: Rost an der Heckklappe unter der
+         Chromleiste, Rost an den vorderen Kotflügeln unten, Steuerkette bei
+         den frühen Vierzylinder-Benzinern, Ölverlust am Turbolader beim
+         220 CDI, Wasser im Fußraum durch verstopfte Ablaufkanäle.
+
+    Regeln:
+    - Behaupte NICHT, dass ein Mangel vorliegt. Schreib, was zu PRÜFEN ist.
+    - Keine Punkte, für die es im Inserat keinen Anlass gibt.
+    - Keine Punkte zu Dingen, die man auf Fotos nicht sehen kann
+      (Motorlauf, Getriebeverhalten, Geräusche).
+    - Findest du wirklich keinen Anlass: [] (leere Liste). Mein Programm
+      setzt dann selbst einen Grundcheck ein.
+
+    In meiner App wird daraus eine Liste zum Abhaken -- ich sehe mir jede
+    Stelle auf den Fotos an und setze das Häkchen. Was ohne Häkchen bleibt,
+    steht später am Fahrzeug als offener Punkt.
+
 EIN FELD GIBT ES NICHT MEHR:
     Schreib KEIN Feld "date" und kein heutiges Datum in den Block.
     Den Erfassungstag setzt mein Programm selbst -- es ist immer der Tag,
@@ -331,17 +396,24 @@ lohnt es sich, `gearbox` und `location` immer auszufüllen.
 | `listedSince` | Tag 0 jeder Linie, Standzeit, Absorptionskarte |
 | `mileage` | „Was der Kilometer kostet" |
 
+Dazu kommen zwei Felder, die nicht in die Schaubilder gehen, aber die Arbeit tragen:
+`url` (daraus die Inseratsnummer zum Wiedererkennen) und `sichtpruefung` (die Liste
+zum Abhaken).
+
 Alles Übrige — Modell, Linie, Farbe, Getriebe, Kraftstoff, Anbieter, Ort — steuert
 die Filter über den Schaubildern und die Angaben in den Fahrzeugkacheln.
 
 ---
 
-## Warum die id so aufgebaut ist
+## Wie ein Fahrzeug wiedererkannt wird
 
-`MM/JJJJ` plus Kilometerstand ist die Kombination, die zwei sonst gleiche Fahrzeuge
-zuverlässig auseinanderhält — zwei C 220 T von 05/2011 haben praktisch nie denselben
-Kilometerstand.
+Drei Stufen, in dieser Reihenfolge:
 
-Ändert der Händler den angezeigten Kilometerstand, ändert sich die `id` mit. Dann
-greift die Rückfrage über Erstzulassung, Getriebe und Ort — oder du schreibst die
-alte `id` von Hand in den Prompt.
+1. **Inseratsnummer aus dem Link** (`id=412345678`). Der sichere Fall: gleiche Nummer =
+   dieselbe Anzeige. Die App führt den Eintrag ohne Rückfrage fort, auch wenn sich der
+   Kilometerstand geändert hat.
+2. **Die `id` im JSON.** Ohne Link gebaut aus `MM/JJJJ` plus Kilometerstand — die
+   Kombination hält zwei sonst gleiche Fahrzeuge auseinander, ändert sich aber mit dem
+   Kilometerstand.
+3. **Erstzulassung, Getriebe und Ort.** Stimmen die überein, fragt die App beim Prüfen
+   nach, ob es derselbe Wagen ist — auch wenn er längst im Archiv liegt.
