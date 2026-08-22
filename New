@@ -625,14 +625,13 @@ WICHTIG VORAB:
   "zustand": "Neu und verpackt",
   "umfang": ["Armatur", "Reservoir/Tank", "CO₂-Flasche", "Originalverpackung"],
   "preis": 1290,
-  "listedSince": "2026-07-24",
+  "listedSince": "vor 3 Wochen",
   "ort": "50667 Köln",
   "anbieter": "Privat",
   "versand": "Versand möglich",
   "baujahr": "2023",
   "url": "",
-  "notiz": "",
-  "date": "2026-08-13"
+  "notiz": ""
 }
 
 SO FÜLLST DU JEDES FELD AUS:
@@ -693,10 +692,13 @@ SO FÜLLST DU JEDES FELD AUS:
    Steht "VB" dahinter, ändert das nichts an der Zahl.
 
 7. "listedSince"
-   Wann das Inserat eingestellt wurde, als JJJJ-MM-TT. Auf Kleinanzeigen
-   steht das am Inserat, oft als "Eingestellt am" oder als Angabe wie
-   "vor 3 Wochen" -- die rechnest du ins Datum um. Findest du nichts: "".
-   Rate NICHT und setz niemals das heutige Datum ein.
+   Wann das Inserat eingestellt wurde. Auf Kleinanzeigen steht das am
+   Inserat, oft als "Eingestellt am" oder als Angabe wie "vor 3 Wochen".
+   Zwei erlaubte Formen -- rechne NICHT selbst um:
+     festes Datum   -> "2026-07-24"   (JJJJ-MM-TT)
+     Formulierung   -> "vor 3 Wochen", "seit 2 Monaten", "gestern", "heute"
+   Mein Programm kennt den heutigen Tag und macht daraus das richtige Datum.
+   Findest du nichts: "". Rate NICHT und setz niemals das heutige Datum ein.
 
 8. "ort"
    Postleitzahl und Ort. Beispiel: "50667 Köln".
@@ -721,8 +723,9 @@ SO FÜLLST DU JEDES FELD AUS:
     "Abholung nur bis Freitag", auffällig knapper Text, schlechte Fotos.
     Nichts Auffälliges: "".
 
-14. "date"
-    Das heutige Datum im Format JJJJ-MM-TT.`;
+EIN FELD GIBT ES NICHT MEHR:
+    Schreib KEIN Feld "date" und kein heutiges Datum in den Block.
+    Den Erfassungstag setzt mein Programm selbst.`;
 
 // Ein sprechender Name aus den Merkmalen — nichts, was man tippen müsste.
 const qTitel = (q) => [q.armatur, q.farbe, q.reservoir && q.reservoir !== "unbekannt"
@@ -777,8 +780,12 @@ function normalizeQuooker(v) {
     zustand: qWaehle(v.zustand ?? v.condition, Q_ZUSTAND, Q_ZUSTAND[1]),
     umfang: qUmfangListe(v.umfang ?? v.lieferumfang ?? v.enthalten),
     preis,
-    listedSince: datumOderVorher(v.listedSince ?? v.onlineSince ?? v.eingestellt,
-      nurDatum(v.date) || heute),
+    /* Wie beim Fahrzeug: "vor 3 Wochen" rechnet die App um, nicht die KI —
+       und immer gegen den heutigen Tag, nie gegen ein geliefertes Datum. */
+    listedSince: (() => {
+      const d = datumOderVorher(v.listedSince ?? v.onlineSince ?? v.eingestellt, heute);
+      return d && d <= heute ? d : "";
+    })(),
     ort: String(v.ort ?? v.location ?? "").trim(),
     anbieter: qWaehle(v.anbieter ?? v.sellerType, Q_ANBIETER, "Privat"),
     // "ja"/"nein" statt der vorgegebenen Wörter kommt oft genug vor
@@ -791,7 +798,8 @@ function normalizeQuooker(v) {
     baujahr: (String(v.baujahr ?? v.year ?? "").match(/\d{4}/) || [""])[0],
     url: normalizeUrl(v.url ?? v.link ?? ""),
     notiz: String(v.notiz ?? v.note ?? "").trim(),
-    date: nurDatum(v.date) || heute,
+    // Der Erfassungstag ist immer heute; ein Datum aus der Zukunft ist ein Lesefehler.
+    date: (() => { const d = nurDatum(v.date); return d && d <= heute ? d : heute; })(),
   };
 }
 
@@ -997,7 +1005,13 @@ function normalizeVehicle(v) {
   out.priceHistory = normalizeHistory(v.priceHistory);
   if (!out.priceHistory.length && v.price != null) {
     const p = coerceNum(v.price);
-    if (p != null) out.priceHistory = [{ date: v.date ? String(v.date).slice(0, 10) : todayISO(), price: p }];
+    /* Das Datum des Preises: Was die KI liefert, gilt nur, wenn es ein
+       gültiger Tag in der Vergangenheit ist. Modelle kennen das heutige
+       Datum oft nicht und setzen dann irgendetwas ein — der Tag, an dem
+       DU erfasst, ist aber immer heute. */
+    const geliefert = nurDatum(v.date);
+    const tagDesPreises = geliefert && geliefert <= todayISO() ? geliefert : todayISO();
+    if (p != null) out.priceHistory = [{ date: tagDesPreises, price: p }];
   }
   // Bleibt leer, wenn nichts mitgeliefert wurde — daran erkennt der Import,
   // ob ein Abschluss gemeint ist oder nur ein Preis-Update.
@@ -1011,11 +1025,16 @@ function normalizeVehicle(v) {
      kann. Es fehlte in älteren Prompt-Fassungen ganz, und wo es fehlt,
      bleibt das Feld leer statt mit dem Erfassungstag gefüllt zu werden —
      sonst sähe eine Vermutung aus wie eine Angabe. */
+  /* "vor 3 Wochen online" wird hier umgerechnet, nicht von der KI: Die App
+     kennt den heutigen Tag sicher, ein Sprachmodell nicht. Deshalb darf im
+     Feld auch die Formulierung stehen, die im Inserat steht. */
   out.listedSince = datumOderVorher(
     [v.listedSince, v.onlineSince, v.listedAt, v.inseriertSeit, v.onlineSeit,
       v.insertionDate, v.listingDate, v.publishedAt, v.firstListed]
       .find((x) => x != null && String(x).trim() !== ""),
-    out.priceHistory[0]?.date);
+    todayISO());
+  // Ein Inseratsdatum in der Zukunft ist ein Lesefehler, kein Datum.
+  if (out.listedSince && out.listedSince > todayISO()) out.listedSince = "";
   out.closedDate = nurDatum(v.closedDate);
   // Aus einer Sicherung kommen diese Werte zurück; aus einer KI-Antwort nie.
   out.firstSeen = nurDatum(v.firstSeen);
@@ -1047,20 +1066,45 @@ function nurDatum(s) {
   }
   return "";
 }
-/* "vor 3 Wochen online" ist keine Angabe, die man abtippen kann — aber
-   eine, die auf mobile.de steht. Sie wird auf den heutigen Tag bezogen. */
+/* "vor 3 Wochen online" steht so auf mobile.de und wird hier in ein Datum
+   verwandelt. Diese Umrechnung macht bewusst die App und nicht die KI: Ein
+   Sprachmodell kennt den heutigen Tag oft nicht und setzt dann irgendetwas
+   ein. Die App weiß ihn immer. Deshalb darf im gelieferten Feld auch die
+   Formulierung stehen, die im Inserat steht — abschreiben genügt. */
+const ZAHLWORT = { ein: 1, eine: 1, einem: 1, einer: 1, eins: 1, zwei: 2, drei: 3,
+  vier: 4, fünf: 5, fuenf: 5, sechs: 6, sieben: 7, acht: 8, neun: 9, zehn: 10,
+  elf: 11, zwölf: 12, zwoelf: 12, halben: 0.5 };
 function datumOderVorher(s, heute) {
   const fest = nurDatum(s);
   if (fest) return fest;
-  const rel = String(s == null ? "" : s).toLowerCase()
-    .match(/vor\s+(?:(\d+)\s*)?(tag|tagen|woche|wochen|monat|monaten)/);
+  const t = String(s == null ? "" : s).toLowerCase().trim();
+  if (!t) return "";
+  const basis = parseISO(heute || todayISO());
+  if (!basis) return "";
+  const zurueck = (tage) => {
+    const d = new Date(basis);
+    d.setDate(d.getDate() - Math.round(tage));
+    return d.toISOString().slice(0, 10);
+  };
+  if (/\bheute\b|\bgerade eben\b|\bsoeben\b/.test(t)) return zurueck(0);
+  if (/\bgestern\b/.test(t)) return zurueck(1);
+  if (/\bvorgestern\b/.test(t)) return zurueck(2);
+  /* "vor 3 Wochen", "seit zwei Monaten", "3 Wochen online", "vor einer Woche" */
+  const rel = t.match(/(?:vor|seit)?\s*([\d.,]+|[a-zäöü]+)?\s*(tag|tage|tagen|woche|wochen|monat|monate|monaten|jahr|jahre|jahren)\b/);
   if (!rel) return "";
-  const zahl = rel[1] ? parseInt(rel[1], 10) : 1;
-  const faktor = rel[2].startsWith("tag") ? 1 : rel[2].startsWith("woche") ? 7 : 30;
-  const d = parseISO(heute || todayISO());
-  if (!d) return "";
-  d.setDate(d.getDate() - zahl * faktor);
-  return d.toISOString().slice(0, 10);
+  let zahl = 1;
+  if (rel[1]) {
+    const roh = rel[1].replace(",", ".");
+    zahl = /^[\d.]+$/.test(roh) ? parseFloat(roh) : (ZAHLWORT[rel[1]] ?? NaN);
+    if (!isFinite(zahl)) return "";        // "vor längerer Zeit" ist kein Datum
+  }
+  const einheit = rel[2];
+  const faktor = einheit.startsWith("tag") ? 1
+    : einheit.startsWith("woche") ? 7
+      : einheit.startsWith("monat") ? 30.4 : 365;
+  const tage = zahl * faktor;
+  if (!(tage >= 0) || tage > 365 * 5) return "";   // offensichtlicher Unsinn
+  return zurueck(tage);
 }
 // Schneidet den JSON-Block aus einer KI-Antwort heraus:
 // Codeblock-Zeichen, Einleitungssätze und Nachtext werden verworfen.
