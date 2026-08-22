@@ -7,6 +7,11 @@ an eine KI schicken. Die Antwort komplett kopieren und in der App ins Import-Fel
 Codeblock-Zeichen oder Text drumherum stören nicht — die App schneidet sich das JSON selbst
 heraus und bügelt abweichende Schreibweisen glatt.
 
+**Das heutige Datum unbedingt mitschicken.** Eine KI kennt es nicht zuverlässig. Sie braucht
+es aber, um „vor drei Wochen online" in ein Datum umzurechnen — und dieses Datum ist Tag 0
+für jede Zeitrechnung in der App. Deshalb steht ganz oben im Prompt eine Zeile, die du vor
+dem Abschicken ausfüllst.
+
 **Vier Angaben macht die KI nicht.** Nach „Prüfen" fragt die App dich selbst:
 
 | Frage | Wann |
@@ -16,9 +21,8 @@ heraus und bügelt abweichende Schreibweisen glatt.
 | Interieur — was zeigen die Fotos innen | immer |
 | Was wurde repariert | immer, mit dem Wortlaut aus dem Inserat darüber |
 
-Dazu der Link zum Inserat als Pflichtfeld und optional der Stern für Vorzeigefahrzeuge.
-Alle vier Antworten sind Analyse-Kategorien: du kannst danach filtern, gruppieren und
-Durchschnittspreise vergleichen.
+Dazu der Link zum Inserat als Pflichtfeld. Alle vier Antworten sind Analyse-Kategorien: du
+kannst danach filtern, gruppieren und Durchschnittspreise vergleichen.
 
 **Den Link kannst du dir sparen:** Schickst du der KI den Link zusammen mit den
 Fahrzeugdaten mit, steht er im Feld `url` und die App füllt das Link-Feld schon aus.
@@ -29,6 +33,8 @@ Verpackungen wie `[Inserat](https://…)` oder `<https://…>` schneidet sie weg
 ---
 
 ```
+Heute ist der: 2026-08-21          <-- VOR DEM ABSCHICKEN AUF DAS HEUTIGE DATUM SETZEN
+
 Du bekommst ein Fahrzeug-Inserat für eine Mercedes C-Klasse T-Modell der Baureihe S204
 (Kombi, Baujahre 2007 bis 2014). Erstelle daraus einen JSON-Block.
 Antworte NUR mit dem JSON, ohne Kommentar davor oder danach.
@@ -43,6 +49,33 @@ WICHTIG VORAB:
 - Du bewertest nichts. Du schreibst ab und ordnest nur dort ein, wo ich es
   ausdrücklich verlange. Den Zustand beurteile ich selbst anhand der Fotos.
 - Mehrere Inserate auf einmal: gib ein JSON-Array aus, also [ {...}, {...} ].
+
+ZEITANGABEN -- HIER WIRD AM MEISTEN FALSCH GEMACHT:
+  Es gibt in einem Inserat vier verschiedene Zeitangaben. Verwechsle sie nicht:
+
+  a) Erstzulassung        -> Felder "year" und "month". Wann das Auto neu war.
+  b) Hauptuntersuchung    -> Feld "hu". Bis wann der TÜV gilt, in der Zukunft.
+  c) Online seit          -> Feld "listedSince". Wann DAS INSERAT eingestellt wurde.
+  d) Heute                -> Feld "date". Steht oben in der ersten Zeile.
+
+  Die wichtigste davon ist (c). Sie ist der Tag 0 für alle Zeitrechnungen und
+  darf niemals geraten werden.
+
+  Relative Angaben rechnest du in ein Datum um, ausgehend vom heutigen Datum
+  aus der ersten Zeile:
+     "vor 3 Wochen online gestellt"  ->  heute minus 21 Tage
+     "seit 2 Monaten inseriert"      ->  heute minus 60 Tage
+     "gestern eingestellt"           ->  heute minus 1 Tag
+  Schreib die Originalformulierung zusätzlich ans Ende von "note", damit ich
+  die Umrechnung nachprüfen kann. Beispiel: "Inserat: vor 3 Wochen online."
+
+  Was du NICHT als "listedSince" nehmen darfst:
+     - das heutige Datum
+     - eine Uhrzeit oder ein Datum aus der Handy-Statusleiste eines Screenshots
+     - das Datum der Erstzulassung
+     - das Datum der Hauptuntersuchung
+  Findest du keine Angabe dazu, wann das Inserat online ging: "" (leer).
+  Leer ist richtig. Geraten ist falsch und verfälscht meine Auswertung.
 
 {
   "id": "05/2011142500",
@@ -69,7 +102,7 @@ WICHTIG VORAB:
   "note": "",
   "url": "",
   "price": 8900,
-  "date": "2026-08-06"
+  "date": "2026-08-21"
 }
 
 SO FÜLLST DU JEDES FELD AUS:
@@ -79,6 +112,8 @@ SO FÜLLST DU JEDES FELD AUS:
    erst Monat und Jahr der Erstzulassung als MM/JJJJ,
    danach sofort der Kilometerstand als reine Zahl.
    Beispiel: Erstzulassung 05/2011 und 142.500 km  ->  "05/2011142500"
+   Habe ich dir oben eine id vorgegeben, nimmst du exakt diese und rechnest
+   keine neue aus.
 
 2. "title"
    Die Überschrift des Inserats, genau so abgeschrieben wie sie dasteht.
@@ -112,7 +147,9 @@ SO FÜLLST DU JEDES FELD AUS:
    Rate NICHT. Lieber leer als falsch.
 
 7. "year"
-   Das Jahr der Erstzulassung, vierstellig. Beispiel: "2011".
+   Das Jahr der ERSTZULASSUNG, vierstellig. Beispiel: "2011".
+   Nicht das Baujahr aus der Beschreibung, wenn beides genannt wird --
+   maßgeblich ist die Erstzulassung.
 
 8. "month"
    Der Monat der Erstzulassung, zweistellig mit führender Null.
@@ -132,16 +169,19 @@ SO FÜLLST DU JEDES FELD AUS:
     Automatik = jede Art von Automatik (7G-TRONIC, 5G-TRONIC, Wandler).
     Manuell = Schaltgetriebe von Hand.
     Die Anzahl der Gänge interessiert mich nicht.
+    Dieses Feld hilft der App, ein wieder eingestelltes Inserat als denselben
+    Wagen zu erkennen -- lass es also nicht leer, wenn es irgendwo steht.
 
 12. "owners"
     Die genaue Anzahl der Fahrzeughalter als Zahl in Anführungszeichen,
-    zum Beispiel "2". Suche in der Datentabelle UND im Beschreibungstext —
+    zum Beispiel "2". Suche in der Datentabelle UND im Beschreibungstext --
     dort steht sie oft nur nebenbei ("aus zweiter Hand", "Erstbesitz").
     Findest du nichts: "".
 
 13. "hu"
     Wie lange die Hauptuntersuchung noch gültig ist, als MM/JJJJ.
-    Beispiel: "04/2027". Steht "Neu bei Übergabe" oder gar nichts: "".
+    Beispiel: "04/2027". Das liegt in der Zukunft.
+    Steht "Neu bei Übergabe", "HU neu" oder gar nichts: "".
 
 14. "color"  --  NUR EINES DIESER WÖRTER:
         Schwarz | Weiß | Grau | Silber | Blau | Rot | Grün
@@ -151,6 +191,8 @@ SO FÜLLST DU JEDES FELD AUS:
 
 15. "location"
     Postleitzahl und Ort des Fahrzeugs. Beispiel: "50667 Köln".
+    Auch dieses Feld hilft beim Wiedererkennen -- schreib es ab, wo immer
+    es steht, notfalls nur den Ort ohne Postleitzahl.
 
 16. "sellerType"  --  NUR EINES DIESER ZWEI WÖRTER:
         Händler  |  Privat
@@ -159,12 +201,15 @@ SO FÜLLST DU JEDES FELD AUS:
     Der Name des Händlers. Bei Privatverkauf: "".
 
 18. "listedSince"
-    Seit wann das Inserat online ist, als JJJJ-MM-TT.
-    Steht auf mobile.de oft als "Online seit" oder "Inseriert am".
-    Such danach gründlich -- ohne dieses Datum kann die App die Standzeit
-    erst ab dem Tag rechnen, an dem du das Inserat erfasst hast.
-    Steht dort eine Angabe wie "vor 3 Wochen online gestellt", rechne sie
-    ins Datum um. Findest du wirklich nichts: "" -- rate nicht.
+    Wann das INSERAT online gestellt wurde, als JJJJ-MM-TT.
+    Auf mobile.de steht das als "Online seit", "Inseriert am" oder als
+    Angabe wie "vor 3 Wochen". Such danach gründlich: in der Datentabelle,
+    im Kopf des Inserats und auf allen Screenshots.
+    Relative Angaben rechnest du nach der Regel oben um.
+    Ohne dieses Datum kann die App die Standzeit erst ab dem Tag rechnen, an
+    dem ich das Inserat gefunden habe -- dann ist jede Linie in meinen
+    Auswertungen falsch kurz.
+    Findest du wirklich nichts: "" -- und niemals das heutige Datum.
 
 19. "repairNote"
     Was das Inserat über BEREITS ERFOLGTE Reparaturen und Erneuerungen sagt --
@@ -210,10 +255,14 @@ SO FÜLLST DU JEDES FELD AUS:
     du beim Modell vermutest.
 
 22. "note"
-    Deine eigene kurze Einschätzung als Käufer in ein bis zwei Sätzen:
-    Was fällt auf, wo ist Vorsicht geboten, passt der Preis?
-    Nenne hier auch Einschränkungen wie "Verkauf nur an Gewerbe oder Export",
-    "Bastlerfahrzeug", "ohne Gewährleistung", "nicht fahrbereit".
+    Auffälligkeiten und Einschränkungen, die im Inserat stehen, in ein bis
+    zwei Sätzen. Schreib ab, bewerte nicht. Zum Beispiel:
+      "Verkauf nur an Gewerbe oder Export", "Bastlerfahrzeug",
+      "ohne Gewährleistung", "nicht fahrbereit", "Motorschaden",
+      "Abholung nur bis Freitag", "Preis VB", "Besichtigung nach Absprache".
+    Hier kommt auch die Originalformulierung einer relativen Zeitangabe hin,
+    falls du eine umgerechnet hast.
+    Nichts Auffälliges: "".
 
 23. "url"
     Der Link zum Inserat. Nimm ihn aus jeder Quelle, die du hast: aus dem
@@ -228,9 +277,12 @@ SO FÜLLST DU JEDES FELD AUS:
 24. "price"
     Der geforderte Preis in Euro als reine Zahl, ohne Punkt und ohne "€".
     Beispiel: 8900
+    "VB" oder "Verhandlungsbasis" ändert nichts an der Zahl -- vermerke es
+    in "note".
 
 25. "date"
-    Das heutige Datum im Format JJJJ-MM-TT.
+    Das heutige Datum aus der ersten Zeile dieses Prompts, als JJJJ-MM-TT.
+    Denk dir hier nichts aus.
 ```
 
 ---
@@ -242,11 +294,18 @@ Hänge an den Prompt an:
 ```
 Das Auto kenne ich schon, seine id lautet "05/2011142500".
 Nimm exakt diese id und trage nur den neuen Preis mit dem heutigen Datum ein.
+Steht im Inserat inzwischen ein anderer Kilometerstand, schreib den neuen --
+die id bleibt trotzdem die alte.
 ```
 
 Die App erkennt das Auto an der `id` wieder und hängt den Preis an den Verlauf an,
 statt einen zweiten Eintrag anzulegen. Deine Antworten zu Exterieur, Interieur,
 Reparaturen und Ausstattungslinie bleiben dabei erhalten.
+
+**Vergisst du die id, ist das kein Beinbruch:** Stimmen Erstzulassung, Getriebe und
+Ort mit einem bereits erfassten Wagen überein, fragt die App beim Prüfen nach, ob es
+derselbe ist — und zwar auch dann, wenn der Wagen längst im Archiv liegt. Deshalb
+lohnt es sich, `gearbox` und `location` immer auszufüllen.
 
 ---
 
@@ -260,18 +319,16 @@ Reparaturen und Ausstattungslinie bleiben dabei erhalten.
 | 1–2 | Besondere Ausstattung |
 | 3 oder mehr | Exzellente Ausstattung |
 
-**Deine vier Antworten** sind vollwertige Analyse-Kategorien — Filter mit
-Mehrfachauswahl, Gruppierung bei „Ø Preis nach", und sie fließen in die
-Zustandspunkte des Masterchart ein:
+**Diese vier Felder füttern die Schaubilder:**
 
-| Merkmal | Abzug von 100 Punkten |
+| Feld | wird dort gebraucht |
 |---|---|
-| Exterieur | 0 / −6 / −14 / −24 |
-| Interieur | 0 / −5 / −12 / −20 |
-| Reparaturen | 0 / −3 (Verschleiß) / −14 (Kernteile) / −26 (Prozessteile) |
-| Unfallschaden angegeben | −18 |
-| Sonderausstattung | +5 (besondere) / +10 (exzellente) |
-| Vorzeigefahrzeug (Stern) | +8 |
+| `price` + `date` | Preisverteilung, Orderbuch, alle Preisverläufe |
+| `listedSince` | Tag 0 jeder Linie, Standzeit, Absorptionskarte |
+| `mileage` | „Was der Kilometer kostet" |
+
+Alles Übrige — Modell, Linie, Farbe, Getriebe, Kraftstoff, Anbieter, Ort — steuert
+die Filter über den Schaubildern und die Angaben in den Fahrzeugkacheln.
 
 ---
 
@@ -282,5 +339,5 @@ zuverlässig auseinanderhält — zwei C 220 T von 05/2011 haben praktisch nie d
 Kilometerstand.
 
 Ändert der Händler den angezeigten Kilometerstand, ändert sich die `id` mit. Dann
-entsteht ein neuer Eintrag statt eines Preis-Updates. In dem Fall die alte `id`
-von Hand in den Prompt schreiben.
+greift die Rückfrage über Erstzulassung, Getriebe und Ort — oder du schreibst die
+alte `id` von Hand in den Prompt.
