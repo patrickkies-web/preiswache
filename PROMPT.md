@@ -7,10 +7,13 @@ an eine KI schicken. Die Antwort komplett kopieren und in der App ins Import-Fel
 Codeblock-Zeichen oder Text drumherum stören nicht — die App schneidet sich das JSON selbst
 heraus und bügelt abweichende Schreibweisen glatt.
 
-**Das heutige Datum unbedingt mitschicken.** Eine KI kennt es nicht zuverlässig. Sie braucht
-es aber, um „vor drei Wochen online" in ein Datum umzurechnen — und dieses Datum ist Tag 0
-für jede Zeitrechnung in der App. Deshalb steht ganz oben im Prompt eine Zeile, die du vor
-dem Abschicken ausfüllst.
+**Du musst nichts mehr vorher ausfüllen.** Eine KI kennt das heutige Datum nicht
+zuverlässig — die App dagegen immer. Deshalb rechnet jetzt die App: Die KI schreibt bei
+„Online seit" einfach ab, was im Inserat steht („vor 3 Wochen", „gestern", „seit zwei
+Monaten"), und die App macht daraus beim Prüfen den richtigen Tag. Den Erfassungstag setzt
+sie ebenfalls selbst — es ist immer der Tag, an dem du auf „Importieren" drückst.
+
+Der Prompt ist damit unverändert kopierbar, heute wie in einem halben Jahr.
 
 **Vier Angaben macht die KI nicht.** Nach „Prüfen" fragt die App dich selbst:
 
@@ -33,8 +36,6 @@ Verpackungen wie `[Inserat](https://…)` oder `<https://…>` schneidet sie weg
 ---
 
 ```
-Heute ist der: 2026-08-21          <-- VOR DEM ABSCHICKEN AUF DAS HEUTIGE DATUM SETZEN
-
 Du bekommst ein Fahrzeug-Inserat für eine Mercedes C-Klasse T-Modell der Baureihe S204
 (Kombi, Baujahre 2007 bis 2014). Erstelle daraus einen JSON-Block.
 Antworte NUR mit dem JSON, ohne Kommentar davor oder danach.
@@ -51,23 +52,23 @@ WICHTIG VORAB:
 - Mehrere Inserate auf einmal: gib ein JSON-Array aus, also [ {...}, {...} ].
 
 ZEITANGABEN -- HIER WIRD AM MEISTEN FALSCH GEMACHT:
-  Es gibt in einem Inserat vier verschiedene Zeitangaben. Verwechsle sie nicht:
+  Es gibt in einem Inserat drei verschiedene Zeitangaben. Verwechsle sie nicht:
 
   a) Erstzulassung        -> Felder "year" und "month". Wann das Auto neu war.
   b) Hauptuntersuchung    -> Feld "hu". Bis wann der TÜV gilt, in der Zukunft.
   c) Online seit          -> Feld "listedSince". Wann DAS INSERAT eingestellt wurde.
-  d) Heute                -> Feld "date". Steht oben in der ersten Zeile.
 
   Die wichtigste davon ist (c). Sie ist der Tag 0 für alle Zeitrechnungen und
   darf niemals geraten werden.
 
-  Relative Angaben rechnest du in ein Datum um, ausgehend vom heutigen Datum
-  aus der ersten Zeile:
-     "vor 3 Wochen online gestellt"  ->  heute minus 21 Tage
-     "seit 2 Monaten inseriert"      ->  heute minus 60 Tage
-     "gestern eingestellt"           ->  heute minus 1 Tag
-  Schreib die Originalformulierung zusätzlich ans Ende von "note", damit ich
-  die Umrechnung nachprüfen kann. Beispiel: "Inserat: vor 3 Wochen online."
+  DU RECHNEST NICHT UM. Du kennst das heutige Datum nicht sicher, mein Programm
+  schon. Steht im Inserat eine relative Angabe, schreibst du sie WÖRTLICH ab:
+     im Inserat "vor 3 Wochen online"   ->  "listedSince": "vor 3 Wochen"
+     im Inserat "seit 2 Monaten"        ->  "listedSince": "seit 2 Monaten"
+     im Inserat "gestern eingestellt"   ->  "listedSince": "gestern"
+     im Inserat "Online seit 02.07.2026" -> "listedSince": "2026-07-02"
+  Steht dort ein festes Datum, gibst du es als JJJJ-MM-TT aus. Steht dort eine
+  Formulierung, gibst du die Formulierung aus. Beides ist richtig.
 
   Was du NICHT als "listedSince" nehmen darfst:
      - das heutige Datum
@@ -95,14 +96,13 @@ ZEITANGABEN -- HIER WIRD AM MEISTEN FALSCH GEMACHT:
   "location": "50667 Köln",
   "sellerType": "Händler",
   "dealerName": "Autohaus Muster",
-  "listedSince": "2026-07-02",
+  "listedSince": "vor 3 Wochen",
   "repairNote": "Steuerkette und Spanner 2023 erneuert, Bremsscheiben vorne neu.",
   "accidentRepaired": "Nein",
   "equipment": ["AMG Sport-Paket", "Panorama-Schiebedach", "Standheizung", "KEYLESS-GO"],
   "note": "",
   "url": "",
-  "price": 8900,
-  "date": "2026-08-21"
+  "price": 8900
 }
 
 SO FÜLLST DU JEDES FELD AUS:
@@ -201,12 +201,17 @@ SO FÜLLST DU JEDES FELD AUS:
     Der Name des Händlers. Bei Privatverkauf: "".
 
 18. "listedSince"
-    Wann das INSERAT online gestellt wurde, als JJJJ-MM-TT.
-    Auf mobile.de steht das als "Online seit", "Inseriert am" oder als
-    Angabe wie "vor 3 Wochen". Such danach gründlich: in der Datentabelle,
-    im Kopf des Inserats und auf allen Screenshots.
-    Relative Angaben rechnest du nach der Regel oben um.
-    Ohne dieses Datum kann die App die Standzeit erst ab dem Tag rechnen, an
+    Wann das INSERAT online gestellt wurde. Auf mobile.de steht das als
+    "Online seit", "Inseriert am" oder als Angabe wie "vor 3 Wochen".
+    Such danach gründlich: in der Datentabelle, im Kopf des Inserats und
+    auf allen Screenshots.
+    Zwei erlaubte Formen:
+      - festes Datum       -> "2026-07-02"   (JJJJ-MM-TT)
+      - Formulierung       -> "vor 3 Wochen", "seit 2 Monaten", "gestern",
+                              "vor einem Monat", "vor 5 Tagen", "heute"
+    Rechne NICHT selbst um. Mein Programm kennt den heutigen Tag und macht
+    daraus das richtige Datum.
+    Ohne diese Angabe kann die App die Standzeit erst ab dem Tag rechnen, an
     dem ich das Inserat gefunden habe -- dann ist jede Linie in meinen
     Auswertungen falsch kurz.
     Findest du wirklich nichts: "" -- und niemals das heutige Datum.
@@ -260,8 +265,6 @@ SO FÜLLST DU JEDES FELD AUS:
       "Verkauf nur an Gewerbe oder Export", "Bastlerfahrzeug",
       "ohne Gewährleistung", "nicht fahrbereit", "Motorschaden",
       "Abholung nur bis Freitag", "Preis VB", "Besichtigung nach Absprache".
-    Hier kommt auch die Originalformulierung einer relativen Zeitangabe hin,
-    falls du eine umgerechnet hast.
     Nichts Auffälliges: "".
 
 23. "url"
@@ -280,9 +283,10 @@ SO FÜLLST DU JEDES FELD AUS:
     "VB" oder "Verhandlungsbasis" ändert nichts an der Zahl -- vermerke es
     in "note".
 
-25. "date"
-    Das heutige Datum aus der ersten Zeile dieses Prompts, als JJJJ-MM-TT.
-    Denk dir hier nichts aus.
+EIN FELD GIBT ES NICHT MEHR:
+    Schreib KEIN Feld "date" und kein heutiges Datum in den Block.
+    Den Erfassungstag setzt mein Programm selbst -- es ist immer der Tag,
+    an dem ich importiere.
 ```
 
 ---
@@ -293,7 +297,7 @@ Hänge an den Prompt an:
 
 ```
 Das Auto kenne ich schon, seine id lautet "05/2011142500".
-Nimm exakt diese id und trage nur den neuen Preis mit dem heutigen Datum ein.
+Nimm exakt diese id und trage nur den neuen Preis ein.
 Steht im Inserat inzwischen ein anderer Kilometerstand, schreib den neuen --
 die id bleibt trotzdem die alte.
 ```
@@ -319,11 +323,11 @@ lohnt es sich, `gearbox` und `location` immer auszufüllen.
 | 1–2 | Besondere Ausstattung |
 | 3 oder mehr | Exzellente Ausstattung |
 
-**Diese vier Felder füttern die Schaubilder:**
+**Diese drei Felder füttern die Schaubilder:**
 
 | Feld | wird dort gebraucht |
 |---|---|
-| `price` + `date` | Preisverteilung, Orderbuch, alle Preisverläufe |
+| `price` | Preisverteilung, Orderbuch, alle Preisverläufe — mit dem Tag, an dem du importierst |
 | `listedSince` | Tag 0 jeder Linie, Standzeit, Absorptionskarte |
 | `mileage` | „Was der Kilometer kostet" |
 
