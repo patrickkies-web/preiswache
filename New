@@ -4,6 +4,7 @@ import {
   AlertTriangle, Upload, MapPin, Store, User, Wrench, Filter, ShieldCheck, Download,
   Camera, CalendarClock, Archive, RotateCcw, Clock, ChevronRight, FileUp,
   Cloud, CloudOff, RefreshCw, ArrowUp, ArrowDown, Link2, Droplet, Package, Eye,
+  CandlestickChart, BarChartHorizontal, Activity,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -461,6 +462,286 @@ function preisStufen(v) {
   return stufen;
 }
 
+/* --------- Marktkerzen: die Verteilung als Kerze je Woche ----------
+   An der Börse zeigt eine Kerze den Weg EINES Kurses durch die Zeit. Hier
+   gibt es keinen einen Kurs, sondern viele gleichzeitige Angebote —
+   deshalb zeigt eine Kerze die VERTEILUNG aller Asks in dieser Woche:
+   Körper vom 25. zum 75. Perzentil, Dochte zum 10. und 90., der Strich
+   ist der Median. Die Farbe sagt, wohin der Median gegenüber der Vorwoche
+   gelaufen ist. Ein langer unterer Docht heißt: Da bietet jemand deutlich
+   unter Markt an. Ein breiter Körper heißt: Der Markt ist sich uneinig —
+   und genau daraus entsteht die Marge. */
+const MONTAG = (iso) => {
+  const d = parseISO(iso);
+  if (!d) return "";
+  const versatz = (d.getDay() + 6) % 7;          // Montag = 0
+  d.setDate(d.getDate() - versatz);
+  return d.toISOString().slice(0, 10);
+};
+const tageSpaeter = (iso, n) => {
+  const d = parseISO(iso);
+  if (!d) return "";
+  d.setDate(d.getDate() + n);
+  return d.toISOString().slice(0, 10);
+};
+/* Perzentil auf einer sortierten Liste, linear zwischen zwei Nachbarn.
+   Bei wenigen Fahrzeugen ist jede andere Definition Willkür. */
+function perzentil(sortiert, p) {
+  if (!sortiert.length) return null;
+  if (sortiert.length === 1) return sortiert[0];
+  const i = (sortiert.length - 1) * p;
+  const u = Math.floor(i), o = Math.ceil(i);
+  return u === o ? sortiert[u] : sortiert[u] + (sortiert[o] - sortiert[u]) * (i - u);
+}
+// Der Preis, der an diesem Tag im Inserat stand: der letzte davor.
+function preisAm(stufen, tag) {
+  let wert = null;
+  for (const st of stufen) { if (st.von <= tag) wert = st.preis; else break; }
+  return wert;
+}
+
+function marktkerzen(fahrzeuge, heute = todayISO()) {
+  const mit = fahrzeuge
+    .map((v) => ({ v, stufen: preisStufen(v) }))
+    .filter((x) => x.stufen.length)
+    .map((x) => ({
+      id: x.v.id, title: x.v.title, stufen: x.stufen,
+      /* Beobachtet ist ein Inserat ab dem ersten Preis, den du kennst —
+         vorher weißt du nichts über seinen Kurs, auch wenn es lief. */
+      beginn: x.stufen[0].von,
+      ende: verschwundenAm(x.v) || "",
+      abgang: echterAbgang(x.v),
+    }));
+  if (!mit.length) return { wochen: [], anzahl: 0 };
+
+  const ersterTag = mit.map((x) => x.beginn).sort()[0];
+  const wochen = [];
+  for (let w = MONTAG(ersterTag); w <= heute; w = tageSpaeter(w, 7)) {
+    const ende = tageSpaeter(w, 6);
+    const stichtag = ende > heute ? heute : ende;
+    const preise = [];
+    let neu = 0, weg = 0;
+    mit.forEach((x) => {
+      if (x.beginn >= w && x.beginn <= stichtag) neu++;
+      if (x.ende && x.ende >= w && x.ende <= stichtag) weg++;
+      // Am Stichtag noch im Markt und schon beobachtet?
+      if (x.beginn > stichtag) return;
+      if (x.ende && x.ende < w) return;
+      const preis = preisAm(x.stufen, stichtag);
+      if (preis != null) preise.push(preis);
+    });
+    preise.sort((a, b) => a - b);
+    wochen.push({
+      woche: w, bis: stichtag, laeuft: ende > heute,
+      anzahl: preise.length, neu, weg, oi: preise.length,
+      p10: perzentil(preise, 0.1), p25: perzentil(preise, 0.25),
+      p50: perzentil(preise, 0.5), p75: perzentil(preise, 0.75),
+      p90: perzentil(preise, 0.9),
+      spanneMin: preise[0] ?? null, spanneMax: preise[preise.length - 1] ?? null,
+    });
+  }
+  // Richtung: Median gegen die Vorwoche. Die erste Kerze hat keine Vorwoche.
+  wochen.forEach((k, i) => {
+    const vor = i > 0 ? wochen[i - 1].p50 : null;
+    k.vorher = vor;
+    k.delta = vor != null && k.p50 != null ? k.p50 - vor : null;
+    k.richtung = k.delta == null ? "neutral" : k.delta < 0 ? "runter" : k.delta > 0 ? "rauf" : "neutral";
+  });
+  const gefuellt = wochen.filter((k) => k.anzahl > 0);
+  const letzte = gefuellt[gefuellt.length - 1] || null;
+  const vorletzte = gefuellt[gefuellt.length - 2] || null;
+  return {
+    wochen, anzahl: mit.length,
+    gefuellte: gefuellt.length,
+    maxVolumen: Math.max(1, ...wochen.map((k) => Math.max(k.neu, k.weg))),
+    maxOi: Math.max(1, ...wochen.map((k) => k.oi)),
+    letzte, vorletzte,
+    // Wie breit ist der Markt gerade? Der Körper in Prozent des Medians.
+    spreizung: letzte && letzte.p50 ? ((letzte.p75 - letzte.p25) / letzte.p50) * 100 : null,
+    trend: letzte && vorletzte && vorletzte.p50 ? ((letzte.p50 - vorletzte.p50) / vorletzte.p50) * 100 : null,
+    zuflussGesamt: wochen.reduce((n, k) => n + k.neu, 0),
+    abflussGesamt: wochen.reduce((n, k) => n + k.weg, 0),
+  };
+}
+
+/* ------------- Absorptionsprofil: Volumenprofil auf Preisbänder --------
+   Das Volumenprofil der Börse trägt waagerecht auf, wie viel bei welchem
+   Preis gehandelt wurde. Hier gibt es zwei Seiten, und das ist mehr, als
+   die Börse hergibt: links das ANGEBOT — wie viele Tage stand Ware zu
+   diesem Preis —, rechts die ABGÄNGE — bei welchem Preis sie verschwand.
+   Das Band mit den meisten Abgängen ist der Point of Control: der Bereich,
+   in dem dieser Markt tatsächlich absorbiert. Die Value Area sind die
+   Bänder, die zusammen 70 % der Abgänge tragen. Und wo viel Angebotszeit
+   auf wenig Abgang trifft, steht Ware, die niemand nimmt. */
+function absorptionsprofil(fahrzeuge, wunschBaender = 12) {
+  const daten = fahrzeuge
+    .map((v) => ({ v, stufen: preisStufen(v) }))
+    .filter((x) => x.stufen.length);
+  const allePreise = daten.flatMap((x) => x.stufen.map((s) => s.preis));
+  if (allePreise.length < 3) return { zuWenig: true, anzahl: daten.length, baender: [] };
+
+  const min = Math.min(...allePreise), max = Math.max(...allePreise);
+  // Bandbreite auf eine runde Zahl bringen — 500er und 1000er lesen sich.
+  const roh = (max - min) / wunschBaender || 1;
+  const groesse = Math.pow(10, Math.floor(Math.log10(roh)));
+  const breite = [1, 2, 2.5, 5, 10].map((f) => f * groesse).find((x) => x >= roh) || groesse * 10;
+  const von = Math.floor(min / breite) * breite;
+  const bis = Math.ceil((max + 1e-6) / breite) * breite;
+
+  const baender = [];
+  for (let g = von; g < bis - breite * 1e-6; g += breite) {
+    baender.push({ von: g, bis: g + breite, tage: 0, inserate: new Set(), abgaenge: 0, wegListe: [], offen: 0 });
+  }
+  const bandFuer = (preis) => {
+    const i = Math.min(baender.length - 1, Math.max(0, Math.floor((preis - von) / breite)));
+    return baender[i];
+  };
+
+  daten.forEach(({ v, stufen }) => {
+    stufen.forEach((st) => {
+      const b = bandFuer(st.preis);
+      // Eine Stufe, die noch keinen Tag alt ist, zählt trotzdem als ein Tag
+      // im Markt — sonst verschwände jedes frische Inserat aus dem Profil.
+      b.tage += Math.max(1, st.tage || 0);
+      b.inserate.add(v.id);
+    });
+    const letzte = stufen[stufen.length - 1];
+    const b = bandFuer(letzte.preis);
+    if (echterAbgang(v)) {
+      b.abgaenge++;
+      b.wegListe.push({ id: v.id, title: v.title, preis: letzte.preis,
+        tage: laufzeitTage(v), url: v.url });
+    } else if (!verschwundenAm(v)) {
+      b.offen++;
+    }
+  });
+  baender.forEach((b) => { b.anzahl = b.inserate.size; delete b.inserate; });
+
+  const abgaengeGesamt = baender.reduce((n, b) => n + b.abgaenge, 0);
+  const tageGesamt = baender.reduce((n, b) => n + b.tage, 0);
+
+  /* Point of Control: das Band mit den meisten Abgängen. Gibt es noch
+     keine, tritt das Band mit der meisten Angebotszeit an seine Stelle —
+     dann ist es kein Absorptions-, sondern ein Angebotsschwerpunkt, und
+     die Oberfläche sagt das auch so. */
+  let poc = null, pocQuelle = "abgang";
+  if (abgaengeGesamt > 0) {
+    poc = baender.reduce((a, b) => (b.abgaenge > a.abgaenge
+      || (b.abgaenge === a.abgaenge && b.tage > a.tage) ? b : a), baender[0]);
+  } else {
+    pocQuelle = "angebot";
+    poc = baender.reduce((a, b) => (b.tage > a.tage ? b : a), baender[0]);
+  }
+
+  /* Value Area nach dem Verfahren des Market Profile: vom Schwerpunkt aus
+     immer die stärkere der beiden Nachbarseiten dazunehmen, bis 70 % der
+     Abgänge beisammen sind. */
+  const werte = baender.map((b) => (abgaengeGesamt > 0 ? b.abgaenge : b.tage));
+  const gesamt = werte.reduce((a, b) => a + b, 0);
+  const mitte = baender.indexOf(poc);
+  let unten = mitte, oben = mitte, summe = werte[mitte] || 0;
+  while (gesamt > 0 && summe / gesamt < 0.7 && (unten > 0 || oben < baender.length - 1)) {
+    const links = unten > 0 ? werte[unten - 1] : -1;
+    const rechts = oben < baender.length - 1 ? werte[oben + 1] : -1;
+    if (rechts >= links) { oben++; summe += Math.max(0, rechts); }
+    else { unten--; summe += Math.max(0, links); }
+  }
+  baender.forEach((b, i) => { b.imWert = i >= unten && i <= oben; b.istPoc = b === poc; });
+
+  /* Der Stau: viel Angebotszeit, kaum Abgang. Das ist die Zone, in der
+     Verkäufer stehen und warten — dort kauft man nicht ein, und dorthin
+     stellt man auch nichts hinein. */
+  const kandidaten = baender.filter((b) => b.tage >= (tageGesamt / Math.max(1, baender.length)) * 0.8);
+  const stau = kandidaten.length
+    ? kandidaten.reduce((a, b) => (b.tage / (b.abgaenge + 1) > a.tage / (a.abgaenge + 1) ? b : a), kandidaten[0])
+    : null;
+
+  return {
+    baender, breite, poc, pocQuelle, stau,
+    valueVon: baender[unten].von, valueBis: baender[oben].bis,
+    valueAnteil: gesamt > 0 ? summe / gesamt : 0,
+    abgaengeGesamt, tageGesamt,
+    anzahl: daten.length,
+    maxTage: Math.max(1, ...baender.map((b) => b.tage)),
+    maxAbgaenge: Math.max(1, ...baender.map((b) => b.abgaenge)),
+    /* Wie eng absorbiert der Markt? Die Value Area in Prozent ihres
+       Mittelpunkts — eine schmale Zone heißt: klarer Preis. */
+    zonenBreite: (baender[unten].von + baender[oben].bis) / 2 > 0
+      ? ((baender[oben].bis - baender[unten].von) / ((baender[unten].von + baender[oben].bis) / 2)) * 100 : null,
+  };
+}
+
+/* ------------------- Das Tape: Time & Sales ----------------------
+   Ein Händler an der Börse liest das Tape: jeder Abschluss eine Zeile,
+   Preis, Größe, Richtung. Hier ist ein Abschluss ein Inserat, das
+   verschwindet. Interessant ist nicht sein Preis — der hängt vom Auto ab
+   —, sondern sein ABSTAND ZUM MARKT in der Woche, in der er wegging.
+   Wandert diese Wolke nach unten, muss man inzwischen mehr nachlassen,
+   um wegzukommen. Das sieht man Wochen bevor es der Median zeigt. */
+function abgangsTape(fahrzeuge, kerzen, fenster = 5) {
+  const median = {};
+  (kerzen?.wochen || []).forEach((k) => { if (k.p50 != null) median[k.woche] = k.p50; });
+  const alleMedian = Object.values(median);
+  const rueckfall = alleMedian.length
+    ? perzentil(alleMedian.slice().sort((a, b) => a - b), 0.5) : null;
+
+  const abgaenge = fahrzeuge
+    .filter((v) => echterAbgang(v))
+    .map((v) => {
+      const stufen = preisStufen(v);
+      const letzte = stufen[stufen.length - 1];
+      const weg = verschwundenAm(v);
+      if (!letzte || !weg) return null;
+      const bezug = median[MONTAG(weg)] ?? rueckfall;
+      if (bezug == null || !bezug) return null;
+      const erste = stufen[0];
+      return {
+        id: v.id, title: v.title, url: v.url,
+        datum: weg, preis: letzte.preis, markt: bezug,
+        abweichung: ((letzte.preis - bezug) / bezug) * 100,
+        tage: laufzeitTage(v),
+        haendler: v.sellerType === "Händler",
+        km: v.mileage,
+        nachlass: erste && erste.preis ? ((letzte.preis - erste.preis) / erste.preis) * 100 : null,
+        stufen: Math.max(0, stufen.length - 1),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.datum.localeCompare(b.datum));
+
+  if (!abgaenge.length) return { leer: true, abgaenge: [] };
+
+  // Waagerecht wird in Tagen seit dem ersten Abgang gerechnet.
+  const basis = abgaenge[0].datum;
+  abgaenge.forEach((a) => { a.x = tageZwischen(basis, a.datum) ?? 0; });
+  /* Der gleitende Mittelwert über die letzten Abschlüsse — an der Börse
+     die Linie, an der man abliest, wohin der Markt kippt. */
+  const linie = abgaenge.map((a, i) => {
+    const teil = abgaenge.slice(Math.max(0, i - fenster + 1), i + 1);
+    return { x: a.x, datum: a.datum, y: teil.reduce((n, x) => n + x.abweichung, 0) / teil.length };
+  });
+
+  const werte = abgaenge.map((a) => a.abweichung).sort((x, y) => x - y);
+  const letzten = abgaenge.slice(-fenster);
+  const davor = abgaenge.slice(-fenster * 2, -fenster);
+  const mittel = (liste) => (liste.length
+    ? liste.reduce((n, x) => n + x.abweichung, 0) / liste.length : null);
+  const standzeiten = abgaenge.map((a) => a.tage).filter((t) => t != null).sort((x, y) => x - y);
+
+  return {
+    leer: false, abgaenge, linie, basis,
+    anzahl: abgaenge.length,
+    medianAbweichung: perzentil(werte, 0.5),
+    zuletzt: mittel(letzten), davor: mittel(davor),
+    veraenderung: mittel(letzten) != null && mittel(davor) != null
+      ? mittel(letzten) - mittel(davor) : null,
+    medianStandzeit: standzeiten.length ? perzentil(standzeiten, 0.5) : null,
+    anteilHaendler: abgaenge.filter((a) => a.haendler).length / abgaenge.length,
+    unterMarkt: abgaenge.filter((a) => a.abweichung < 0).length,
+    fenster,
+  };
+}
+
 function tracking(v) {
   const stufen = preisStufen(v);
   const weg = verschwundenAm(v);
@@ -894,6 +1175,9 @@ const COLORS = [
   "#00796F", "#0E9F6E", "#2274A5", "#D2544A", "#8B5CF6",
   "#0EA5A5", "#E07A28", "#C2418A", "#4D8B1F", "#3B6FD4",
 ];
+/* Das Blau der Palette hat eine eigene Aufgabe: Es steht überall dort für
+   den Zufluss, wo Grün schon den Abgang bedeutet. */
+const BLAU = "#2274A5";
 
 /* Helles Mint statt Nacht. Der Akzent ist bewusst das dunklere Teal und
    nicht das frische Mint: Er trägt an vielen Stellen weiße Schrift, und
@@ -2294,6 +2578,14 @@ export default function App() {
      Gezeigt wird ausdrücklich der Preis bei der ERSTEN Erfassung — das ist
      der Preis, den man beim Fund im Netz gesehen hat. Spätere Senkungen
      stecken im Verlauf, nicht in diesem Bild. */
+  /* Die Börsenansicht: eine Kerze je Woche aus der Verteilung der Asks,
+     darunter Zu- und Abgänge als Volumen und der Bestand als Linie. */
+  const kerzen = useMemo(() => marktkerzen(auswahl), [auswahl]);
+  // Volumenprofil auf Preisbänder: wo steht Ware, und wo geht sie weg.
+  const profil = useMemo(() => absorptionsprofil(auswahl), [auswahl]);
+  // Das Tape: jeder Abgang ein Abschluss, gemessen am Markt seiner Woche.
+  const tape = useMemo(() => abgangsTape(auswahl, kerzen), [auswahl, kerzen]);
+
   const uebersicht = useMemo(() => {
     const punkte = auswahl.map((v) => {
       const t = tracking(v);
@@ -3711,6 +4003,73 @@ export default function App() {
 
       {tab === "uebersicht" && (
       <section style={S.panel}>
+        <div style={S.panelTitle}><CandlestickChart size={15} /> Marktkerzen</div>
+        <p style={S.hint}>
+          Eine Kerze je Woche — aber nicht der Weg eines Kurses, den es hier nicht gibt, sondern die
+          <b style={{ color: T.text }}> Verteilung aller Preise</b>, die in dieser Woche verlangt wurden.
+          Der Körper reicht vom 25. zum 75. Perzentil, die Dochte bis zum 10. und 90., der Strich ist der Median.
+          <b style={{ color: T.good }}> Grün</b> heißt: Der Median ist gegenüber der Vorwoche gefallen — für dich
+          als Käufer die gute Richtung. Ein langer unterer Docht ist das Interessante: Dort bietet jemand
+          deutlich unter Markt an.
+        </p>
+        <p style={S.hint}>
+          Unten das <b style={{ color: T.text }}>Volumen</b>: links je Woche die Zugänge, rechts die Abgänge.
+          Die Linie darüber ist der Bestand — an der Börse das Open Interest. Steigt der Bestand, während wenig
+          weggeht, staut sich Ware: der Moment, in dem Verkäufer weich werden.
+        </p>
+
+        {kerzen.anzahl < 3 || kerzen.gefuellte < 2 ? (
+          <div style={S.empty}>
+            <CandlestickChart size={30} color={T.line} />
+            <span>
+              {kerzen.anzahl === 0
+                ? "Noch keine Fahrzeuge mit Preis erfasst."
+                : kerzen.anzahl < 3
+                  ? `Eine Verteilung braucht mindestens drei Fahrzeuge mit Preis — es sind erst ${kerzen.anzahl}.`
+                  : "Für Kerzen braucht es mindestens zwei Wochen Beobachtung — bisher ist es erst eine."}
+            </span>
+          </div>
+        ) : (
+          <>
+            <div style={S.zahlenreihe}>
+              <Zahlenfeld label="Median" wert={fmtEUR(kerzen.letzte?.p50)}
+                zusatz={`aus ${kerzen.letzte?.anzahl || 0} laufenden Inseraten`} />
+              <Zahlenfeld label="Woche" accent
+                wert={kerzen.trend == null ? "—"
+                  : `${kerzen.trend > 0 ? "+" : "−"}${Math.abs(kerzen.trend).toFixed(1).replace(".", ",")} %`}
+                zusatz="Median gegen die Vorwoche" />
+              <Zahlenfeld label="Spreizung"
+                wert={kerzen.spreizung == null ? "—" : `${kerzen.spreizung.toFixed(0)} %`}
+                zusatz="Breite des Körpers — so uneinig ist der Markt" />
+              <Zahlenfeld label="Umschlag"
+                wert={`${kerzen.zuflussGesamt} / ${kerzen.abflussGesamt}`}
+                zusatz="dazugekommen / verschwunden" />
+            </div>
+
+            <Kerzenfeld wochen={kerzen.wochen} maxVolumen={kerzen.maxVolumen} maxOi={kerzen.maxOi}
+              yFormat={(v) => fmtNum(Math.round(v / 100) * 100)}
+              karte={(k) => <Kerzenkarte k={k} />} />
+
+            <div style={S.feldLegende}>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.good }} /> Median gefallen</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.bad }} /> Median gestiegen</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: BLAU, opacity: 0.6 }} /> Zugänge</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.good, opacity: 0.75 }} /> Abgänge</span>
+              <span style={S.legendeEintrag}><span style={S.legendeBestand} /> Bestand (Open Interest)</span>
+            </div>
+            <p style={S.hint}>
+              Zwei Dinge, die die Kerze nicht sagen kann: Eine Woche mit wenigen Inseraten hat einen breiten
+              Körper, weil die Stichprobe klein ist — nicht, weil der Markt unsicher wäre. Und die Zugänge
+              zählen den Tag, an dem <b style={{ color: T.text }}>du</b> ein Inserat aufgenommen hast; erfasst du
+              zehn Wagen an einem Abend, steht dort ein Balken, den der Markt so nie gesehen hat.
+            </p>
+          </>
+        )}
+      </section>
+      )}
+
+      {tab === "uebersicht" && (
+      <section style={S.panel}>
         <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
           <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <TrendingDown size={15} /> Was wird verlangt
@@ -4351,6 +4710,163 @@ export default function App() {
               der Abgang ist also eher zu hoch als zu niedrig. Und ein Inserat, das erst seit drei Tagen liegt,
               hatte noch keine Gelegenheit wegzugehen: frische Ware drückt den Abgang einer Stufe nach unten,
               ohne dass der Preis daran schuld wäre. Beides wird sauberer, je länger du verfolgst.
+            </div>
+          </>
+        )}
+      </section>
+      )}
+
+      {tab === "uebersicht" && (
+      <section style={S.panel}>
+        <div style={S.panelTitle}><Activity size={15} /> Das Tape · Abgänge nach Abstand zum Markt</div>
+        <p style={S.hint}>
+          An der Börse liest man das Tape: jeder Abschluss eine Zeile. Hier ist ein Abschluss ein Inserat,
+          das verschwindet. Nicht sein Preis ist interessant — der hängt am Auto —, sondern sein
+          <b style={{ color: T.text }}> Abstand zum Markt</b> in der Woche, in der es wegging. Die Nulllinie
+          ist der Median dieser Woche; darunter ging es günstiger weg als der Markt, darüber teurer.
+        </p>
+        <p style={S.hint}>
+          Große Punkte sind lange Standzeiten. Die Linie ist der Mittelwert der letzten
+          {" "}{tape.fenster || 5} Abgänge: <b style={{ color: T.text }}>wandert sie nach unten, muss man
+          inzwischen mehr nachlassen, um wegzukommen</b> — das sieht man hier Wochen bevor der Median es zeigt.
+        </p>
+
+        {tape.leer || tape.anzahl < 2 ? (
+          <div style={S.empty}>
+            <Activity size={30} color={T.line} />
+            <span>
+              {tape.anzahl === 1
+                ? "Erst ein Abgang — das Tape braucht mindestens zwei."
+                : "Noch ist kein Inserat verschwunden. Sobald das erste weg ist, läuft das Tape."}
+            </span>
+          </div>
+        ) : (
+          <>
+            <div style={S.zahlenreihe}>
+              <Zahlenfeld label="Abschluss-Abstand" accent
+                wert={tape.medianAbweichung == null ? "—"
+                  : `${tape.medianAbweichung > 0 ? "+" : "−"}${Math.abs(tape.medianAbweichung).toFixed(1).replace(".", ",")} %`}
+                zusatz={`Median aus ${tape.anzahl} Abgängen`} />
+              <Zahlenfeld label={`Letzte ${Math.min(tape.fenster, tape.anzahl)}`}
+                wert={tape.zuletzt == null ? "—"
+                  : `${tape.zuletzt > 0 ? "+" : "−"}${Math.abs(tape.zuletzt).toFixed(1).replace(".", ",")} %`}
+                zusatz={tape.veraenderung == null ? "noch kein Vergleich"
+                  : tape.veraenderung < 0
+                    ? `${Math.abs(tape.veraenderung).toFixed(1).replace(".", ",")} Punkte tiefer als davor`
+                    : `${tape.veraenderung.toFixed(1).replace(".", ",")} Punkte höher als davor`} />
+              <Zahlenfeld label="Unter Markt"
+                wert={`${tape.unterMarkt} von ${tape.anzahl}`}
+                zusatz="so viele gingen billiger weg als der Median" />
+              <Zahlenfeld label="Standzeit"
+                wert={tape.medianStandzeit == null ? "—" : laufzeitText(Math.round(tape.medianStandzeit))}
+                zusatz={`${Math.round(tape.anteilHaendler * 100)} % davon Händler`} />
+            </div>
+
+            <Punktfeld
+              punkte={tape.abgaenge.map((a) => ({
+                id: a.id, x: a.x, y: a.abweichung,
+                farbe: a.haendler ? BLAU : T.accent,
+                // Die Standzeit steckt im Radius: lange Läufer sind die dicken Punkte.
+                groesse: 4 + Math.min(7, Math.sqrt(Math.max(0, a.tage || 0)) * 0.7),
+                daten: a,
+              }))}
+              hoehe={340}
+              linien={[{ y: 0, farbe: T.muted, label: "Marktmedian der Woche" }]}
+              kurve={tape.linie}
+              yFormat={(v) => `${v > 0 ? "+" : ""}${Math.round(v)} %`}
+              xFormat={(v) => fmtDate(tageSpaeter(tape.basis, Math.round(v))).slice(0, 6)}
+              xTitel="Tag des Verschwindens"
+              yTitel="Abstand zum Markt"
+              karte={(a) => <Tapekarte a={a} />}
+              aufKlick={(p) => { if (p.daten.url) window.open(normalizeUrl(p.daten.url), "_blank", "noreferrer"); }}
+              leer="Noch keine Abgänge." />
+
+            <div style={S.feldLegende}>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.accent }} /> Privat</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: BLAU }} /> Händler</span>
+              <span style={S.legendeEintrag}>großer Punkt = lange Standzeit</span>
+              <span style={S.legendeEintrag}><span style={S.legendeKurve} /> Mittel der letzten {tape.fenster}</span>
+            </div>
+            <p style={S.hint}>
+              Was das Tape nicht weiß: ob wirklich verkauft wurde und zu welchem Preis. Es misst den letzten
+              geforderten Preis, nicht den bezahlten — der liegt erfahrungsgemäß noch einmal darunter. Ein Punkt
+              weit oben heißt deshalb nicht „teuer verkauft", sondern „ohne Nachlass verschwunden": zurückgezogen,
+              privat weggegeben oder eingetauscht.
+            </p>
+          </>
+        )}
+      </section>
+      )}
+
+      {tab === "uebersicht" && (
+      <section style={S.panel}>
+        <div style={S.panelTitle}><BarChartHorizontal size={15} /> Absorptionsprofil</div>
+        <p style={S.hint}>
+          Das Volumenprofil der Börse, auf diesen Markt übertragen: Preis senkrecht, Menge waagerecht.
+          Nach links die <b style={{ color: T.text }}>Angebotszeit</b> — wie viele Tage insgesamt Ware zu diesem
+          Preis im Markt stand. Nach rechts die <b style={{ color: T.good }}>Abgänge</b> — bei welchem Preis
+          Inserate verschwunden sind. Anders als an der Börse siehst du beide Seiten getrennt: das, was gehandelt
+          wurde, und das, was nur herumstand.
+        </p>
+
+        {profil.zuWenig ? (
+          <div style={S.empty}>
+            <BarChartHorizontal size={30} color={T.line} />
+            <span>Für ein Profil braucht es mindestens drei Fahrzeuge mit Preis — es sind erst {profil.anzahl}.</span>
+          </div>
+        ) : (
+          <>
+            <div style={S.zahlenreihe}>
+              <Zahlenfeld label={profil.pocQuelle === "abgang" ? "Point of Control" : "Schwerpunkt"} accent
+                wert={`${fmtNum(profil.poc.von)}–${fmtNum(profil.poc.bis)}`}
+                zusatz={profil.pocQuelle === "abgang"
+                  ? `hier ging am meisten weg · ${profil.poc.abgaenge}×`
+                  : "noch kein Abgang — das ist der Angebotsschwerpunkt"} />
+              <Zahlenfeld label="Value Area"
+                wert={`${fmtNum(profil.valueVon)}–${fmtNum(profil.valueBis)}`}
+                zusatz={`${Math.round(profil.valueAnteil * 100)} % ${profil.pocQuelle === "abgang" ? "aller Abgänge" : "der Angebotszeit"}`} />
+              <Zahlenfeld label="Zonenbreite"
+                wert={profil.zonenBreite == null ? "—" : `${profil.zonenBreite.toFixed(0)} %`}
+                zusatz="schmal heißt: klarer Preis" />
+              <Zahlenfeld label="Stau"
+                wert={profil.stau ? `${fmtNum(profil.stau.von)}–${fmtNum(profil.stau.bis)}` : "—"}
+                zusatz={profil.stau
+                  ? `${fmtNum(profil.stau.tage)} Angebotstage · ${profil.stau.abgaenge} weg`
+                  : "kein auffälliges Band"} />
+            </div>
+
+            <Profilfeld profil={profil} karte={(b) => <Profilkarte b={b} profil={profil} />} />
+
+            <div style={S.feldLegende}>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.muted, opacity: 0.4 }} /> Angebotstage</span>
+              <span style={S.legendeEintrag}><span style={{ ...S.legendePunkt, background: T.good, opacity: 0.7 }} /> Abgänge</span>
+              <span style={S.legendeEintrag}><span style={S.legendeBand} /> Value Area · 70 %</span>
+              <span style={S.legendeEintrag}><b style={{ color: T.accent }}>POC</b> · dort geht am meisten weg</span>
+              <span style={S.legendeEintrag}><b style={{ color: T.bad }}>STAU</b> · dort geht am wenigsten weg</span>
+            </div>
+
+            <div style={S.laufSummary}>
+              {profil.pocQuelle === "abgang" ? (
+                <>
+                  Lies es so: Zwischen <b style={{ color: T.text }}>{fmtNum(profil.valueVon)}</b> und{" "}
+                  <b style={{ color: T.text }}>{fmtNum(profil.valueBis)} €</b> spielt dieser Markt —
+                  dort sind {Math.round(profil.valueAnteil * 100)} % aller Abgänge passiert. Ein Inserat darüber
+                  muss erst in diese Zone fallen, bevor überhaupt etwas geschieht.
+                  {profil.stau && !profil.stau.istPoc && (
+                    <> Im Band um <b style={{ color: T.bad }}>{fmtNum(profil.stau.von)}–{fmtNum(profil.stau.bis)} €</b>{" "}
+                      steht dagegen viel und geht wenig: {fmtNum(profil.stau.tage)} Angebotstage bei{" "}
+                      {profil.stau.abgaenge} {profil.stau.abgaenge === 1 ? "Abgang" : "Abgängen"}. Dort kauft man
+                      nicht ein, und dorthin stellt man auch nichts hinein.</>
+                  )}
+                </>
+              ) : (
+                <>Noch ist kein Inserat verschwunden — die rechte Seite bleibt leer. Was du siehst, ist bisher nur,
+                  wo sich das Angebot ballt. Sobald die ersten Abgänge da sind, wird daraus der Bereich, in dem
+                  dieser Markt wirklich absorbiert.</>
+              )}
+              {" "}Die Angebotszeit zählt Tage, nicht Fahrzeuge: Ein Wagen, der drei Monate zum selben Preis
+              steht, wiegt hier schwerer als drei, die nach einer Woche weg waren — genau wie an der Börse,
+              wo ein Preis erst durch Verweildauer zur Marke wird.
             </div>
           </>
         )}
@@ -5546,7 +6062,9 @@ function Punktfeld({ punkte, hoehe = 330, yFormat, xFormat, xTitel, yTitel,
 
           {/* Punkte */}
           {gelegt.map((p) => (
-            <circle key={p.id} cx={p.cx} cy={p.cy} r={aktiv && aktiv.id === p.id ? 7.5 : 5}
+            /* Ein Punkt darf eine eigene Größe mitbringen — im Tape steht
+               sie für die Standzeit, sonst bleibt es bei der Grundgröße. */
+            <circle key={p.id} cx={p.cx} cy={p.cy} r={(p.groesse || 5) + (aktiv && aktiv.id === p.id ? 2.5 : 0)}
               fill={p.offen ? T.bg : p.farbe} stroke={p.farbe}
               strokeWidth={p.offen ? 2 : 0} fillOpacity={p.offen ? 1 : 0.9} />
           ))}
@@ -5787,6 +6305,397 @@ function Linienfeld({ reihen, hoehe = 360, yFormat, xFormat, xTitel, yTitel,
 }
 
 // Die Karte am Preisverlauf: was diese Linie an dieser Stelle zeigt.
+/* Kerzenfeld — die Börsenansicht des Marktes.
+   Oben die Wochenkerzen aus der Verteilung der Asks, unten das Volumen
+   (Zugänge und Abgänge) und darüber als Linie der Bestand, was an der
+   Börse das Open Interest wäre. Alles teilt sich eine Zeitachse. */
+function Kerzenfeld({ wochen, maxVolumen, maxOi, hoehe = 420, yFormat, karte, leer }) {
+  const S = styles;
+  const huelle = useRef(null);
+  const breite = useBreite(huelle);
+  const [aktiv, setAktiv] = useState(null);
+
+  const rand = { links: 64, rechts: 16, oben: 14, unten: 46 };
+  const B = Math.max(240, breite);
+  const zeichenB = Math.max(60, B - rand.links - rand.rechts);
+  const zeichenH = Math.max(80, hoehe - rand.oben - rand.unten);
+  // Zwei Stockwerke mit einer Fuge: Kerzen oben, Volumen unten.
+  const kerzenH = Math.round(zeichenH * 0.66);
+  const volTop = rand.oben + kerzenH + 22;
+  const volH = Math.max(30, hoehe - rand.unten - volTop);
+
+  const mitPreis = wochen.filter((k) => k.anzahl > 0);
+  if (!wochen.length || !mitPreis.length) return <div style={S.leerFeld}>{leer || "Keine Daten."}</div>;
+
+  const werte = mitPreis.flatMap((k) => [k.p10, k.p90]).filter((x) => x != null);
+  let yMin = Math.min(...werte), yMax = Math.max(...werte);
+  const luft = (yMax - yMin) * 0.1 || Math.max(1, yMax * 0.04);
+  yMin -= luft; yMax += luft;
+
+  const n = wochen.length;
+  const schritt = zeichenB / n;
+  const kerzeB = Math.max(3, Math.min(26, schritt * 0.62));
+  const cx = (i) => rand.links + schritt * (i + 0.5);
+  const py = (y) => rand.oben + kerzenH - ((y - yMin) / (yMax - yMin)) * kerzenH;
+  const volY = (v) => volTop + volH - (v / maxVolumen) * volH;
+  const oiY = (v) => volTop + volH - (v / maxOi) * volH;
+
+  const ausEreignis = (e) => {
+    const kasten = e.currentTarget.getBoundingClientRect();
+    const punkt = e.touches?.[0] || e.changedTouches?.[0] || e;
+    const i = Math.round(((punkt.clientX - kasten.left) - rand.links) / schritt - 0.5);
+    return wochen[Math.max(0, Math.min(n - 1, i))] || null;
+  };
+
+  const yTicks = achsenSchritte(yMin, yMax, 5);
+  // Nur so viele Datumsangaben, wie nebeneinander lesbar sind.
+  const jede = Math.max(1, Math.ceil(n / (B > 620 ? 7 : 4)));
+  const farbe = (k) => (k.richtung === "runter" ? T.good : k.richtung === "rauf" ? T.bad : T.muted);
+  const oiPfad = wochen.map((k, i) => `${i ? "L" : "M"}${cx(i).toFixed(1)},${oiY(k.oi).toFixed(1)}`).join("");
+  const aktivIndex = aktiv ? wochen.indexOf(aktiv) : -1;
+
+  return (
+    <div ref={huelle} style={{ ...S.feldHuelle, height: hoehe }}>
+      {breite > 0 && (
+        <svg className="pw-feld" width={B} height={hoehe} style={{ display: "block", touchAction: "pan-y" }}
+          onMouseMove={(e) => setAktiv(ausEreignis(e))}
+          onMouseLeave={() => setAktiv(null)}
+          onTouchStart={(e) => setAktiv(ausEreignis(e))}
+          onTouchMove={(e) => setAktiv(ausEreignis(e))}>
+
+          {yTicks.map((w) => (
+            <g key={w}>
+              <line x1={rand.links} x2={rand.links + zeichenB} y1={py(w)} y2={py(w)}
+                stroke={T.line} strokeDasharray="2 4" />
+              <text x={rand.links - 8} y={py(w) + 3.5} textAnchor="end" fontSize="10.5" fill={T.muted}
+                fontFamily="ui-monospace, Menlo, monospace">{yFormat ? yFormat(w) : w}</text>
+            </g>
+          ))}
+
+          {aktivIndex >= 0 && (
+            <rect x={cx(aktivIndex) - schritt / 2} y={rand.oben} width={schritt} height={hoehe - rand.unten - rand.oben}
+              fill={T.accent} fillOpacity={0.07} />
+          )}
+
+          {/* Die Kerzen: Docht 10–90 %, Körper 25–75 %, Strich der Median */}
+          {wochen.map((k, i) => {
+            if (!k.anzahl) return null;
+            const f = farbe(k);
+            const koerperOben = py(k.p75), koerperUnten = py(k.p25);
+            const h = Math.max(2, koerperUnten - koerperOben);
+            return (
+              <g key={k.woche}>
+                <line x1={cx(i)} x2={cx(i)} y1={py(k.p90)} y2={py(k.p10)} stroke={f} strokeWidth={1.4} />
+                <rect x={cx(i) - kerzeB / 2} y={koerperOben} width={kerzeB} height={h}
+                  fill={f} fillOpacity={k.richtung === "runter" ? 0.75 : 0.28} stroke={f} strokeWidth={1.2}
+                  rx={1.5} />
+                <line x1={cx(i) - kerzeB / 2} x2={cx(i) + kerzeB / 2} y1={py(k.p50)} y2={py(k.p50)}
+                  stroke={f} strokeWidth={2} />
+              </g>
+            );
+          })}
+
+          {/* Volumen: Zugänge und Abgänge nebeneinander, Bestand als Linie */}
+          <line x1={rand.links} x2={rand.links + zeichenB} y1={volTop + volH} y2={volTop + volH} stroke={T.line} />
+          {wochen.map((k, i) => {
+            const b = Math.max(2, kerzeB / 2 - 1);
+            return (
+              <g key={`v${k.woche}`}>
+                {k.neu > 0 && (
+                  <rect x={cx(i) - b - 1} y={volY(k.neu)} width={b} height={volTop + volH - volY(k.neu)}
+                    fill={BLAU} fillOpacity={0.6} />
+                )}
+                {k.weg > 0 && (
+                  <rect x={cx(i) + 1} y={volY(k.weg)} width={b} height={volTop + volH - volY(k.weg)}
+                    fill={T.good} fillOpacity={0.75} />
+                )}
+              </g>
+            );
+          })}
+          <path d={oiPfad} fill="none" stroke={T.text} strokeWidth={1.6} strokeOpacity={0.55} />
+
+          <text x={rand.links} y={volTop - 7} fontSize="9.5" fill={T.muted}>
+            Volumen: Zugang · Abgang — Linie: laufende Inserate
+          </text>
+
+          {wochen.map((k, i) => (i % jede === 0 ? (
+            <text key={`t${k.woche}`} x={cx(i)} y={hoehe - rand.unten + 30} textAnchor="middle"
+              fontSize="10" fill={T.muted} fontFamily="ui-monospace, Menlo, monospace">
+              {fmtDate(k.woche).slice(0, 6)}
+            </text>
+          ) : null))}
+        </svg>
+      )}
+      {aktiv && karte && (
+        <div className="pw-punktkarte" style={{
+          ...S.feldKarte, top: 8,
+          ...(aktivIndex > n * 0.55 ? { left: 8 } : { right: 8 }),
+        }}>
+          {karte(aktiv)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Profilfeld — das Volumenprofil, um 90 Grad gedreht wie an der Börse:
+   Preis senkrecht, Menge waagerecht. Links die Angebotszeit, rechts die
+   Abgänge, dazwischen die Preisachse. Die Value Area liegt als Fläche
+   dahinter, der Point of Control als kräftige Marke. */
+function Profilfeld({ profil, hoehe = 420, karte, leer }) {
+  const S = styles;
+  const huelle = useRef(null);
+  const breite = useBreite(huelle);
+  const [aktiv, setAktiv] = useState(null);
+
+  const rand = { links: 70, rechts: 14, oben: 22, unten: 26 };
+  const B = Math.max(240, breite);
+  const zeichenB = Math.max(60, B - rand.links - rand.rechts);
+  const zeichenH = Math.max(80, hoehe - rand.oben - rand.unten);
+
+  const baender = profil?.baender || [];
+  if (!baender.length) return <div style={S.leerFeld}>{leer || "Keine Daten."}</div>;
+
+  // Von oben nach unten: teure Bänder oben, wie auf jeder Kursachse.
+  const reihen = baender.slice().reverse();
+  const bandH = zeichenH / reihen.length;
+  const balkenH = Math.max(3, bandH - Math.min(6, bandH * 0.25));
+  const mitte = rand.links + zeichenB * 0.5;
+  /* Die Balken enden vor dem Rand: außen stehen POC und STAU, und ein
+     Balken, der bis an die Kante läuft, überschriebe sie. */
+  const halb = (zeichenB * 0.5 - 8) * 0.84;
+  const by = (i) => rand.oben + i * bandH;
+
+  const ausEreignis = (e) => {
+    const kasten = e.currentTarget.getBoundingClientRect();
+    const punkt = e.touches?.[0] || e.changedTouches?.[0] || e;
+    const i = Math.floor(((punkt.clientY - kasten.top) - rand.oben) / bandH);
+    return reihen[Math.max(0, Math.min(reihen.length - 1, i))] || null;
+  };
+  // Bei vielen Bändern nicht jede Zeile beschriften.
+  const jede = Math.max(1, Math.ceil(reihen.length / Math.floor(zeichenH / 22)));
+
+  return (
+    <div ref={huelle} style={{ ...S.feldHuelle, height: hoehe }}>
+      {breite > 0 && (
+        <svg className="pw-feld" width={B} height={hoehe} style={{ display: "block", touchAction: "pan-y" }}
+          onMouseMove={(e) => setAktiv(ausEreignis(e))}
+          onMouseLeave={() => setAktiv(null)}
+          onTouchStart={(e) => setAktiv(ausEreignis(e))}
+          onTouchMove={(e) => setAktiv(ausEreignis(e))}>
+
+          {/* Value Area als durchgehende Fläche */}
+          {reihen.map((b, i) => (b.imWert ? (
+            <rect key={`w${b.von}`} x={rand.links} y={by(i)} width={zeichenB} height={bandH}
+              fill={T.accent} fillOpacity={0.13} />
+          ) : null))}
+
+          {reihen.map((b, i) => {
+            const tage = (b.tage / profil.maxTage) * halb;
+            const weg = (b.abgaenge / profil.maxAbgaenge) * halb;
+            const y = by(i) + (bandH - balkenH) / 2;
+            const an = aktiv === b;
+            return (
+              <g key={b.von}>
+                {an && (
+                  <rect x={rand.links} y={by(i)} width={zeichenB} height={bandH}
+                    fill={T.text} fillOpacity={0.05} />
+                )}
+                {tage > 0.5 && (
+                  <rect x={mitte - 2 - tage} y={y} width={tage} height={balkenH}
+                    fill={b.istPoc ? T.accent : T.muted} fillOpacity={b.istPoc ? 0.5 : 0.32} rx={1.5} />
+                )}
+                {weg > 0.5 && (
+                  <rect x={mitte + 2} y={y} width={weg} height={balkenH}
+                    fill={T.good} fillOpacity={b.istPoc ? 0.95 : 0.6} rx={1.5} />
+                )}
+                {b.istPoc && (
+                  <line x1={rand.links} x2={rand.links + zeichenB} y1={by(i) + bandH / 2} y2={by(i) + bandH / 2}
+                    stroke={T.accent} strokeWidth={1.6} strokeDasharray="6 3" />
+                )}
+                {(i % jede === 0 || b.istPoc) && (
+                  <text x={rand.links - 8} y={by(i) + bandH / 2 + 3.5} textAnchor="end"
+                    fontSize="10" fontWeight={b.istPoc ? 700 : 400}
+                    fill={b.istPoc ? T.accent : T.muted} fontFamily="ui-monospace, Menlo, monospace">
+                    {fmtNum(Math.round(b.von / 100) * 100)}
+                  </text>
+                )}
+                {b.istPoc && (
+                  <g>
+                    <rect x={rand.links + zeichenB - 30} y={by(i) + bandH / 2 - 7} width={30} height={14}
+                      rx={3} fill={T.surface} fillOpacity={0.9} />
+                    <text x={rand.links + zeichenB - 2} y={by(i) + bandH / 2 + 3.5} textAnchor="end"
+                      fontSize="9.5" fontWeight="700" fill={T.accent}>POC</text>
+                  </g>
+                )}
+                {profil.stau === b && !b.istPoc && (
+                  <g>
+                    <rect x={rand.links + 1} y={by(i) + bandH / 2 - 7} width={32} height={14}
+                      rx={3} fill={T.surface} fillOpacity={0.9} />
+                    <text x={rand.links + 3} y={by(i) + bandH / 2 + 3.5}
+                      fontSize="9.5" fontWeight="700" fill={T.bad}>STAU</text>
+                  </g>
+                )}
+              </g>
+            );
+          })}
+
+          <line x1={mitte} x2={mitte} y1={rand.oben} y2={rand.oben + zeichenH} stroke={T.line} strokeWidth={1.2} />
+          <text x={mitte - 6} y={rand.oben - 8} textAnchor="end" fontSize="9.5" fill={T.muted}>← Angebotstage</text>
+          <text x={mitte + 6} y={rand.oben - 8} fontSize="9.5" fill={T.muted}>Abgänge →</text>
+        </svg>
+      )}
+      {aktiv && karte && (
+        <div className="pw-punktkarte" style={{ ...S.feldKarte, top: 8, right: 8 }}>
+          {karte(aktiv)}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* Ein Abschluss im Tape: was dieses Inserat zuletzt wollte und wie weit
+   das vom Markt seiner Woche entfernt war. */
+function Tapekarte({ a }) {
+  const S = styles;
+  const unter = a.abweichung < 0;
+  return (
+    <div style={S.punktKarte}>
+      <div style={{ ...S.punktKopf, color: unter ? T.good : T.muted }}>
+        weg am {fmtDate(a.datum)} · {a.haendler ? "Händler" : "Privat"}
+      </div>
+      <div style={S.punktTitel}>{a.title}</div>
+      <div style={S.punktPreis}>
+        {fmtEUR(a.preis)} <span style={S.punktStart}>letzter Ask</span>
+      </div>
+      <div style={S.punktListe}>
+        <div style={S.punktZeile}>
+          <span style={S.punktLabel}>Markt der Woche</span>
+          <span style={S.punktWert}>{fmtEUR(a.markt)}</span>
+        </div>
+        <div style={S.punktZeile}>
+          <span style={S.punktLabel}>Abstand</span>
+          <span style={{ ...S.punktWert, color: unter ? T.good : T.text }}>
+            {unter ? "−" : "+"}{Math.abs(a.abweichung).toFixed(1).replace(".", ",")} %
+          </span>
+        </div>
+        <div style={S.punktZeile}>
+          <span style={S.punktLabel}>Standzeit</span>
+          <span style={S.punktWert}>{a.tage == null ? "—" : laufzeitText(a.tage)}</span>
+        </div>
+        {a.nachlass != null && a.nachlass < 0 && (
+          <div style={S.punktZeile}>
+            <span style={S.punktLabel}>Nachlass gesamt</span>
+            <span style={{ ...S.punktWert, color: T.good }}>
+              −{Math.abs(a.nachlass).toFixed(1).replace(".", ",")} % in {a.stufen} {a.stufen === 1 ? "Schritt" : "Schritten"}
+            </span>
+          </div>
+        )}
+        {a.km != null && (
+          <div style={S.punktZeile}>
+            <span style={S.punktLabel}>Laufleistung</span>
+            <span style={S.punktWert}>{fmtNum(a.km)} km</span>
+          </div>
+        )}
+      </div>
+      {a.url && <div style={S.punktFussnote}>Klicken öffnet das Inserat ↗</div>}
+    </div>
+  );
+}
+
+/* Was in einer Wochenkerze steckt — die Zahlen hinter Körper und Docht. */
+function Kerzenkarte({ k }) {
+  const S = styles;
+  const richtungsFarbe = k.richtung === "runter" ? T.good : k.richtung === "rauf" ? T.bad : T.muted;
+  return (
+    <div style={S.punktKarte}>
+      <div style={{ ...S.punktKopf, color: richtungsFarbe }}>
+        Woche ab {fmtDate(k.woche)}{k.laeuft ? " · läuft noch" : ""}
+      </div>
+      {k.anzahl === 0 ? (
+        <div style={S.punktFussnote}>In dieser Woche stand nichts Beobachtetes im Markt.</div>
+      ) : (
+        <>
+          <div style={S.punktPreis}>
+            {fmtEUR(k.p50)} <span style={S.punktStart}>Median aus {k.anzahl}</span>
+          </div>
+          <div style={S.punktListe}>
+            <div style={S.punktZeile}>
+              <span style={S.punktLabel}>Körper 25–75 %</span>
+              <span style={S.punktWert}>{fmtEUR(k.p25)} – {fmtEUR(k.p75)}</span>
+            </div>
+            <div style={S.punktZeile}>
+              <span style={S.punktLabel}>Docht 10–90 %</span>
+              <span style={S.punktWert}>{fmtEUR(k.p10)} – {fmtEUR(k.p90)}</span>
+            </div>
+            <div style={S.punktZeile}>
+              <span style={S.punktLabel}>Spanne</span>
+              <span style={S.punktWert}>{fmtEUR(k.spanneMin)} – {fmtEUR(k.spanneMax)}</span>
+            </div>
+            <div style={S.punktZeile}>
+              <span style={S.punktLabel}>Zugang · Abgang</span>
+              <span style={S.punktWert}>{k.neu} · {k.weg}</span>
+            </div>
+          </div>
+          {k.delta != null && (
+            <div style={{ ...S.punktJetzt, color: richtungsFarbe }}>
+              {k.delta === 0 ? "Median unverändert"
+                : `${k.delta < 0 ? "−" : "+"}${fmtEUR(Math.abs(k.delta))} gegen die Vorwoche`}
+            </div>
+          )}
+          {k.anzahl < 4 && (
+            <div style={S.punktFussnote}>Wenige Inserate — Körper und Dochte sagen hier wenig.</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+/* Ein Preisband im Profil: wie lange dort Ware stand und was weggegangen ist. */
+function Profilkarte({ b, profil }) {
+  const S = styles;
+  const anteilAbgang = profil.abgaengeGesamt ? b.abgaenge / profil.abgaengeGesamt : 0;
+  const anteilZeit = profil.tageGesamt ? b.tage / profil.tageGesamt : 0;
+  return (
+    <div style={S.punktKarte}>
+      <div style={{ ...S.punktKopf, color: b.istPoc ? T.accent : T.muted }}>
+        {fmtNum(b.von)} – {fmtNum(b.bis)} €{b.istPoc ? " · Point of Control" : b.imWert ? " · Value Area" : ""}
+      </div>
+      <div style={S.punktListe}>
+        <div style={S.punktZeile}>
+          <span style={S.punktLabel}>Angebotstage</span>
+          <span style={S.punktWert}>{fmtNum(b.tage)} · {Math.round(anteilZeit * 100)} %</span>
+        </div>
+        <div style={S.punktZeile}>
+          <span style={S.punktLabel}>Inserate</span>
+          <span style={S.punktWert}>{b.anzahl}{b.offen ? ` · ${b.offen} laufen noch` : ""}</span>
+        </div>
+        <div style={S.punktZeile}>
+          <span style={S.punktLabel}>Abgänge</span>
+          <span style={{ ...S.punktWert, color: b.abgaenge ? T.good : T.muted }}>
+            {b.abgaenge}{b.abgaenge ? ` · ${Math.round(anteilAbgang * 100)} %` : ""}
+          </span>
+        </div>
+      </div>
+      {b.wegListe.length > 0 && (
+        <div style={S.punktListe}>
+          {b.wegListe.slice(0, 4).map((w) => (
+            <div key={w.id} style={S.punktZeile}>
+              <span style={S.punktLabel}>{(w.title || w.id).slice(0, 26)}</span>
+              <span style={S.punktWert}>{fmtEUR(w.preis)}{w.tage != null ? ` · ${laufzeitText(w.tage)}` : ""}</span>
+            </div>
+          ))}
+          {b.wegListe.length > 4 && <div style={S.punktFussnote}>… und {b.wegListe.length - 4} weitere</div>}
+        </div>
+      )}
+      {b.abgaenge === 0 && b.tage > 0 && (
+        <div style={S.punktFussnote}>Hier stand Ware, ohne dass etwas wegging.</div>
+      )}
+    </div>
+  );
+}
+
 function Verlaufskarte({ r, tag, einheit }) {
   const S = styles;
   const zeige = (p) => (einheit === "prozent"
@@ -6211,6 +7120,8 @@ const styles = {
   feldKarte: { position: "absolute", zIndex: 5, pointerEvents: "none" },
   feldLegende: { display: "flex", gap: 16, flexWrap: "wrap", justifyContent: "center", marginTop: 6, fontSize: 10.5, color: T.muted },
   legendeEintrag: { display: "inline-flex", alignItems: "center", gap: 6 },
+  legendeBestand: { width: 14, height: 2, background: T.text, opacity: 0.55, display: "inline-block" },
+  legendeKurve: { width: 16, height: 3, borderRadius: 2, background: T.accent, display: "inline-block" },
   legendePunkt: { width: 9, height: 9, borderRadius: "50%", display: "inline-block" },
   karteRahmen: { display: "flex", flexDirection: "column", gap: 3, marginTop: 4 },
   karteZeile: { display: "grid", gridTemplateColumns: "132px repeat(auto-fit, minmax(0, 1fr))", gap: 3, alignItems: "stretch", width: "100%", background: "transparent", border: "none", borderLeft: "3px solid", padding: "0 0 0 6px", textAlign: "left" },
