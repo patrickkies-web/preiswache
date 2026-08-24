@@ -1006,13 +1006,21 @@ function bestandNachNr(nr, bestand) {
    Die KI liest die Stellen aus dem Inserat heraus, gehakt wird von Hand —
    das Häkchen ist der Beleg, dass wirklich hingesehen wurde. */
 const SICHT_MAX = 8;
-const SICHT_GRUND = [
-  "Front und Heck: Stoßfänger, Spaltmaße, Lackunterschiede",
-  "Schweller und Radläufe: Rost, Blasen unter dem Lack",
-  "Innenraum: Fahrersitzwange, Lenkrad, Schaltknauf",
-  "Reifen und Felgen: Profil, Bordsteinschäden, Marke rundum",
-];
-function sichtpunkteListe(roh, grundwerte = false) {
+/* Was die KI aus Laufleistung, Alter oder Modellwissen ableitet, ist keine
+   Stelle aus dem Inserat, sondern eine Vermutung — und Vermutungen sind
+   hier wertlos: Es geht ausschließlich darum, wo der Inseratstext etwas
+   sagt. Solche Punkte fliegen raus, auch wenn die KI sie liefert. */
+const SICHT_VERMUTUNG = new RegExp([
+  "typisch", "schwachstelle", "anfällig", "neigt\\s+zu", "erfahrungsgemäß",
+  "altersbedingt", "modelltypisch", "üblicherweise", "üblich bei", "häufig bei",
+  "oft bei", "bekanntes problem", "in der regel", "erfahrungswert",
+  "laufleistung", "\\d[\\d.,]*\\s*(?:t?km)\\b", "\\d+\\s*k\\s*km",
+  "in diesem alter", "für das baujahr", "baujahrbedingt",
+].join("|"), "i");
+// Ein Beleg ist ein Zitat aus dem Inserat: „…" oder "…" oder '…'.
+const SICHT_BELEG = /[„“"»«'‚‘]{1}[^„“"»«'‚‘]{4,}[„“"»«'‚‘]{1}/;
+
+function sichtpunkteListe(roh) {
   const rein = Array.isArray(roh) ? roh : String(roh || "").split(/\n|;|•/);
   const punkte = [];
   rein.forEach((p) => {
@@ -1020,30 +1028,28 @@ function sichtpunkteListe(roh, grundwerte = false) {
     const text = String((istObjekt ? (p.text ?? p.punkt ?? p.stelle) : p) ?? "").trim();
     if (!text || text.length < 3) return;
     if (punkte.some((x) => x.text.toLowerCase() === text.toLowerCase())) return;
-    const punkt = { text: text.slice(0, 180), geprueft: istObjekt ? !!(p.geprueft ?? p.ok) : false };
-    // Die Herkunft muss erhalten bleiben, sonst gilt der Grundcheck beim
-    // nächsten Laden als echte Stelle aus dem Inserat — und der gespeicherte
-    // Stand änderte sich bei jedem Start.
-    if (istObjekt && p.grund) punkt.grund = true;
-    punkte.push(punkt);
+    punkte.push({ text: text.slice(0, 180), geprueft: istObjekt ? !!(p.geprueft ?? p.ok) : false,
+      beleg: SICHT_BELEG.test(text), vermutung: SICHT_VERMUTUNG.test(text) });
   });
-  if (!punkte.length && grundwerte) return SICHT_GRUND.map((text) => ({ text, geprueft: false, grund: true }));
-  return punkte.slice(0, SICHT_MAX);
+  /* Zitiert die Antwort das Inserat überhaupt irgendwo, gilt der strenge
+     Maßstab: Dann ist ein Punkt ohne Zitat einer, für den im Text nichts
+     stand. Zitiert sie nirgends, hat sie das Format ignoriert — dann bleibt
+     nur die Vermutungsprüfung, sonst bliebe gar nichts übrig. */
+  const streng = punkte.some((x) => x.beleg);
+  const behalten = punkte.filter((x) => !x.vermutung && (!streng || x.beleg));
+  sichtpunkteListe.verworfen = punkte.length - behalten.length;
+  return behalten.slice(0, SICHT_MAX).map(({ text, geprueft }) => ({ text, geprueft }));
 }
 /* Beim zweiten Einlesen kommen dieselben Stellen erneut. Ein Haken, den du
    einmal gesetzt hast, bleibt gesetzt — hingesehen hast du ja. */
 function sichtpunkteZusammen(alt, neu) {
-  const raus = (alt || []).map((p) => ({ ...p }));
+  const raus = (alt || []).map((p) => ({ text: p.text, geprueft: !!p.geprueft }));
   (neu || []).forEach((p) => {
     const da = raus.find((x) => x.text.toLowerCase() === p.text.toLowerCase());
     if (da) da.geprueft = da.geprueft || p.geprueft;
-    else raus.push({ ...p });
+    else raus.push({ text: p.text, geprueft: !!p.geprueft });
   });
-  /* Grundpunkte sind nur ein Notnagel: Sobald echte Stellen aus dem Inserat
-     da sind, treten sie zurück — außer sie sind schon abgehakt. */
-  const echte = raus.filter((p) => !p.grund);
-  const behalten = echte.length ? [...echte, ...raus.filter((p) => p.grund && p.geprueft)] : raus;
-  return behalten.slice(0, SICHT_MAX);
+  return raus.slice(0, SICHT_MAX);
 }
 const sichtOffen = (v) => (v.sichtpunkte || []).filter((p) => !p.geprueft).length;
 
@@ -1108,12 +1114,19 @@ function normalizeVehicle(v) {
   /* Steht im Link eine Inseratsnummer, ist sie der sicherste Schlüssel. Sie
      kommt aus dem Link selbst und nicht aus dem, was die KI dafür hielt. */
   out.inseratNr = inseratNr(v.url ?? v.link ?? "") || inseratNr(v.inseratNr) || inseratNr(v.id);
-  /* Nennt das Inserat Stellen, die man auf den Fotos ansehen muss, kommen
-     sie hier an. Nennt es keine, setzt die App den Grundcheck — dann steht
-     wenigstens etwas da, das man abhaken kann. */
-  out.sichtpunkte = sichtpunkteListe(
-    v.sichtpunkte ?? v.sichtpruefung ?? v.fotocheck ?? v.pruefpunkte ?? v.checkpoints ?? v.opticalChecks,
-    true);
+  /* Nur, was der Inseratstext selbst nennt. Nennt er nichts, bleibt die
+     Liste leer — ein erfundener Punkt wäre schlechter als keiner. */
+  const sicht = sichtpunkteListe(
+    v.sichtpunkte ?? v.sichtpruefung ?? v.fotocheck ?? v.pruefpunkte ?? v.checkpoints ?? v.opticalChecks);
+  /* Eine leere Liste wird gar nicht erst angelegt: Ein Feld, das beim
+     Speichern entsteht und beim Laden wieder verschwindet, ließe zwei
+     Geräte sich gegenseitig überschreiben, ohne dass jemand etwas
+     geändert hat. */
+  if (sicht.length) out.sichtpunkte = sicht;
+  /* Wie viele Punkte die App weggeworfen hat, weil sie nichts mit dem Text
+     des Inserats zu tun hatten. Steht in der Vorschau, damit nicht der
+     Eindruck entsteht, die KI hätte nichts geliefert. */
+  if (sichtpunkteListe.verworfen) out.sichtVerworfen = sichtpunkteListe.verworfen;
   out.id = (v.id && String(v.id).trim()) || slugId(out);
   return out;
 }
@@ -1357,8 +1370,14 @@ function migrate(vehicles) {
        hat. */
     const nr = v.inseratNr || inseratNr(v.url);
     if (nr) v.inseratNr = nr;
-    // Abgehakte Stellen bleiben abgehakt; ohne Liste wird keine angelegt.
-    if (v.sichtpunkte) v.sichtpunkte = sichtpunkteListe(v.sichtpunkte);
+    /* Abgehakte Stellen bleiben abgehakt. Die Grundpunkte einer früheren
+       Fassung und alles, was aus Laufleistung oder Modellwissen abgeleitet
+       war, fliegen dagegen raus — sie standen nie im Inserat. */
+    if (v.sichtpunkte) {
+      v.sichtpunkte = sichtpunkteListe(v.sichtpunkte.filter((x) => !x.grund));
+      if (!v.sichtpunkte.length) delete v.sichtpunkte;
+    }
+    delete v.sichtVerworfen;
 
     /* Aufräumen nach der alten Regel: Bis hierher hat die App ein fehlendes
        Inseratsdatum stillschweigend mit dem Tag der ersten Erfassung
@@ -1683,6 +1702,9 @@ export default function App() {
       // Beim Import hast du jedes Fahrzeug einzeln vor dir gehabt, inklusive
       // der Hinweise auf Schäden — das zählt als Durchsicht.
       let incoming = { ...raw_, ...antw, url: normalizeUrl(antw.url || raw_.url), geprueft: todayISO() };
+      // Nur eine Auskunft für die Vorschau, kein Wert, der ans Fahrzeug gehört.
+      delete incoming.sichtVerworfen;
+      if (!incoming.sichtpunkte?.length) delete incoming.sichtpunkte;
       // Der Link kann beim Prüfen nachgetragen worden sein — dann steht die
       // Nummer erst jetzt fest.
       incoming.inseratNr = incoming.inseratNr || inseratNr(incoming.url);
@@ -1721,7 +1743,8 @@ export default function App() {
           interieur: incoming.interieur || existing.interieur || "",
           repairKind: incoming.repairKind || existing.repairKind || "",
           trimline: incoming.trimline || existing.trimline || "",
-          sichtpunkte: sichtpunkteZusammen(existing.sichtpunkte, incoming.sichtpunkte),
+          ...(sichtpunkteZusammen(existing.sichtpunkte, incoming.sichtpunkte).length
+            ? { sichtpunkte: sichtpunkteZusammen(existing.sichtpunkte, incoming.sichtpunkte) } : {}),
           listingStatus: "Aktiv", closedDate: "", disappearedAt: "",
           firstSeen: heute, lastSeen: heute,
           trackingQuality: trackingGuete(incoming.listedSince, heute),
@@ -1734,7 +1757,8 @@ export default function App() {
         TEXT_FIELDS.forEach((k) => { if (incoming[k]) merged[k] = incoming[k]; });
         if (incoming.mileage != null) merged.mileage = incoming.mileage;
         if (incoming.equipment?.length) { merged.equipment = incoming.equipment; merged.ausstattung = incoming.ausstattung; }
-        merged.sichtpunkte = sichtpunkteZusammen(existing.sichtpunkte, incoming.sichtpunkte);
+        const sichtNeu = sichtpunkteZusammen(existing.sichtpunkte, incoming.sichtpunkte);
+        if (sichtNeu.length) merged.sichtpunkte = sichtNeu; else delete merged.sichtpunkte;
         merged.inseratNr = incoming.inseratNr || existing.inseratNr || "";
         const byDate = {};
         existing.priceHistory.forEach((p) => { byDate[p.date] = p.price; });
@@ -2770,8 +2794,9 @@ export default function App() {
           Aus dem Link zieht sich die App die <b style={{ color: T.text }}>Inseratsnummer</b> (<code style={S.code}>id=…</code>)
           und erkennt dieselbe Anzeige daran wieder — auch wenn der Verkäufer den Kilometerstand ändert.
           Aus dem Feld <code style={S.code}>sichtpruefung</code> wird nach dem Prüfen eine Liste zum Abhaken:
-          die Stellen, die der Inseratstext nahelegt. Was ohne Haken bleibt, steht danach am Fahrzeug
-          als offener Punkt.
+          die Stellen, über die der <b style={{ color: T.text }}>Inseratstext</b> etwas sagt — mit dem Zitat,
+          auf das sie sich stützen. Was die KI stattdessen aus Laufleistung, Alter oder Modellwissen
+          ableitet, wird verworfen. Was ohne Haken bleibt, steht danach am Fahrzeug als offener Punkt.
         </p>
         <textarea value={raw} onChange={(e) => setRaw(e.target.value)}
           placeholder='Antwort der KI hier einfügen…' style={S.textarea} spellCheck={false} />
@@ -2874,7 +2899,7 @@ export default function App() {
                   {/* Die Stellen, die der Inseratstext nahelegt. Der Haken ist
                       der Beleg, dass du dort auf den Fotos hingesehen hast —
                       und er bleibt am Fahrzeug stehen. */}
-                  <Sichtliste punkte={answers[v.id]?.sichtpunkte || []}
+                  <Sichtliste punkte={answers[v.id]?.sichtpunkte || []} verworfen={v.sichtVerworfen || 0}
                     umschalten={(i) => setAnswer(v.id, "sichtpunkte",
                       (answers[v.id]?.sichtpunkte || []).map((p, k) => (k === i ? { ...p, geprueft: !p.geprueft } : p)))} />
                   <ChoiceQuestion frage={TRIMLINE_FRAGE} options={TRIMLINE_OPTS} hilfe={TRIMLINE_HILFE}
@@ -5179,11 +5204,27 @@ function FotoHinweis({ v }) {
 /* Die Sichtprüfung: Stellen am Fahrzeug, die der Inseratstext nahelegt.
    Abgehakt wird von Hand — deshalb sagt die Liste später auch etwas aus.
    Ungehakte Punkte sind keine Mängel, sondern offene Fragen an die Fotos. */
-function Sichtliste({ punkte, umschalten, klein = false }) {
+function Sichtliste({ punkte, umschalten, klein = false, verworfen = 0 }) {
   const S = styles;
-  if (!punkte?.length) return null;
+  /* Nichts im Text, nichts in der Liste. Beim Erfassen wird das trotzdem
+     gesagt — sonst sieht es aus, als hätte die App etwas verschluckt. */
+  if (!punkte?.length) {
+    if (klein) return null;
+    return (
+      <div style={{ ...S.sichtBox, borderLeftColor: T.line }}>
+        <div style={{ ...S.sichtTitel, color: T.muted }}>
+          <Eye size={13} /> Der Inseratstext nennt keine Stellen
+        </div>
+        <div style={S.sichtHinweis}>
+          {verworfen > 0
+            ? `${verworfen} ${verworfen === 1 ? "Punkt kam" : "Punkte kamen"} von der KI, ${verworfen === 1 ? "war" : "waren"} aber
+               aus Laufleistung, Alter oder Modellwissen abgeleitet statt aus dem Inserat — verworfen.`
+            : "Hier steht nur, was im Inserat selbst geschrieben steht. Sagt der Text nichts über Schäden, gibt es auch nichts abzuhaken."}
+        </div>
+      </div>
+    );
+  }
   const offen = punkte.filter((p) => !p.geprueft).length;
-  const grund = punkte.every((p) => p.grund);
   return (
     <div style={{ ...S.sichtBox, borderLeftColor: offen ? T.accent : T.good }}>
       <div style={S.sichtKopf}>
@@ -5196,9 +5237,8 @@ function Sichtliste({ punkte, umschalten, klein = false }) {
       </div>
       {!klein && (
         <div style={S.sichtHinweis}>
-          {grund
-            ? "Das Inserat nennt keine Stellen — das ist der Grundcheck für einen S204."
-            : "Aus dem Text des Inserats abgeleitet. Haken setzen, wenn du dir die Stelle auf den Fotos angesehen hast."}
+          Das steht so im Inserat. Haken setzen, wenn du dir die Stelle auf den Fotos angesehen hast.
+          {verworfen > 0 && ` ${verworfen} weitere ${verworfen === 1 ? "Angabe war" : "Angaben waren"} nur abgeleitet und ${verworfen === 1 ? "wurde" : "wurden"} verworfen.`}
         </div>
       )}
       {punkte.map((p, i) => (
