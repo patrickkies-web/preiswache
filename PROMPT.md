@@ -40,10 +40,16 @@ sich selbst aus dem Link und erkennt dieselbe Anzeige daran wieder, ohne nachzuf
 Für den Altbestand holt sie die Nummer aus dem gespeicherten Link nach.
 
 **Der Foto-Check.** Aus Feld 25 (`sichtpruefung`) macht die App im Import-Bereich eine
-Liste zum Abhaken: Welche optischen Mängel könnten laut Inseratstext vorliegen und wo
-musst du auf den Fotos hinsehen. Jeder Haken heißt „angesehen". Was ohne Haken bleibt,
-steht danach am Fahrzeug als offener Punkt — du siehst also jederzeit, wo du noch nicht
-genau hingeschaut hast. Nennt das Inserat keine Stellen, setzt die App einen Grundcheck.
+Liste zum Abhaken: die Stellen, über die der Inseratstext etwas sagt — mit dem Zitat,
+auf das sie sich stützen. Jeder Haken heißt „angesehen". Was ohne Haken bleibt, steht
+danach am Fahrzeug als offener Punkt.
+
+Was **nicht** in die Liste kommt: alles, was nur abgeleitet ist. Kein „bei 190.000 km
+ist die Sitzwange sicher durch", keine typischen Schwachstellen des S204, keine
+Vermutungen aus Baujahr oder Vorbesitzerzahl. Die App wirft solche Punkte selbst weg —
+erkannt an fehlendem Zitat, an Wörtern wie „typisch" oder „anfällig" und an
+Kilometerangaben — und schreibt in die Vorschau, wie viele sie verworfen hat. Sagt das
+Inserat nichts über den Zustand, bleibt die Liste leer. Das ist der Normalfall.
 
 ---
 
@@ -116,10 +122,8 @@ ZEITANGABEN -- HIER WIRD AM MEISTEN FALSCH GEMACHT:
   "url": "https://suchen.mobile.de/fahrzeuge/details.html?id=412345678&scope=C",
   "price": 8900,
   "sichtpruefung": [
-    "Heckstoßstange rechts: laut Text Kratzer -- auf den Fotos Tiefe und Lackabplatzer prüfen",
-    "Kotflügel hinten links: nachlackiert -- auf Farbunterschied und Spaltmaße achten",
-    "Fahrersitz: 2 Vorbesitzer und 190.000 km -- Sitzwange auf Durchscheuern ansehen",
-    "Heckklappe unter der Chromleiste: typische Roststelle beim S204"
+    "Hintere Stoßstange: \"Kratzer an der hinteren Stoßstange\" -- Länge und Tiefe auf den Fotos ansehen",
+    "Kotflügel hinten links: \"Kotflügel hinten links erneuert und nachlackiert\" -- Farbton und Spaltmaße vergleichen"
   ]
 }
 
@@ -313,36 +317,33 @@ SO FÜLLST DU JEDES FELD AUS:
     in "note".
 
 25. "sichtpruefung"
-    Eine Liste mit HÖCHSTENS SECHS kurzen Punkten: Welche optischen Mängel
-    KÖNNTEN vorliegen, und wo genau muss ich deshalb auf den Fotos hinsehen?
-    Das ist die einzige Stelle, an der du mitdenken darfst.
+    Eine Liste mit HÖCHSTENS SECHS kurzen Punkten: Wo im Inserat steht
+    etwas über den optischen Zustand -- und wo muss ich deshalb auf den
+    Fotos hinsehen?
 
-    Jeder Punkt hat diese Form:
-       "Stelle am Fahrzeug: Anlass aus dem Inserat -- worauf ich achten soll"
+    DU LEITEST NICHTS AB UND VERMUTEST NICHTS. Kein Punkt darf aus
+    Laufleistung, Baujahr, Anzahl der Vorbesitzer, bekannten Schwachstellen
+    des Modells oder aus fehlenden Fotos entstehen. Nur aus dem, was im
+    Text tatsächlich geschrieben steht.
 
-    Woraus du die Punkte ableitest:
-      a) Was der Text ausdrücklich nennt: Kratzer, Dellen, Steinschläge,
-         Roststellen, nachlackierte Teile, defekte Klimaanlage, "kleine
-         Gebrauchsspuren", "Bastlerfahrzeug", "wie besichtigt".
-      b) Was der Text VERSCHWEIGT, obwohl es auffällt: nur Fotos von einer
-         Seite, kein Innenraumfoto, kein Foto vom Motorraum, auffällig
-         wenige Bilder, alle Bilder bei Dunkelheit oder aus großer Distanz.
-      c) Was sich aus den harten Daten ergibt: hohe Laufleistung und
-         Sitzwangen, viele Vorbesitzer, langer Standzeit-Hinweis,
-         Anhängerkupplung und Heckschürze, HU längst abgelaufen.
-      d) Bekannte Schwachstellen des S204, ABER NUR, wenn der Text oder die
-         Daten einen Anlass geben: Rost an der Heckklappe unter der
-         Chromleiste, Rost an den vorderen Kotflügeln unten, Steuerkette bei
-         den frühen Vierzylinder-Benzinern, Ölverlust am Turbolader beim
-         220 CDI, Wasser im Fußraum durch verstopfte Ablaufkanäle.
+    Jeder Punkt hat genau diese Form -- Stelle, Zitat, Handlung:
+       Stelle am Fahrzeug: "wörtliches Zitat aus dem Inserat" -- worauf achten
 
-    Regeln:
-    - Behaupte NICHT, dass ein Mangel vorliegt. Schreib, was zu PRÜFEN ist.
-    - Keine Punkte, für die es im Inserat keinen Anlass gibt.
-    - Keine Punkte zu Dingen, die man auf Fotos nicht sehen kann
-      (Motorlauf, Getriebeverhalten, Geräusche).
-    - Findest du wirklich keinen Anlass: [] (leere Liste). Mein Programm
-      setzt dann selbst einen Grundcheck ein.
+    Beispiele, wenn der Text das hergibt:
+       Hintere Stoßstange: "Kratzer an der hinteren Stoßstange" -- Länge und Tiefe auf den Fotos ansehen
+       Kotflügel hinten links: "Kotflügel erneuert und nachlackiert" -- Farbton und Spaltmaße vergleichen
+       Fahrertür: "kleine Delle in der Fahrertür" -- auf welchem Foto sie zu sehen ist
+       Heckklappe: "leichter Rostansatz an der Heckklappe" -- Ausdehnung beurteilen
+
+    Das Zitat ist Pflicht. Findest du für eine Stelle keine Textstelle, die
+    du zitieren kannst, gehört sie NICHT in die Liste. Meine App wirft
+    Punkte ohne Zitat und Punkte mit Wörtern wie "typisch", "anfällig" oder
+    einer Kilometerangabe automatisch weg -- du sparst dir die Arbeit also,
+    wenn du sie gar nicht erst schreibst.
+
+    Sagt das Inserat nichts über Schäden, Kratzer, Rost, Dellen, Lack,
+    Sitze oder Reparaturen: [] (leere Liste). Das ist der richtige und
+    häufige Fall, kein Fehler.
 
     In meiner App wird daraus eine Liste zum Abhaken -- ich sehe mir jede
     Stelle auf den Fotos an und setze das Häkchen. Was ohne Häkchen bleibt,
