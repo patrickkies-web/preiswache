@@ -1006,6 +1006,10 @@ function bestandNachNr(nr, bestand) {
    Die KI liest die Stellen aus dem Inserat heraus, gehakt wird von Hand —
    das Häkchen ist der Beleg, dass wirklich hingesehen wurde. */
 const SICHT_MAX = 8;
+/* Die vier Punkte, die eine frühere Fassung selbst gesetzt hat, wenn das
+   Inserat nichts nannte. Sie standen nie im Text und fliegen deshalb aus
+   dem Bestand — auch dort, wo die Herkunft nicht mitgespeichert wurde. */
+const ALTER_GRUNDCHECK = /^(Front und Heck: Stoßfänger|Schweller und Radläufe: Rost|Innenraum: Fahrersitzwange|Reifen und Felgen: Profil)/;
 /* Was die KI aus Laufleistung, Alter oder Modellwissen ableitet, ist keine
    Stelle aus dem Inserat, sondern eine Vermutung — und Vermutungen sind
    hier wertlos: Es geht ausschließlich darum, wo der Inseratstext etwas
@@ -1265,6 +1269,20 @@ function parseImport(text) {
 
 /* --------------------------- Storage ----------------------------- */
 
+/* ---------------- Fassung des Programms ----------------
+   Eine offene Seite bleibt beliebig lange die, die geladen wurde — auf dem
+   Handy oft tagelang. Dann zeigt die App Dinge, die längst geändert sind,
+   und niemand merkt es. Deshalb trägt jeder Build einen Stempel, und die
+   App vergleicht ihn mit dem, was der Server gerade ausliefert. */
+const BUILD = typeof __BUILD__ === "string" ? __BUILD__ : "";
+async function serverFassung() {
+  const r = await fetch(`${location.pathname}?fassung=${Date.now()}`, { cache: "no-store" });
+  if (!r.ok) throw new Error(String(r.status));
+  const t = await r.text();
+  const m = t.match(/name="pw-build"\s+content="([^"]+)"/);
+  return m ? m[1] : "";
+}
+
 const SERVER_URL = "/api/garage";
 const KEY_STORE = "preiswache:key";
 
@@ -1374,7 +1392,8 @@ function migrate(vehicles) {
        Fassung und alles, was aus Laufleistung oder Modellwissen abgeleitet
        war, fliegen dagegen raus — sie standen nie im Inserat. */
     if (v.sichtpunkte) {
-      v.sichtpunkte = sichtpunkteListe(v.sichtpunkte.filter((x) => !x.grund));
+      v.sichtpunkte = sichtpunkteListe(
+        v.sichtpunkte.filter((x) => !x.grund && !ALTER_GRUNDCHECK.test(String(x.text || ""))));
       if (!v.sichtpunkte.length) delete v.sichtpunkte;
     }
     delete v.sichtVerworfen;
@@ -1619,6 +1638,27 @@ export default function App() {
       }
     })();
   }, [pushToServer]);
+
+  /* Beim Start und immer, wenn die Seite wieder in den Vordergrund kommt:
+     Liefert der Server eine andere Fassung aus als die geladene, sagt die
+     App das — und lädt auf Knopfdruck neu. Höchstens alle fünf Minuten,
+     damit daraus kein Dauerfeuer wird. */
+  const [neueFassung, setNeueFassung] = useState(false);
+  useEffect(() => {
+    if (!BUILD) return;
+    let letzte = 0, lebt = true;
+    const pruefen = async () => {
+      if (document.hidden || Date.now() - letzte < 5 * 60 * 1000) return;
+      letzte = Date.now();
+      try {
+        const fern = await serverFassung();
+        if (lebt && fern && fern !== BUILD) setNeueFassung(true);
+      } catch (_) { /* offline ist kein Grund für eine Meldung */ }
+    };
+    pruefen();
+    document.addEventListener("visibilitychange", pruefen);
+    return () => { lebt = false; document.removeEventListener("visibilitychange", pruefen); };
+  }, []);
 
   const list = useMemo(() => Object.values(vehicles).sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || "")), [vehicles]);
 
@@ -2693,6 +2733,16 @@ export default function App() {
   return (
     <div style={S.page}>
       <style>{globalCss}</style>
+
+      {neueFassung && (
+        <button style={S.fassungBalken} onClick={() => window.location.reload()}>
+          <RefreshCw size={14} />
+          <span>
+            <b>Es gibt eine neuere Fassung der App.</b> Du siehst gerade eine ältere, die dein Browser
+            gespeichert hat. Hier tippen, um sie zu laden — deine Daten bleiben erhalten.
+          </span>
+        </button>
+      )}
 
       <header style={S.header} className="pw-header">
         <div style={S.brandRow}>
@@ -6068,6 +6118,10 @@ const styles = {
   fotoZeile: { display: "flex", flexDirection: "column", gap: 2, marginTop: 6 },
   fotoLabel: { fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 },
   fotoText: { fontSize: 11.5, color: T.text, lineHeight: 1.5 },
+
+  fassungBalken: { font: "inherit", display: "flex", alignItems: "center", gap: 10, width: "100%",
+    textAlign: "left", background: T.accent, color: "#FFFFFF", border: "none", borderRadius: 10,
+    padding: "11px 14px", marginBottom: 12, fontSize: 12.5, lineHeight: 1.5, cursor: "pointer" },
 
   sichtBox: { background: T.surface, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 9, padding: "10px 12px", marginBottom: 12 },
   sichtKopf: { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 4 },
