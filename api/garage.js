@@ -1,12 +1,13 @@
 /* ------------------------------------------------------------------ *
  *  Ablage für die Fahrzeugliste
  *
- *  GET   /api/garage   ->  { vehicles, quooker, savedAt }
- *  PUT   /api/garage   <-  { vehicles, quooker, base }   ->  { savedAt }
+ *  GET   /api/garage   ->  { vehicles, quooker, raum, savedAt }
+ *  PUT   /api/garage   <-  { vehicles, quooker, raum, base }  ->  { savedAt }
  *
- *  "quooker" ist die zweite Warengruppe. Sie liegt im selben Datensatz,
- *  damit ein Gerät beide Bestände in einem Zug bekommt; fehlt sie, ist
- *  sie leer -- ältere Stände bleiben damit gültig.
+ *  "quooker" ist die zweite Warengruppe, "raum" der Grundriss aus dem
+ *  Raumplaner. Beide liegen im selben Datensatz, damit ein Gerät alles in
+ *  einem Zug bekommt; fehlt eines, ist es leer -- ältere Stände bleiben
+ *  damit gültig. Was nicht mitgeschickt wird, bleibt unangetastet.
  *
  *  Zugriff nur mit dem Schlüssel aus PREISWACHE_KEY (Header
  *  "authorization: Bearer <schlüssel>").
@@ -47,12 +48,13 @@ async function redis(befehl) {
 
 async function lesen() {
   const roh = await redis(["GET", REDIS_KEY]);
-  if (!roh) return { vehicles: {}, quooker: {}, savedAt: null };
+  if (!roh) return { vehicles: {}, quooker: {}, raum: null, savedAt: null };
   try {
     const daten = typeof roh === "string" ? JSON.parse(roh) : roh;
-    return { vehicles: daten.vehicles || {}, quooker: daten.quooker || {}, savedAt: daten.savedAt || null };
+    return { vehicles: daten.vehicles || {}, quooker: daten.quooker || {},
+      raum: daten.raum || null, savedAt: daten.savedAt || null };
   } catch (_) {
-    return { vehicles: {}, quooker: {}, savedAt: null };
+    return { vehicles: {}, quooker: {}, raum: null, savedAt: null };
   }
 }
 
@@ -111,14 +113,16 @@ module.exports = async function handler(req, res) {
           savedAt: vorhanden.savedAt,
           vehicles: vorhanden.vehicles,
           quooker: vorhanden.quooker,
+          raum: vorhanden.raum,
         });
       }
 
       const savedAt = new Date().toISOString();
-      // Eine Warengruppe, die nicht mitgeschickt wurde, bleibt unangetastet.
+      // Was nicht mitgeschickt wurde, bleibt unangetastet.
       const quooker = koerper.quooker && typeof koerper.quooker === "object"
         ? koerper.quooker : vorhanden.quooker;
-      await redis(["SET", REDIS_KEY, JSON.stringify({ vehicles: koerper.vehicles, quooker, savedAt })]);
+      const raum = koerper.raum !== undefined ? koerper.raum : vorhanden.raum;
+      await redis(["SET", REDIS_KEY, JSON.stringify({ vehicles: koerper.vehicles, quooker, raum, savedAt })]);
       return res.status(200).json({ savedAt });
     }
 

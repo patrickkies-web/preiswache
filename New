@@ -4,7 +4,7 @@ import {
   AlertTriangle, Upload, MapPin, Store, User, Wrench, Filter, ShieldCheck, Download,
   Camera, CalendarClock, Archive, RotateCcw, Clock, ChevronRight, FileUp,
   Cloud, CloudOff, RefreshCw, ArrowUp, ArrowDown, Link2, Droplet, Package, Eye,
-  CandlestickChart, BarChartHorizontal, Activity,
+  CandlestickChart, BarChartHorizontal, Activity, Grid3x3,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -1581,14 +1581,16 @@ function localRead() {
     return roh ? JSON.parse(roh) : null;
   } catch (_) { return null; }
 }
-/* Beide Warengruppen liegen in einem Datensatz. Wer nur eine übergibt,
-   überschreibt die andere nicht — sie wird aus dem Vorhandenen ergänzt. */
-function localWrite(vehicles, quooker) {
+/* Alle Bestände liegen in einem Datensatz: Fahrzeuge, Quooker und der
+   Raumplan. Wer nur einen übergibt, überschreibt die anderen nicht — sie
+   werden aus dem Vorhandenen ergänzt. */
+function localWrite(vehicles, quooker, raum) {
   try {
     const alt = localRead() || {};
     localStorage.setItem(STORE_KEY, JSON.stringify({
       vehicles: vehicles !== undefined ? vehicles : (alt.vehicles || {}),
       quooker: quooker !== undefined ? quooker : (alt.quooker || {}),
+      raum: raum !== undefined ? raum : (alt.raum || null),
     }));
     return true;
   } catch (e) { console.error("Lokal speichern fehlgeschlagen", e); return false; }
@@ -1600,16 +1602,82 @@ async function serverRead(key) {
   if (!r.ok) throw Object.assign(new Error(daten.error || `Server antwortete mit ${r.status}`), { status: r.status });
   return daten;
 }
-async function serverWrite(key, vehicles, quooker, base) {
+async function serverWrite(key, vehicles, quooker, raum, base) {
   const r = await fetch(SERVER_URL, {
     method: "PUT",
     headers: { authorization: `Bearer ${key}`, "content-type": "application/json" },
-    body: JSON.stringify({ vehicles, quooker, base }),
+    body: JSON.stringify({ vehicles, quooker, raum, base }),
   });
   const daten = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(new Error(daten.error || `Server antwortete mit ${r.status}`), { status: r.status, daten });
   return daten;
 }
+
+/* ------------------------ Der Raumplaner --------------------------
+   Ein Grundriss aus nichts als Rechtecken. Gerechnet wird durchgehend in
+   MILLIMETERN und in ganzen Zahlen — Zentimeter mit Komma bringen beim
+   Rechnen nur Rundungsfehler, und ein Raum ist selten größer als 20 m.
+   Gespeichert wird ein einzelnes Objekt, keine Liste: Es gibt einen Plan.
+
+   Die Rasterstufen sind Meter, Dezimeter, Zentimeter. Welche davon zu
+   sehen ist, entscheidet der Zoom: Sobald eine Stufe genug Platz auf dem
+   Schirm hat, teilt sich jedes Feld in hundert kleinere. Genau in diesem
+   Raster rasten auch die gezogenen Rechtecke ein — was man sieht, ist,
+   was man treffen kann. */
+const RAUM_STUFEN = [1000, 100, 10];
+const RAUM_MIN = 500, RAUM_MAX = 30000;       // 0,5 m bis 30 m Kantenlänge
+const RAUM_FARBEN = ["#00796F", "#2274A5", "#E07A28", "#8B5CF6", "#D2544A", "#4D8B1F", "#C2418A", "#5B807B"];
+const RAUM_STANDARD = () => ({ breite: 4000, tiefe: 3000, name: "", flaechen: [] });
+
+const ganzeZahl = (x, min, max, standard) => {
+  const n = Math.round(coerceNum(x));
+  return isFinite(n) ? Math.max(min, Math.min(max, n)) : standard;
+};
+/* Was aus der Ablage kommt, wird auf Maß gebracht: Ein Plan mit einer
+   Fläche außerhalb des Raums oder mit einer Breite von null wäre nicht
+   darstellbar. */
+function raumHeben(roh) {
+  if (!roh || typeof roh !== "object") return null;
+  const breite = ganzeZahl(roh.breite, RAUM_MIN, RAUM_MAX, 4000);
+  const tiefe = ganzeZahl(roh.tiefe, RAUM_MIN, RAUM_MAX, 3000);
+  const flaechen = (Array.isArray(roh.flaechen) ? roh.flaechen : [])
+    .map((f, i) => {
+      if (!f || typeof f !== "object") return null;
+      const w = ganzeZahl(f.w, 10, RAUM_MAX, 0);
+      const h = ganzeZahl(f.h, 10, RAUM_MAX, 0);
+      if (!w || !h) return null;
+      return {
+        id: String(f.id || `f${i}-${Math.random().toString(36).slice(2, 8)}`),
+        x: ganzeZahl(f.x, -RAUM_MAX, RAUM_MAX, 0),
+        y: ganzeZahl(f.y, -RAUM_MAX, RAUM_MAX, 0),
+        w, h,
+        farbe: RAUM_FARBEN.includes(f.farbe) ? f.farbe : RAUM_FARBEN[0],
+        name: String(f.name || "").slice(0, 40),
+      };
+    })
+    .filter(Boolean);
+  return { breite, tiefe, name: String(roh.name || "").slice(0, 60), flaechen };
+}
+// Maße lesbar: unter einem Meter in Zentimetern, darüber in Metern.
+function mmText(mm) {
+  const x = Math.abs(mm);
+  if (x < 1000) return `${(mm / 10).toFixed(x % 10 ? 1 : 0).replace(".", ",")} cm`;
+  return `${(mm / 1000).toFixed(2).replace(".", ",")} m`;
+}
+/* Unter einem Zehntel Quadratmeter sagt "0,00 m²" nichts mehr — dort
+   wird in Quadratzentimetern gerechnet. */
+const qmText = (mm2) => (mm2 > 0 && mm2 < 1e5
+  ? `${Math.round(mm2 / 100)} cm²`
+  : `${(mm2 / 1e6).toFixed(2).replace(".", ",")} m²`);
+// Die feinste Rasterstufe, die bei diesem Zoom noch zu sehen ist.
+function rasterStufe(zoom) {
+  for (let i = RAUM_STUFEN.length - 1; i >= 0; i--) {
+    if (RAUM_STUFEN[i] * zoom >= 6) return RAUM_STUFEN[i];
+  }
+  return RAUM_STUFEN[0];
+}
+const rasterName = (stufe) => (stufe >= 1000 ? "1 m" : stufe >= 100 ? "10 cm" : "1 cm");
+const aufRaster = (mm, stufe) => Math.round(mm / stufe) * stufe;
 
 // Gespeicherte Einträge auf das heutige Vokabular heben, egal woher sie stammen.
 function migrate(vehicles) {
@@ -1787,26 +1855,31 @@ export default function App() {
   /* ---- Speichern: lokal sofort, auf dem Server sobald möglich ---- */
   const baseRef = useRef(null);        // Stand, auf dem unsere Änderungen aufsetzen
   const keyRef = useRef(readKey());
-  const vehiclesRef = useRef({});      // letzter bekannter Stand beider
-  const quookerRef = useRef({});       // Warengruppen, für das Speichern
+  const vehiclesRef = useRef({});      // letzter bekannter Stand aller drei
+  const quookerRef = useRef({});       // Bestände, für das Speichern
+  const raumRef = useRef(null);
 
   /* Der Server bekommt immer beide Warengruppen. Wer nur eine ändert,
      schickt für die andere den zuletzt bekannten Stand mit — sonst
      überschriebe das Speichern der einen Gruppe die andere. */
-  const pushToServer = useCallback(async (nextVehicles, nextQuooker) => {
+  const pushToServer = useCallback(async (nextVehicles, nextQuooker, nextRaum) => {
     if (nextVehicles !== undefined) vehiclesRef.current = nextVehicles;
     if (nextQuooker !== undefined) quookerRef.current = nextQuooker;
+    if (nextRaum !== undefined) raumRef.current = nextRaum;
     if (!keyRef.current) return;
     setSync((s) => ({ ...s, state: "speichert" }));
     try {
       const { savedAt } = await serverWrite(keyRef.current,
-        vehiclesRef.current, quookerRef.current, baseRef.current);
+        /* Ohne eigenen Plan wird nichts geschickt: Ein "null" würde einen
+           Plan überschreiben, den ein anderes Gerät gerade angelegt hat. */
+        vehiclesRef.current, quookerRef.current, raumRef.current || undefined, baseRef.current);
       baseRef.current = savedAt;
       setSync({ state: "verbunden", savedAt, msg: "" });
     } catch (e) {
       if (e.status === 409) {
         setSync({ state: "konflikt", savedAt: e.daten?.savedAt || null, msg: e.message,
-          fremd: e.daten?.vehicles || {}, fremdQ: e.daten?.quooker || {} });
+          fremd: e.daten?.vehicles || {}, fremdQ: e.daten?.quooker || {},
+          fremdR: e.daten?.raum ?? null });
       } else {
         setSync({ state: e.status === 401 ? "schluessel" : "fehler", savedAt: null, msg: e.message });
       }
@@ -1814,13 +1887,42 @@ export default function App() {
   }, []);
 
   const persist = useCallback((next) => {
-    setVehicles(next); localWrite(next, undefined); pushToServer(next, undefined);
+    setVehicles(next); localWrite(next); pushToServer(next);
   }, [pushToServer]);
 
   // Dasselbe für die zweite Warengruppe.
   const [quooker, setQuooker] = useState({});
   const persistQ = useCallback((next) => {
     setQuooker(next); localWrite(undefined, next); pushToServer(undefined, next);
+  }, [pushToServer]);
+
+  /* Der Raumplan geht denselben Weg: lokal sofort, auf den Server, sobald
+     ein Schlüssel hinterlegt ist. Er ist ein einzelnes Objekt, keine Liste. */
+  const [raum, setRaum] = useState(null);
+  const persistRaum = useCallback((next) => {
+    setRaum(next); localWrite(undefined, undefined, next); pushToServer(undefined, undefined, next);
+  }, [pushToServer]);
+  /* Beim Verschieben einer Fläche fällt bei jedem Rastersprung eine
+     Änderung an. Auf dem Bildschirm muss sie sofort stehen, auf dem Server
+     erst, wenn die Hand stillhält — sonst schriebe ein einziges Ziehen
+     zwanzig Stände. */
+  const raumZeitgeber = useRef(null);
+  const raumSpeichern = useCallback((next, sanft = false) => {
+    setRaum(next);
+    if (raumZeitgeber.current) clearTimeout(raumZeitgeber.current);
+    raumZeitgeber.current = setTimeout(() => {
+      localWrite(undefined, undefined, next); pushToServer(undefined, undefined, next);
+    }, sanft ? 600 : 0);
+  }, [pushToServer]);
+  const setzeRaumMass = useCallback((feld, wert) => {
+    const mm = Math.round(parseFloat(String(wert).replace(",", ".")) * 1000);
+    if (!isFinite(mm)) return;
+    setRaum((alt) => {
+      const basis = alt || RAUM_STANDARD();
+      const next = { ...basis, [feld]: Math.max(RAUM_MIN, Math.min(RAUM_MAX, mm)) };
+      localWrite(undefined, undefined, next); pushToServer(undefined, undefined, next);
+      return next;
+    });
   }, [pushToServer]);
   const updateQuooker = useCallback((id, updater) => {
     setQuooker((prev) => {
@@ -1845,31 +1947,33 @@ export default function App() {
     const roh = localRead() || {};
     const lokal = migrate(roh.vehicles || {});
     const lokalQ = roh.quooker || {};
-    setVehicles(lokal); setQuooker(lokalQ);
-    vehiclesRef.current = lokal; quookerRef.current = lokalQ;
-    localWrite(lokal, lokalQ);          // geradegezogene Werte gleich festhalten
+    const lokalR = raumHeben(roh.raum);
+    setVehicles(lokal); setQuooker(lokalQ); setRaum(lokalR);
+    vehiclesRef.current = lokal; quookerRef.current = lokalQ; raumRef.current = lokalR;
+    localWrite(lokal, lokalQ, lokalR);  // geradegezogene Werte gleich festhalten
     setLoaded(true);
     const key = keyRef.current;
     if (!key) { setSync({ state: "lokal", savedAt: null, msg: "" }); return; }
     (async () => {
       setSync((s) => ({ ...s, state: "laedt" }));
       try {
-        const { vehicles: fern, quooker: fernQ, savedAt } = await serverRead(key);
+        const { vehicles: fern, quooker: fernQ, raum: fernR, savedAt } = await serverRead(key);
         baseRef.current = savedAt;
         if (savedAt) {
           const rohStand = JSON.stringify(fern);     // migrate arbeitet am Original
           const gehoben = migrate(fern);
           const gehobenQ = fernQ || {};
-          setVehicles(gehoben); setQuooker(gehobenQ);
-          vehiclesRef.current = gehoben; quookerRef.current = gehobenQ;
-          localWrite(gehoben, gehobenQ);
+          const gehobenR = raumHeben(fernR) ?? lokalR;
+          setVehicles(gehoben); setQuooker(gehobenQ); setRaum(gehobenR);
+          vehiclesRef.current = gehoben; quookerRef.current = gehobenQ; raumRef.current = gehobenR;
+          localWrite(gehoben, gehobenQ, gehobenR);
           setSync({ state: "verbunden", savedAt, msg: "" });
           // Hat das Anheben etwas geradegezogen — etwa einen kaputten Link —,
           // gehört der bereinigte Stand auch auf den Server, sonst kommt er
           // beim nächsten Gerät wieder als Altlast zurück.
-          if (JSON.stringify(gehoben) !== rohStand) pushToServer(gehoben, gehobenQ);
-        } else if (Object.keys(lokal).length || Object.keys(lokalQ).length) {
-          await pushToServer(lokal, lokalQ);    // erster Abgleich: lokal hoch
+          if (JSON.stringify(gehoben) !== rohStand) pushToServer(gehoben, gehobenQ, gehobenR);
+        } else if (Object.keys(lokal).length || Object.keys(lokalQ).length || lokalR) {
+          await pushToServer(lokal, lokalQ, lokalR);    // erster Abgleich: lokal hoch
         } else {
           setSync({ state: "verbunden", savedAt: null, msg: "" });
         }
@@ -1884,16 +1988,17 @@ export default function App() {
     setSync((s) => {
       const fern = migrate(s.fremd || {});
       const fernQ = s.fremdQ || {};
-      setVehicles(fern); setQuooker(fernQ);
-      vehiclesRef.current = fern; quookerRef.current = fernQ;
-      localWrite(fern, fernQ);
+      const fernR = raumHeben(s.fremdR);
+      setVehicles(fern); setQuooker(fernQ); setRaum(fernR);
+      vehiclesRef.current = fern; quookerRef.current = fernQ; raumRef.current = fernR;
+      localWrite(fern, fernQ, fernR);
       baseRef.current = s.savedAt;
       return { state: "verbunden", savedAt: s.savedAt, msg: "" };
     });
   }, []);
   const konfliktEigenesNehmen = useCallback(() => {
     setSync((s) => { baseRef.current = s.savedAt; return s; });
-    setTimeout(() => { pushToServer(vehiclesRef.current, quookerRef.current); }, 0);
+    setTimeout(() => { pushToServer(vehiclesRef.current, quookerRef.current, raumRef.current); }, 0);
   }, [pushToServer]);
 
   const schluesselSpeichern = useCallback((k) => {
@@ -1903,19 +2008,20 @@ export default function App() {
     (async () => {
       setSync({ state: "laedt", savedAt: null, msg: "" });
       try {
-        const { vehicles: fern, quooker: fernQ, savedAt } = await serverRead(sauber);
+        const { vehicles: fern, quooker: fernQ, raum: fernR, savedAt } = await serverRead(sauber);
         baseRef.current = savedAt;
         if (savedAt) {
           const rohStand = JSON.stringify(fern);
           const gehoben = migrate(fern);
           const gehobenQ = fernQ || {};
-          setVehicles(gehoben); setQuooker(gehobenQ);
-          vehiclesRef.current = gehoben; quookerRef.current = gehobenQ;
-          localWrite(gehoben, gehobenQ);
+          const gehobenR = raumHeben(fernR) ?? raumRef.current;
+          setVehicles(gehoben); setQuooker(gehobenQ); setRaum(gehobenR);
+          vehiclesRef.current = gehoben; quookerRef.current = gehobenQ; raumRef.current = gehobenR;
+          localWrite(gehoben, gehobenQ, gehobenR);
           setSync({ state: "verbunden", savedAt, msg: "" });
-          if (JSON.stringify(gehoben) !== rohStand) pushToServer(gehoben, gehobenQ);
+          if (JSON.stringify(gehoben) !== rohStand) pushToServer(gehoben, gehobenQ, gehobenR);
         } else {
-          pushToServer(vehiclesRef.current, quookerRef.current);
+          pushToServer(vehiclesRef.current, quookerRef.current, raumRef.current);
         }
       } catch (e) {
         setSync({ state: e.status === 401 ? "schluessel" : "fehler", savedAt: null, msg: e.message });
@@ -3070,6 +3176,12 @@ export default function App() {
           <Droplet size={14} /> Quooker
           {qListe.length > 0 && <span style={tab === "quooker" ? S.tabCountOn : S.tabCount}>{qListe.length}</span>}
         </button>
+        <button style={tab === "raum" ? S.tabOn : S.tabOff} onClick={() => setTab("raum")}>
+          <Grid3x3 size={14} /> Raum
+          {raum?.flaechen?.length > 0 && (
+            <span style={tab === "raum" ? S.tabCountOn : S.tabCount}>{raum.flaechen.length}</span>
+          )}
+        </button>
         <button style={tab === "pruefen" ? S.tabOn : S.tabOff} onClick={() => setTab("pruefen")}>
           <ShieldCheck size={14} /> Offene Punkte
           {zuPruefen.length > 0 && (
@@ -3389,6 +3501,47 @@ export default function App() {
 
       </>)}
 
+
+      {tab === "raum" && (
+      <section style={S.panel}>
+        <div style={{ ...S.panelTitle, justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <Grid3x3 size={15} /> Raum planen
+          </span>
+          <span style={S.raumMasseKopf}>
+            <label style={S.raumFeld}>
+              <span style={S.raumLabel}>Breite (m)</span>
+              <input style={S.raumInput} inputMode="decimal"
+                key={`rb${(raum || RAUM_STANDARD()).breite}`}
+                defaultValue={((raum || RAUM_STANDARD()).breite / 1000).toFixed(2).replace(".", ",")}
+                onBlur={(e) => setzeRaumMass("breite", e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
+            </label>
+            <label style={S.raumFeld}>
+              <span style={S.raumLabel}>Tiefe (m)</span>
+              <input style={S.raumInput} inputMode="decimal"
+                key={`rt${(raum || RAUM_STANDARD()).tiefe}`}
+                defaultValue={((raum || RAUM_STANDARD()).tiefe / 1000).toFixed(2).replace(".", ",")}
+                onBlur={(e) => setzeRaumMass("tiefe", e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
+            </label>
+          </span>
+        </div>
+        <p style={S.hint}>
+          Ein Grundriss aus nichts als Rechtecken. Beim Hineinzoomen teilt sich jedes Feld:
+          aus einem <b style={{ color: T.text }}>Quadratmeter</b> werden hundert Felder zu 10 cm,
+          aus jedem davon wieder hundert zu 1 cm. Das Rechteck, das du ziehst, rastet immer in dem
+          Raster ein, das du gerade siehst — grob planen im Meterraster, feinjustieren im Zentimeterraster.
+        </p>
+        <p style={S.hint}>
+          <b style={{ color: T.text }}>Ziehen</b> legt eine Fläche an, <b style={{ color: T.text }}>Antippen</b> wählt
+          sie aus (dann stehen unten die Maße zum Nachtippen und die Abstände zu allen vier Wänden im Bild).
+          Am Rechner zoomt das Mausrad, am Handy zwei Finger. Keine Möbelliste, keine Namen — ein Rechteck
+          ist ein Rechteck, und was es bedeutet, weißt du.
+        </p>
+        <Raumplaner raum={raum} speichern={raumSpeichern} />
+      </section>
+      )}
 
       {tab === "quooker" && (
       <>
@@ -6696,6 +6849,460 @@ function Profilkarte({ b, profil }) {
   );
 }
 
+/* Der Raumplaner.
+   Gezeichnet wird auf eine Leinwand statt in SVG: Bei feinem Raster stehen
+   in einem Zimmer schnell tausende Linien, und die als Elemente in den
+   Baum zu hängen macht jede Bewegung zäh.
+
+   Bedienung, absichtlich karg: ziehen malt ein Rechteck, tippen wählt es
+   aus, zwei Finger schieben und zoomen. Mehr gibt es nicht — keine
+   Möbelbibliothek, keine Namen, die man vergeben müsste. */
+function Raumplaner({ raum, speichern }) {
+  const S = styles;
+  const huelle = useRef(null);
+  const leinwand = useRef(null);
+  const breite = useBreite(huelle);
+  const hoehe = breite && breite < 520 ? 400 : 500;
+
+  const plan = raum || RAUM_STANDARD();
+  const [werkzeug, setWerkzeug] = useState("malen");     // malen | waehlen | hand
+  const [farbe, setFarbe] = useState(RAUM_FARBEN[0]);
+  const [zoom, setZoom] = useState(0);                   // Bildpunkte je Millimeter
+  const [sicht, setSicht] = useState({ x: 0, y: 0 });    // linke obere Ecke in mm
+  const [gewaehlt, setGewaehlt] = useState(null);
+  const [vorschau, setVorschau] = useState(null);
+  const [rueckgaengig, setRueckgaengig] = useState([]);
+  const zeiger = useRef(new Map());
+  const geste = useRef(null);
+
+  const rand = 24;
+  const passZoom = useCallback(() => {
+    if (!breite) return 0.1;
+    return Math.min((breite - rand * 2) / plan.breite, (hoehe - rand * 2) / plan.tiefe);
+  }, [breite, hoehe, plan.breite, plan.tiefe]);
+
+  // Beim ersten Messen und bei jeder Raumänderung: alles ins Bild rücken.
+  const einpassen = useCallback(() => {
+    const z = passZoom();
+    setZoom(z);
+    setSicht({ x: -(breite - plan.breite * z) / 2 / z, y: -(hoehe - plan.tiefe * z) / 2 / z });
+  }, [passZoom, breite, hoehe, plan.breite, plan.tiefe]);
+  useEffect(() => { if (breite) einpassen(); }, [breite, plan.breite, plan.tiefe]);   // eslint-disable-line
+
+  const stufe = rasterStufe(zoom || 0.1);
+  const sx = (mm) => (mm - sicht.x) * zoom;
+  const sy = (mm) => (mm - sicht.y) * zoom;
+  const mmX = (px) => px / zoom + sicht.x;
+  const mmY = (px) => px / zoom + sicht.y;
+
+  const schreiben = (naechst) => {
+    setRueckgaengig((r) => [...r.slice(-19), plan.flaechen]);
+    speichern({ ...plan, flaechen: naechst });
+  };
+  const flaecheBei = (x, y) => [...plan.flaechen].reverse()
+    .find((f) => x >= f.x && x <= f.x + f.w && y >= f.y && y <= f.y + f.h) || null;
+
+  /* ---------------- Zeichnen ---------------- */
+  useEffect(() => {
+    const c = leinwand.current;
+    if (!c || !breite || !zoom) return;
+    const dpr = window.devicePixelRatio || 1;
+    c.width = breite * dpr; c.height = hoehe * dpr;
+    c.style.width = `${breite}px`; c.style.height = `${hoehe}px`;
+    const g = c.getContext("2d");
+    g.setTransform(dpr, 0, 0, dpr, 0, 0);
+    g.clearRect(0, 0, breite, hoehe);
+
+    // Der Raum als heller Boden vor dunklerem Umfeld
+    g.fillStyle = T.bg; g.fillRect(0, 0, breite, hoehe);
+    const rx = sx(0), ry = sy(0), rw = plan.breite * zoom, rh = plan.tiefe * zoom;
+    g.fillStyle = T.surface; g.fillRect(rx, ry, rw, rh);
+
+    /* Das Raster, von grob nach fein. Jede Stufe ist blasser als die
+       darüber — so bleibt die Meterlinie erkennbar, auch wenn hundert
+       Zentimeterlinien dazwischen liegen. */
+    g.save();
+    g.beginPath(); g.rect(rx, ry, rw, rh); g.clip();
+
+    /* Erst die Füllungen, dann das Raster darüber: So besteht eine
+       gefärbte Fläche sichtbar aus Feldern, statt sie zuzudecken — beim
+       Hineinzoomen sieht man genau die Zellen, aus denen sie gemacht ist. */
+    plan.flaechen.forEach((f) => {
+      g.fillStyle = f.farbe; g.globalAlpha = 0.34;
+      g.fillRect(sx(f.x), sy(f.y), f.w * zoom, f.h * zoom);
+    });
+    g.globalAlpha = 1;
+
+    RAUM_STUFEN.forEach((st) => {
+      if (st * zoom < 6) return;
+      const fein = st === 10, mittel = st === 100;
+      /* Der Meter bleibt die Marke, an der man sich festhält: Er ist
+         dunkler und dicker als alles, was sich aus ihm heraus teilt. */
+      g.strokeStyle = fein || mittel ? T.line : T.muted;
+      g.globalAlpha = fein ? 0.4 : mittel ? 0.85 : 0.75;
+      g.lineWidth = fein ? 0.5 : mittel ? 0.8 : 1.4;
+      g.beginPath();
+      for (let x = 0; x <= plan.breite + 1; x += st) {
+        const px = Math.round(sx(x)) + 0.5;
+        if (px < -2 || px > breite + 2) continue;
+        g.moveTo(px, Math.max(ry, 0)); g.lineTo(px, Math.min(ry + rh, hoehe));
+      }
+      for (let y = 0; y <= plan.tiefe + 1; y += st) {
+        const py = Math.round(sy(y)) + 0.5;
+        if (py < -2 || py > hoehe + 2) continue;
+        g.moveTo(Math.max(rx, 0), py); g.lineTo(Math.min(rx + rw, breite), py);
+      }
+      g.stroke();
+    });
+    g.globalAlpha = 1;
+
+    // Ränder und Beschriftung der Flächen — über dem Raster
+    plan.flaechen.forEach((f) => {
+      const x = sx(f.x), y = sy(f.y), w = f.w * zoom, h = f.h * zoom;
+      g.strokeStyle = f.farbe; g.lineWidth = gewaehlt === f.id ? 2.5 : 1.2;
+      g.strokeRect(x, y, w, h);
+      // Maße hineinschreiben, sobald das Rechteck sie trägt
+      if (w > 62 && h > 26) {
+        // Ein heller Streifen darunter, damit die Schrift auch auf dem
+        // feinen Raster steht und nicht darin verschwindet.
+        const zeilen = f.name && h > 44 ? 2 : 1;
+        g.font = "600 11px ui-monospace, Menlo, monospace";
+        const tw = Math.max(g.measureText(`${mmText(f.w)} × ${mmText(f.h)}`).width,
+          f.name ? g.measureText(f.name).width : 0) + 10;
+        g.fillStyle = T.surface; g.globalAlpha = 0.82;
+        g.fillRect(x + w / 2 - tw / 2, y + h / 2 - (zeilen === 2 ? 18 : 9), tw, zeilen === 2 ? 36 : 18);
+        g.globalAlpha = 1;
+        g.fillStyle = T.text;
+        g.font = "600 11px ui-monospace, Menlo, monospace";
+        g.textAlign = "center"; g.textBaseline = "middle";
+        g.fillText(`${mmText(f.w)} × ${mmText(f.h)}`, x + w / 2, y + h / 2 + (f.name && h > 44 ? 8 : 0));
+        if (f.name && h > 44) {
+          g.font = "600 11px system-ui, sans-serif";
+          g.fillText(f.name, x + w / 2, y + h / 2 - 8);
+        }
+      }
+    });
+    g.restore();
+
+    // Die Wände zuletzt, damit nichts über sie läuft
+    g.strokeStyle = T.text; g.lineWidth = 2;
+    g.strokeRect(rx, ry, rw, rh);
+
+    /* Die Meterzahlen an den Kanten. Ohne sie weiß man beim Hineinzoomen
+       nicht mehr, in welcher Ecke des Raums man steckt. */
+    if (1000 * zoom >= 28) {
+      g.font = "600 10px ui-monospace, Menlo, monospace";
+      g.textAlign = "center"; g.textBaseline = "middle";
+      // Als kleine Chips, sonst verschwindet die Zahl auf einer Fläche.
+      const chip = (text, x, y) => {
+        const w = g.measureText(text).width + 7;
+        g.fillStyle = T.surface; g.globalAlpha = 0.92;
+        g.fillRect(x - w / 2, y - 7, w, 14);
+        g.globalAlpha = 1; g.fillStyle = T.muted;
+        g.fillText(text, x, y);
+      };
+      for (let x = 0; x <= plan.breite; x += 1000) {
+        const px = sx(x);
+        if (px < 10 || px > breite - 10) continue;
+        chip(String(x / 1000), px, Math.max(9, ry + 9));
+      }
+      for (let y = 1000; y <= plan.tiefe; y += 1000) {
+        const py = sy(y);
+        if (py < 10 || py > hoehe - 10) continue;
+        chip(String(y / 1000), Math.max(12, rx + 12), py);
+      }
+    }
+
+    /* Abstände zu den vier Wänden für das gewählte Rechteck: die Zahl,
+       die man beim Planen wirklich braucht. */
+    const gw = plan.flaechen.find((f) => f.id === gewaehlt);
+    if (gw) {
+      const mitteX = sx(gw.x + gw.w / 2), mitteY = sy(gw.y + gw.h / 2);
+      const strecken = [
+        { von: [sx(0), mitteY], bis: [sx(gw.x), mitteY], mm: gw.x },
+        { von: [sx(gw.x + gw.w), mitteY], bis: [sx(plan.breite), mitteY], mm: plan.breite - gw.x - gw.w },
+        { von: [mitteX, sy(0)], bis: [mitteX, sy(gw.y)], mm: gw.y },
+        { von: [mitteX, sy(gw.y + gw.h)], bis: [mitteX, sy(plan.tiefe)], mm: plan.tiefe - gw.y - gw.h },
+      ];
+      g.strokeStyle = T.accent; g.lineWidth = 1; g.setLineDash([4, 3]);
+      g.font = "600 10.5px ui-monospace, Menlo, monospace";
+      g.textAlign = "center"; g.textBaseline = "middle";
+      strecken.forEach((st) => {
+        if (st.mm <= 0) return;
+        g.beginPath(); g.moveTo(st.von[0], st.von[1]); g.lineTo(st.bis[0], st.bis[1]); g.stroke();
+        const mx = (st.von[0] + st.bis[0]) / 2, my = (st.von[1] + st.bis[1]) / 2;
+        const text = mmText(st.mm);
+        const tb = g.measureText(text).width + 8;
+        g.setLineDash([]);
+        g.fillStyle = T.surface; g.fillRect(mx - tb / 2, my - 8, tb, 16);
+        g.fillStyle = T.accent; g.fillText(text, mx, my);
+        g.setLineDash([4, 3]);
+      });
+      g.setLineDash([]);
+    }
+
+    // Was gerade aufgezogen wird
+    if (vorschau) {
+      const x = sx(Math.min(vorschau.x1, vorschau.x2)), y = sy(Math.min(vorschau.y1, vorschau.y2));
+      const w = Math.abs(vorschau.x2 - vorschau.x1) * zoom, h = Math.abs(vorschau.y2 - vorschau.y1) * zoom;
+      g.fillStyle = farbe; g.globalAlpha = 0.3; g.fillRect(x, y, w, h);
+      g.globalAlpha = 1; g.strokeStyle = farbe; g.lineWidth = 1.5; g.strokeRect(x, y, w, h);
+      const text = `${mmText(Math.abs(vorschau.x2 - vorschau.x1))} × ${mmText(Math.abs(vorschau.y2 - vorschau.y1))}`;
+      g.font = "600 12px ui-monospace, Menlo, monospace";
+      g.textAlign = "left"; g.textBaseline = "bottom";
+      const tb = g.measureText(text).width + 10;
+      g.fillStyle = T.text; g.fillRect(x, Math.max(16, y - 20), tb, 18);
+      g.fillStyle = "#FFFFFF"; g.fillText(text, x + 5, Math.max(16, y - 20) + 15);
+    }
+  }, [breite, hoehe, zoom, sicht, plan, gewaehlt, vorschau, farbe]);
+
+  /* ---------------- Bedienung ---------------- */
+  const ausZeiger = (e) => {
+    const k = leinwand.current.getBoundingClientRect();
+    return { x: e.clientX - k.left, y: e.clientY - k.top };
+  };
+  /* Auf eine Rasterstufe springen. Zielpunkt ist die gewählte Fläche —
+     sonst landet man beim Sprung ins Zentimeterraster irgendwo im Leeren
+     und sucht erst einmal seinen eigenen Plan. */
+  const zoomeAufStufe = (st) => {
+    const z = Math.max(passZoom() * 0.9, Math.min(3, 9 / st));
+    const gwNun = plan.flaechen.find((f) => f.id === gewaehlt);
+    const ziel = gwNun
+      ? { x: gwNun.x + gwNun.w / 2, y: gwNun.y + gwNun.h / 2 }
+      : { x: mmX(breite / 2), y: mmY(hoehe / 2) };
+    setZoom(z);
+    setSicht({ x: ziel.x - breite / 2 / z, y: ziel.y - hoehe / 2 / z });
+  };
+  const zoomeAuf = (neuerZoom, ankerPx) => {
+    const z = Math.max(passZoom() * 0.9, Math.min(3, neuerZoom));
+    setSicht((alt) => ({
+      x: alt.x + ankerPx.x / zoom - ankerPx.x / z,
+      y: alt.y + ankerPx.y / zoom - ankerPx.y / z,
+    }));
+    setZoom(z);
+  };
+
+  const runter = (e) => {
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const p = ausZeiger(e);
+    zeiger.current.set(e.pointerId, p);
+    if (zeiger.current.size === 2) {
+      // Zwei Finger: schieben und zoomen, egal welches Werkzeug gewählt ist.
+      const [a, b] = [...zeiger.current.values()];
+      geste.current = { art: "zwei", abstand: Math.hypot(a.x - b.x, a.y - b.y), zoom,
+        mitte: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }, sicht };
+      setVorschau(null);
+      return;
+    }
+    const mx = mmX(p.x), my = mmY(p.y);
+    if (werkzeug === "hand") { geste.current = { art: "schieben", start: p, sicht }; return; }
+    const treffer = flaecheBei(mx, my);
+    if (werkzeug === "waehlen") {
+      setGewaehlt(treffer ? treffer.id : null);
+      /* Der Stand vor dem Ziehen wird hier festgehalten, nicht erst beim
+         Loslassen: Bis dahin steht in plan.flaechen längst die verschobene
+         Fassung, und "Zurück" nähme dann den Zustand zurück, der schon der
+         neue ist. */
+      geste.current = treffer
+        ? { art: "ziehen", id: treffer.id, greif: { x: mx - treffer.x, y: my - treffer.y },
+          bewegt: false, vorher: plan.flaechen }
+        : { art: "schieben", start: p, sicht };
+      return;
+    }
+    // Malen: aufziehen, gerastert auf die feinste sichtbare Stufe
+    geste.current = { art: "malen", x1: aufRaster(mx, stufe), y1: aufRaster(my, stufe) };
+    setGewaehlt(null);
+    setVorschau({ x1: geste.current.x1, y1: geste.current.y1, x2: geste.current.x1, y2: geste.current.y1 });
+  };
+
+  const bewegen = (e) => {
+    if (!zeiger.current.has(e.pointerId)) return;
+    const p = ausZeiger(e);
+    zeiger.current.set(e.pointerId, p);
+    const g = geste.current;
+    if (!g) return;
+    if (g.art === "zwei" && zeiger.current.size === 2) {
+      const [a, b] = [...zeiger.current.values()];
+      const abstand = Math.hypot(a.x - b.x, a.y - b.y);
+      const mitte = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const z = Math.max(passZoom() * 0.9, Math.min(3, g.zoom * (abstand / (g.abstand || 1))));
+      setZoom(z);
+      setSicht({
+        x: g.sicht.x + g.mitte.x / g.zoom - mitte.x / z,
+        y: g.sicht.y + g.mitte.y / g.zoom - mitte.y / z,
+      });
+      return;
+    }
+    if (g.art === "schieben") {
+      setSicht({ x: g.sicht.x - (p.x - g.start.x) / zoom, y: g.sicht.y - (p.y - g.start.y) / zoom });
+      return;
+    }
+    if (g.art === "malen") {
+      setVorschau({ x1: g.x1, y1: g.y1, x2: aufRaster(mmX(p.x), stufe), y2: aufRaster(mmY(p.y), stufe) });
+      return;
+    }
+    if (g.art === "ziehen") {
+      const f = plan.flaechen.find((x) => x.id === g.id);
+      if (!f) return;
+      const nx = aufRaster(mmX(p.x) - g.greif.x, stufe), ny = aufRaster(mmY(p.y) - g.greif.y, stufe);
+      if (nx === f.x && ny === f.y) return;
+      g.bewegt = true;
+      speichern({ ...plan, flaechen: plan.flaechen.map((x) => (x.id === g.id ? { ...x, x: nx, y: ny } : x)) }, true);
+    }
+  };
+
+  const hoch = (e) => {
+    zeiger.current.delete(e.pointerId);
+    const g = geste.current;
+    if (g && g.art === "malen" && vorschau) {
+      const x = Math.min(vorschau.x1, vorschau.x2), y = Math.min(vorschau.y1, vorschau.y2);
+      const w = Math.abs(vorschau.x2 - vorschau.x1), h = Math.abs(vorschau.y2 - vorschau.y1);
+      /* Ein Tipper ohne Ziehen ist kein Rechteck der Größe null, sondern
+         die Frage nach dem, was dort schon liegt. */
+      if (w < stufe || h < stufe) {
+        const treffer = flaecheBei(mmX(ausZeiger(e).x), mmY(ausZeiger(e).y));
+        setGewaehlt(treffer ? treffer.id : null);
+      } else {
+        const neu = { id: `f${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`,
+          x, y, w, h, farbe, name: "" };
+        schreiben([...plan.flaechen, neu]);
+        setGewaehlt(neu.id);
+      }
+    }
+    if (g && g.art === "ziehen" && g.bewegt) setRueckgaengig((r) => [...r.slice(-19), g.vorher]);
+    if (zeiger.current.size === 0) geste.current = null;
+    setVorschau(null);
+  };
+
+  const rad = (e) => {
+    e.preventDefault();
+    zoomeAuf(zoom * (e.deltaY < 0 ? 1.18 : 1 / 1.18), ausZeiger(e));
+  };
+  useEffect(() => {
+    const c = leinwand.current;
+    if (!c) return;
+    c.addEventListener("wheel", rad, { passive: false });
+    return () => c.removeEventListener("wheel", rad);
+  });
+
+  /* Am Rechner erwartet man das: Escape hebt die Auswahl auf, Entfernen
+     löscht. In einem Eingabefeld gilt beides nicht. */
+  useEffect(() => {
+    const taste = (e) => {
+      if (/^(INPUT|TEXTAREA)$/.test(e.target?.tagName || "")) return;
+      if (e.key === "Escape") setGewaehlt(null);
+      if ((e.key === "Delete" || e.key === "Backspace") && gewaehlt) {
+        e.preventDefault();
+        schreiben(plan.flaechen.filter((f) => f.id !== gewaehlt));
+        setGewaehlt(null);
+      }
+    };
+    window.addEventListener("keydown", taste);
+    return () => window.removeEventListener("keydown", taste);
+  });
+
+  const gw = plan.flaechen.find((f) => f.id === gewaehlt) || null;
+  const belegt = plan.flaechen.reduce((n, f) => n + f.w * f.h, 0);
+  const masseSetzen = (feld, wert) => {
+    const mm = Math.round(parseFloat(String(wert).replace(",", ".")) * 10);
+    if (!isFinite(mm) || mm < 10) return;
+    schreiben(plan.flaechen.map((f) => (f.id === gw.id ? { ...f, [feld]: Math.min(RAUM_MAX, mm) } : f)));
+  };
+
+  return (
+    <>
+      <div style={S.raumLeiste}>
+        <span style={S.umschalter}>
+          {[["malen", "Malen"], ["waehlen", "Wählen"], ["hand", "Schieben"]].map(([w, t]) => (
+            <button key={w} onClick={() => setWerkzeug(w)}
+              style={werkzeug === w ? S.umschalterAn : S.umschalterAus}>{t}</button>
+          ))}
+        </span>
+        <span style={S.raumFarben}>
+          {RAUM_FARBEN.map((f) => (
+            <button key={f} onClick={() => {
+              setFarbe(f);
+              if (gw) schreiben(plan.flaechen.map((x) => (x.id === gw.id ? { ...x, farbe: f } : x)));
+            }} title="Farbe wählen"
+              style={{ ...S.raumFarbe, background: f, outline: farbe === f ? `2px solid ${T.text}` : "none" }} />
+          ))}
+        </span>
+        {/* Die Rasterstufen direkt anspringen: Das ist der Zoom, den man
+            beim Planen meint — "zeig mir Zentimeter" statt "vergrößere um
+            das 1,4-fache". Das Mausrad und zwei Finger bleiben daneben. */}
+        <span style={S.umschalter}>
+          {RAUM_STUFEN.map((st) => (
+            <button key={st} onClick={() => zoomeAufStufe(st)}
+              style={stufe === st ? S.umschalterAn : S.umschalterAus}>{rasterName(st)}</button>
+          ))}
+          <button style={S.umschalterAus} onClick={einpassen}>Ganzer Raum</button>
+        </span>
+        {rueckgaengig.length > 0 && (
+          <button style={S.ghostBtn} onClick={() => {
+            const vor = rueckgaengig[rueckgaengig.length - 1];
+            setRueckgaengig((r) => r.slice(0, -1));
+            speichern({ ...plan, flaechen: vor });
+            setGewaehlt(null);
+          }}><RotateCcw size={14} /> Zurück</button>
+        )}
+      </div>
+
+      <div ref={huelle} style={S.raumHuelle}>
+        <canvas ref={leinwand} className="pw-raum" style={{ display: "block", touchAction: "none", cursor: werkzeug === "hand" ? "grab" : "crosshair" }}
+          onPointerDown={runter} onPointerMove={bewegen} onPointerUp={hoch} onPointerCancel={hoch} />
+      </div>
+
+      {gw ? (
+        <div style={S.raumAuswahl}>
+          <span style={{ ...S.raumPunkt, background: gw.farbe }} />
+          <label style={S.raumFeld}>
+            <span style={S.raumLabel}>Breite (cm)</span>
+            <input style={S.raumInput} inputMode="decimal" defaultValue={(gw.w / 10).toFixed(1).replace(".", ",")}
+              key={`w${gw.id}${gw.w}`} onBlur={(e) => masseSetzen("w", e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
+          </label>
+          <label style={S.raumFeld}>
+            <span style={S.raumLabel}>Tiefe (cm)</span>
+            <input style={S.raumInput} inputMode="decimal" defaultValue={(gw.h / 10).toFixed(1).replace(".", ",")}
+              key={`h${gw.id}${gw.h}`} onBlur={(e) => masseSetzen("h", e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
+          </label>
+          <label style={{ ...S.raumFeld, flex: "1 1 170px", minWidth: 150 }}>
+            <span style={S.raumLabel}>Name (wenn du willst)</span>
+            <input style={{ ...S.raumInput, width: "100%" }} defaultValue={gw.name} key={`n${gw.id}`}
+              placeholder="Sofa, Schrank…"
+              onBlur={(e) => schreiben(plan.flaechen.map((f) => (f.id === gw.id
+                ? { ...f, name: e.target.value.slice(0, 40) } : f)))}
+              onKeyDown={(e) => { if (e.key === "Enter") e.target.blur(); }} />
+          </label>
+          <span style={S.raumMasse}>{qmText(gw.w * gw.h)}</span>
+          <button style={S.dangerBtn} onClick={() => {
+            schreiben(plan.flaechen.filter((f) => f.id !== gw.id)); setGewaehlt(null);
+          }}><Trash2 size={14} /> Löschen</button>
+        </div>
+      ) : (
+        <div style={S.raumHinweisZeile}>
+          {werkzeug === "malen" ? "Ziehen legt ein Rechteck an — es rastet im Raster ein, das du gerade siehst."
+            : werkzeug === "waehlen" ? "Antippen wählt eine Fläche, Ziehen verschiebt sie."
+              : "Ziehen verschiebt den Ausschnitt. Am Handy geht das immer mit zwei Fingern."}
+        </div>
+      )}
+
+      <div style={S.zahlenreihe}>
+        <Zahlenfeld label="Raum" wert={qmText(plan.breite * plan.tiefe)}
+          zusatz={`${mmText(plan.breite)} × ${mmText(plan.tiefe)}`} />
+        <Zahlenfeld label="Belegt" accent wert={qmText(belegt)}
+          zusatz={`${plan.flaechen.length} ${plan.flaechen.length === 1 ? "Fläche" : "Flächen"}`} />
+        <Zahlenfeld label="Frei" wert={qmText(Math.max(0, plan.breite * plan.tiefe - belegt))}
+          zusatz={plan.breite * plan.tiefe > 0
+            ? `${Math.round((1 - belegt / (plan.breite * plan.tiefe)) * 100)} % der Grundfläche` : "—"} />
+        <Zahlenfeld label="Raster" wert={rasterName(stufe)}
+          zusatz="so fein rastet das nächste Rechteck ein" />
+      </div>
+    </>
+  );
+}
+
 function Verlaufskarte({ r, tag, einheit }) {
   const S = styles;
   const zeige = (p) => (einheit === "prozent"
@@ -6978,6 +7585,7 @@ const styles = {
   row: { display: "flex", gap: 10, marginTop: 12, alignItems: "center", flexWrap: "wrap" },
   primaryBtn: { display: "inline-flex", alignItems: "center", gap: 7, background: T.accent, color: T.bg, border: "none", borderRadius: 9, padding: "10px 16px", fontWeight: 700, fontSize: 13.5 },
   ghostBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: T.muted, border: `1px solid ${T.line}`, borderRadius: 9, padding: "9px 13px", fontWeight: 600, fontSize: 13 },
+  dangerBtn: { display: "inline-flex", alignItems: "center", gap: 6, background: "transparent", color: T.bad, border: `1px solid ${T.bad}55`, borderRadius: 9, padding: "9px 13px", fontWeight: 600, fontSize: 13, cursor: "pointer", font: "inherit" },
   notice: { display: "flex", alignItems: "center", gap: 8, marginTop: 12, padding: "9px 12px", background: T.surface2, border: `1px solid ${T.line}`, borderLeftWidth: 3, borderRadius: 8, fontSize: 12.5 },
 
   draft: { marginTop: 16, padding: 15, background: T.surface2, border: `1px solid ${T.line}`, borderRadius: 11 },
@@ -7031,6 +7639,22 @@ const styles = {
   fassungBalken: { font: "inherit", display: "flex", alignItems: "center", gap: 10, width: "100%",
     textAlign: "left", background: T.accent, color: "#FFFFFF", border: "none", borderRadius: 10,
     padding: "11px 14px", marginBottom: 12, fontSize: 12.5, lineHeight: 1.5, cursor: "pointer" },
+
+  raumLeiste: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10, marginBottom: 10 },
+  raumFarben: { display: "inline-flex", gap: 5, alignItems: "center" },
+  raumFarbe: { width: 22, height: 22, borderRadius: 6, border: `1px solid ${T.line}`, cursor: "pointer", padding: 0 },
+  raumRaster: { fontSize: 11, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace" },
+  raumHuelle: { width: "100%", border: `1px solid ${T.line}`, borderRadius: 10, overflow: "hidden", background: T.bg },
+  raumAuswahl: { display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 10, marginTop: 10,
+    padding: "10px 12px", background: T.surface2, borderRadius: 10 },
+  raumHinweisZeile: { marginTop: 10, fontSize: 11.5, color: T.muted, lineHeight: 1.5 },
+  raumPunkt: { width: 14, height: 14, borderRadius: 4, marginBottom: 6 },
+  raumFeld: { display: "flex", flexDirection: "column", gap: 3 },
+  raumLabel: { fontSize: 10, color: T.muted, textTransform: "uppercase", letterSpacing: "0.05em", fontWeight: 700 },
+  raumInput: { width: 92, background: T.surface, border: `1px solid ${T.line}`, borderRadius: 7,
+    padding: "7px 9px", color: T.text, fontSize: 12.5, font: "inherit", fontFamily: "ui-monospace, Menlo, monospace" },
+  raumMasse: { fontSize: 12, color: T.muted, fontFamily: "ui-monospace, Menlo, monospace", marginBottom: 7 },
+  raumMasseKopf: { display: "inline-flex", gap: 10, alignItems: "flex-end", textTransform: "none", letterSpacing: 0 },
 
   sichtBox: { background: T.surface, border: `1px solid ${T.line}`, borderLeft: `3px solid ${T.accent}`, borderRadius: 9, padding: "10px 12px", marginBottom: 12 },
   sichtKopf: { display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 6, marginBottom: 4 },
